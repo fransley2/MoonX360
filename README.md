@@ -16,7 +16,7 @@ Sunshine is the primary setup example. Upstream reports hardware pairing and 720
 
 ## Install and run
 
-This repository publishes source only: there are no bundled executables or releases in this publication. Build the dashboard application using [BUILD.md](docs/BUILD.md), then copy the resulting `xdk/build/default.xex` to a writable folder such as `MoonX360/default.xex` on the console HDD or supported USB storage. Launch it from Aurora, FSD or XeXMenu. Keep the existing `moonlight` data folder when updating.
+Download the dashboard package from [Releases](https://github.com/fransley2/MoonX360/releases), or build it using [BUILD.md](docs/BUILD.md). Extract the package and copy `default.xex` to a writable folder such as `MoonX360/default.xex` on the console HDD or supported USB storage. Launch it from Aurora, FSD or XeXMenu. Keep the existing `moonlight` data folder when updating. Experimental prereleases are not proof of physical-console stability. Executables remain outside the source Git tree.
 
 The fonts, branding and video/UI shaders used by the dashboard build are embedded from the supplied assets/source. Do not remove source assets when building. The runtime creates its own settings and pairing data; never add that folder to Git.
 
