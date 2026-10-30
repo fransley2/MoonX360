@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- MoonX360 dashboard executable; SPA section is added by xdk/build.py. -->
+<xex>
+  <titleid id="0x4D583336"/>
+  <!-- HDD/USB title: opt out of forced reboot on optical media changes. -->
+  <privilege id="0"/> <!-- NoForceReboot; console/DashLaunch behavior still needs hardware testing -->
+  <!-- Plain TCP/UDP to the PC instead of Xbox Live's secure sockets. -->
+  <privilege id="6"/> <!-- InsecureSockets -->
+</xex>

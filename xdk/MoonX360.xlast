@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<XboxLiveSubmissionProject Version="2.0.2711.0" xmlns="http://www.xboxlive.com/xlast">
+  <GameConfigProject name="MoonX360" titleName="MoonX360" titleId="0x4D583336" titleType="1" multiplayer="false" projectVersion="1.00.0009.0" schemaVersion="1.00.0000.0">
+    <LocalizedStrings nextId="1" defaultLocale="en-US">
+      <SupportedLocale locale="en-US"/>
+      <SupportedLocale locale="es-ES"/>
+      <LocalizedString id="32768" friendlyName="X_STRINGID_TITLENAME">
+        <Translation locale="en-US">MoonX360</Translation>
+        <Translation locale="es-ES">MoonX360</Translation>
+      </LocalizedString>
+      <LocalizedString id="1" friendlyName="Presence"><Translation locale="en-US">MoonX360</Translation><Translation locale="es-ES">MoonX360</Translation><Presence/></LocalizedString>
+      <LocalizedString id="32512" friendlyName="GameType"><Translation locale="en-US">MoonX360</Translation><Translation locale="es-ES">MoonX360</Translation></LocalizedString>
+      <LocalizedString id="32513" friendlyName="Ranked"><Translation locale="en-US">MoonX360</Translation><Translation locale="es-ES">MoonX360</Translation></LocalizedString>
+      <LocalizedString id="32514" friendlyName="Standard"><Translation locale="en-US">MoonX360</Translation><Translation locale="es-ES">MoonX360</Translation></LocalizedString>
+    </LocalizedStrings>
+    <Presence nextContextValue="1"><PresenceMode stringId="1" contextValue="0" friendlyName="Presence"/></Presence>
+    <Contexts nextId="0x00000000"><Context stringId="32512" friendlyName="GAME_TYPE" id="0x0000800A" defaultValue="0"><ContextValue friendlyName="RANKED" value="0" stringId="32513"/><ContextValue friendlyName="STANDARD" value="1" stringId="32514"/></Context></Contexts>
+    <Images>
+      <Image id="32768" friendlyName="X_IMAGEID_GAME"><Path>../assets/brand/MoonX360-64.png</Path></Image>
+    </Images>
+  </GameConfigProject>
+</XboxLiveSubmissionProject>
