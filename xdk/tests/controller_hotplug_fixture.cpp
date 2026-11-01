@@ -77,11 +77,14 @@ int LiSendScrollEvent(signed char){return 0;}
 int LiSendKeyboardEvent(short k,char action,char){assert(k=='A');if(action==KEY_ACTION_DOWN)keyboard_down++;else keyboard_up++;return 0;}
 void audio_set_volume(int){}
 static volatile LONG mouse_mode;
+static bool launch_active(){return false;}
+static void launch_command(bool,bool){}
 /* ACTUAL_INPUT */
 static DWORD XInputSetState(int i,XINPUT_VIBRATION *v){rumble_calls++;if(!connected[i])return ERROR_DEVICE_NOT_CONNECTED;motor[i]=v->wLeftMotorSpeed;
  if(inject_stop){inject_stop=false;InterlockedExchange(&rumble_enabled,0);InterlockedIncrement(&rumble_generation);}return ERROR_SUCCESS;}
 static void Sleep(DWORD ms){assert(ms>=1&&ms<=4);tick+=ms;sleep_count++;
  if(sleep_count==1)guide=true;if(sleep_count==3)connected[0]=false;
+ if(sleep_count==8)samples[1].Gamepad.wButtons=0; // release the initial menu button before new keyboard input
  if(sleep_count==10)guide=false;if(sleep_count==12)connected[0]=true;
  if(sleep_count>=40)stream_active=0;}
 int main(){
@@ -95,7 +98,7 @@ int main(){
  assert(arrivals[0]==2 && arrivals[1]==1);bool removal=false,neutral=false;
  for(size_t i=0;i<events.size();i++)if(events[i].port==0 && events[i].mask==2 && !events[i].buttons && !events[i].lt && !events[i].lx)removal=true;
  for(size_t i=0;i<events.size();i++)if(events[i].port==0 && events[i].mask==3 && !events[i].buttons && !events[i].lt && !events[i].lx)neutral=true;
- assert(removal&&neutral);assert(events.back().mask==0);assert(sleep_count==40);assert(keyboard_down==1 && keyboard_up==1 && keyboard_calls[0]<=6 && keyboard_calls[1]<=2);
+ assert(removal&&neutral && !events.front().buttons);assert(events.back().mask==0);assert(sleep_count==40);assert(keyboard_down==1 && keyboard_up==1 && keyboard_calls[0]<=6 && keyboard_calls[1]<=2);
  int before=rumble_calls;input_rumble(2,100,100);assert(rumble_calls==before); // disconnected slot
  input_rumble(1,100,100);assert(motor[1]==100);connected[1]=false;input_rumble(1,200,200);assert(!quit_requested);
  connected[1]=true;guide=true;before=rumble_calls;input_rumble(1,300,300);assert(before==rumble_calls);guide=false;

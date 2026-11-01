@@ -63,10 +63,11 @@ void ui_draw_busy(const char*,const char*,uint32_t){assert(!live);}
 void ui_present(){}
 static void refresh_server(){assert(!live);}
 static void history_text(char *out,size_t n,const char *in){snprintf(out,n,"%s",in);}
+static void remember_played_art(int){}
 /* CODE */
 static void run_case(int which,bool automatic){
  scenario=which;sessions=stops=reports=0;tick=100;stream_return_home=false;
- config_defaults(&cfg);config_apply_preset(&cfg,CONFIG_PROFILE_1080_SMOOTH);cfg.adaptive_quality=automatic;
+ config_defaults(&cfg);config_apply_preset(&cfg,CONFIG_PROFILE_1080_SMOOTH);cfg.fps=60;cfg.bitrate_kbps=20000;cfg.stream_profile=0;cfg.adaptive_quality=automatic;
  config saved=cfg;stream(42,"Test game");assert(!memcmp(&saved,&cfg,sizeof(cfg)));
  assert(stops==sessions && reports==sessions);
  assert(stream_return_home && !live);
@@ -86,4 +87,4 @@ int main(){
  puts("PASS: actual stream loop/teardown/resume, 3-reconnect cap, original settings restored, no live persistence, manual/Guide suppression, stop callback tolerance");
 }
 """
-Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',once+'\n'+function('static void stream(')))
+Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',once+'\n'+function('static void stream(').replace('stream_session(app_id, stable_title)','stream_once(app_id, stable_title)')))

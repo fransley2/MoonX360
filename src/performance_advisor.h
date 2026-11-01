@@ -11,6 +11,9 @@ struct performance_sample {
     int mcc_queue;
     double shown_fps, target_fps, payload_mbps;
     bool tail_valid, rtt_valid;
+    int requested_fps, setup_fps_argument, negotiated_fps;
+    bool negotiated_fps_known; /* setup_fps_argument is a copy of the request in MCC */
+    double callback_fps, decoded_fps, presented_fps; /* backend stages, not scanout */
 };
 struct performance_result { int grade, cause; };
 static const char *performance_grade(int grade) {

@@ -10,7 +10,7 @@ def fn(path,sig):
 fixture=(root/'xdk/tests/lifecycle_recovery_fixture.cpp').read_text()
 for marker,path,sigs in [
  ('GUIDE','xdk/src/gfx_xdk.cpp',['D3DDevice *gfx_begin(', 'void gfx_end(', 'static void system_ui_present(']),
- ('RENDER_PUMP','xdk/src/video_xdk.cpp',['static DWORD WINAPI render_main(']),
+ ('RENDER_PUMP','xdk/src/video_xdk.cpp',['static void render_tick(', 'static DWORD WINAPI render_main(']),
  ('RESIZE','xdk/src/video_xdk.cpp',['static bool resize_video(']),
  ('LAUNCH','src/gamestream.c',['static char *xml_get_from(', 'static char *xml_get(', 'bool gs_launch('])]:
  fixture=fixture.replace('/* '+marker+' */',''.join(fn(path,s) for s in sigs))

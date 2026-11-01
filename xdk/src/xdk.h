@@ -96,3 +96,8 @@ uint64_t cached_video_memory(void);
 bool gfx_upload_timed(D3DTexture *tex,const void *src,int src_pitch,int row_bytes,int rows,struct gfx_copy_cost *cost);
 
 extern "C" void xdk_audit_thread(const char *name);
+
+bool gfx_launch_pending(void);
+void gfx_launch_draw(D3DDevice *d,bool usable);
+
+void gfx_launch_idle(D3DDevice *d);

@@ -9,6 +9,7 @@ def function(sig):
     return s[a:b]
 fixture=r'''
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <deque>
@@ -33,10 +34,15 @@ static int context_page=-1,context_category=-1,depth;
 static std::string ancestry[8];
 struct Draw {std::string title,label,path;int selection,page,category;std::string value;};
 static std::deque<Draw> draws;
+static bool profile_editor_active,profile_editor_save;
+static bool server_ok=true;
+static bool host_details(){hosts_calls++;return false;}
+static bool recover_host_ui(){return true;}
+static void refresh_server(){hosts_calls++;}
 void ui_set_settings_context(int page,int category){context_page=page;context_category=category;}
 
 void ui_draw_settings_page(const char *title,const ui_setting *rows,int n,int sel){
-    assert(n>0 && sel>=0 && sel<n && strcmp(title,"Video"));pages.insert(title);
+    assert(n>0 && sel>=0 && sel<n);pages.insert(title);
     for(int i=0;i<n;i++){assert(rows[i].label && rows[i].value);options.insert(rows[i].label);}
     std::string path;for(int i=0;i<depth;i++){if(i)path+=" > ";path+=ancestry[i];}
     draws.push_back({title,rows[sel].label,path,sel,context_page,context_category,rows[sel].value});
@@ -50,7 +56,8 @@ void ui_draw_settings_options(const char *title,const ui_setting *rows,const int
 void ui_present(){}
 void ui_set_exit_shortcut(int){}
 bool storage_write(const char*,const void*,size_t){saves++;return allow_write;}
-char *storage_read(const char*,size_t*){return NULL;}
+char *storage_read(const char*,size_t*){errno=ENOENT;return NULL;}
+static bool profile_links_pending(){return false;}
 static void message(int,const char*,const char*){messages++;}
 static bool plat_has_renderer_choice(){return false;}
 static bool plat_benchmark_available(){return true;}
@@ -58,8 +65,11 @@ static bool plat_has_diagnostics(){return true;}
 static void plat_diagnostics_configure(bool){}
 static void plat_run_benchmark(){}
 static int wait_button();
-static void user_profiles_menu(){assert(context_page==UI_STREAM);while(!(wait_button()&B_FLAG)){};}
+static void save_current_profile(){}
+static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
+static void stream_profile_menu(){assert(context_page==UI_STREAM || context_page==UI_SETTINGS);while(!(wait_button()&B_FLAG)){};}
 static void pointer_settings_menu(){}
+static void launch_defaults_menu(){while(!(wait_button()&B_FLAG)){};}
 static void ui_memory_menu(){}
 static void network_diagnostics_menu(){}
 static void log_viewer(){}
@@ -92,93 +102,33 @@ int main(){
     config_defaults(&cfg);config_apply_preset(&cfg,CONFIG_PROFILE_STANDARD);
     config original=cfg;begin();keys={B_FLAG};finish();assert(!memcmp(&cfg,&original,sizeof(cfg)));
     assert(draws.front().title=="Settings");
-    begin();keys={PLAY_FLAG,B_FLAG,B_FLAG};finish();assert(draws[1].title=="PCs and connection");
-    // Six categories open with A; B restores the exact opener, including rail selection.
-    for(int c=0;c<6;c++){
-        begin();open_category(c);back(2);finish();
-        assert(draws.back().title=="Settings" && draws.back().selection==c);
-        assert(draws[draws.size()-2].category==c);
-    }
-    // The complete tree has controller paths. External leaves are exercised separately below.
-    for(int node=MENU_PCS;node<MENU_COUNT;node++){
-        if(node==MENU_HOSTS || node==MENU_APPEARANCE || node==MENU_STREAM_UI || node==MENU_RESTART_APP || node==MENU_RESET_APP)continue;
-        std::deque<int> path;int p=node;
-        while(settings_pages[p].parent>=0){path.push_front(p);p=settings_pages[p].parent;}
-        bool stream=p==MENU_STREAM;begin(stream);
-        for(int target:path){
-            int index=0;for(int i=0;i<SETTINGS_ENTRY_COUNT;i++)if(settings_entries[i].page==settings_pages[target].parent){
-                if(settings_entries[i].child==target)break;index++;
-            }
-            down(index);keys.push_back(A_FLAG);
-        }
-        back((int)path.size()+1);finish();assert(pages.count(settings_pages[node].title));
-    }
-    assert(!options.count("Renderer"));
-    // Stream profile remains the original selector and changes only its original fields.
-    cfg=original;cfg.fast_decode=false;cfg.vsync=false;cfg.image_quality=2;cfg.slice_count=16;
-    begin(true);keys={A_FLAG,B_FLAG};finish();assert(cfg.fps==60 && cfg.bitrate_kbps==18000);
-    assert(!cfg.fast_decode && !cfg.vsync && cfg.image_quality==2 && cfg.slice_count==16);
-    begin(true);keys={DOWN_FLAG,A_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();
-    assert(cfg.stream_profile==0 && cfg.width==1920 && cfg.bitrate_kbps==18000);
-    assert(cfg.fast_decode && cfg.image_quality==1); // preset speed settings survive a manual resolution change
-    assert(draws.back().selection==1 && draws.back().page==UI_STREAM);
-    // All six stream adjustments and Audio keep STREAM selected and their ancestry.
-    for(const auto &draw:draws)assert(draw.page==UI_STREAM && draw.category==-1);
-    // Actual controller path: bitrate-only edit keeps the effective smooth preset settings.
-    cfg=original;cfg.fast_decode=false;cfg.image_quality=2;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);
-    begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();
-    assert(cfg.bitrate_kbps==19000 && cfg.fast_decode && cfg.image_quality==1 && cfg.stream_profile==0);
-    // The displayed value matches playback, and one A really turns forced Fast Decode off.
-    cfg=original;cfg.fast_decode=false;cfg.image_quality=2;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);
-    begin();open_category(SETTINGS_DIAGNOSTICS);keys.push_back(A_FLAG);keys.push_back(A_FLAG);back(3);finish();
-    bool saw_on=false,saw_off=false;for(const auto &draw:draws)if(draw.page==UI_SETTINGS && draw.selection==0 && draw.title=="Decoding"){
-        saw_on|=draw.value=="On";saw_off|=draw.value=="Off";
-    }
-    assert(saw_on && saw_off && !cfg.fast_decode && cfg.stream_profile==0 && cfg.image_quality==1);
-    begin(true);keys={DOWN_FLAG,DOWN_FLAG,A_FLAG,A_FLAG,DOWN_FLAG,A_FLAG,B_FLAG,B_FLAG};finish();
-    assert(cfg.audio_mode==1 && cfg.local_audio);
-    // LB/RB from stream root, adjustments, audio and nested profiles unwind without extra B.
-    for(int row=0;row<4;row++)for(int key:{LB_FLAG,RB_FLAG}){
-        begin(true);down(row);if(row)keys.push_back(A_FLAG);keys.push_back(key);finish();
-        assert(navigation_pending==(key==LB_FLAG?UI_LIBRARY:UI_SETTINGS));
-    }
-    begin();open_category(SETTINGS_APPEARANCE);keys.push_back(A_FLAG);
-    keys.push_back(RIGHT_FLAG);keys.push_back(DOWN_FLAG);keys.push_back(RIGHT_FLAG);back(3);finish();
-    assert(cfg.ui_background==1 && cfg.ui_accent==1 && pages.count("Appearance"));
-    // Streaming interface is discoverable with A, preserves the opener and changes the existing fields.
-    begin();open_category(SETTINGS_APPEARANCE);down(1);keys.push_back(A_FLAG);
-    keys.push_back(RIGHT_FLAG);keys.push_back(DOWN_FLAG);keys.push_back(RIGHT_FLAG);back(3);finish();
-    assert(cfg.mouse_hud==1 && cfg.stream_menu_style==1);
-    assert(draws[draws.size()-2].selection==1);
-    // Appearance X and the historical overlay X use the same implementation.
-    begin();open_category(SETTINGS_APPEARANCE);keys.push_back(X_FLAG);back(3);finish();
-    begin();open_category(SETTINGS_HISTORY);keys.push_back(X_FLAG);keys.push_back(RB_FLAG);finish();
-    assert(navigation_pending==UI_HOME && draws.back().category==SETTINGS_APPEARANCE);
-    // App resolution and read-only detected output stay separate.
-    begin();open_category(SETTINGS_APPEARANCE);down(2);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);
-    keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);back(3);int old_width=cfg.width;finish();
-    assert(cfg.display_mode==1 && cfg.width==old_width);
-    for(int i=0;i<3;i++){
-        begin();open_category(SETTINGS_APPEARANCE);down(3);keys.push_back(RIGHT_FLAG);back(2);finish();
-        assert(cfg.language==(i+1)%3 && selected_language==cfg.language);
-    }
-    begin();open_category(SETTINGS_PCS);keys.push_back(A_FLAG);back(2);finish();assert(hosts_calls==1);
-    bool mdns=cfg.mdns_discovery;begin();open_category(SETTINGS_PCS);down(1);keys.push_back(A_FLAG);back(2);finish();assert(cfg.mdns_discovery!=mdns);
-    // Confirmation is the existing handler: Cancel/B do nothing, failed save blocks reset/restart.
+    const int destinations[]={MENU_PCS,MENU_CONTROLS,MENU_APPEARANCE_SCREEN,MENU_ADVANCED,MENU_SYSTEM};
+    for(int c=0;c<5;c++){begin();down(c);keys.push_back(A_FLAG);back(2);finish();assert(draws.front().title=="Settings");bool found=false;for(auto d:draws)if(d.title==settings_pages[destinations[c]].title)found=true;assert(found);}
+    // Distinct four-row Stream root, direct profile selection, Video and Audio.
+    cfg=original;begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();
+    assert(cfg.fps==config_cycle_fps(original.fps,1) && cfg.stream_profile==0);
+    begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(cfg.bitrate_kbps==original.bitrate_kbps+1000);
+    cfg=original;begin(true);keys={RIGHT_FLAG,B_FLAG};finish();assert(cfg.fps==24 && cfg.width==1920);
+    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_STREAM:UI_HOME));}
+    cfg=original;begin();down(2);keys.push_back(A_FLAG);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);down(1);keys.push_back(RIGHT_FLAG);back(3);finish();assert(cfg.ui_background==1 && cfg.ui_accent==1);
+    unsigned prior=hosts_calls;begin();keys.push_back(A_FLAG);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);back(2);finish();assert(hosts_calls==prior+3);
+    bool mdns=cfg.mdns_discovery;begin();keys.push_back(A_FLAG);down(3);keys.push_back(RIGHT_FLAG);back(2);finish();assert(cfg.mdns_discovery!=mdns);
+    cfg=original;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);
+    begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);down(7);keys.push_back(A_FLAG);keys.push_back(A_FLAG);back(3);finish();assert(!cfg.fast_decode && cfg.stream_profile==0 && cfg.image_quality==1);
+    // The reused editor omits selection/coverage, saves only on explicit Save, and never writes global config.
+    unsigned prior_saves=saves;profile_editor_active=true;profile_editor_save=false;
+    cfg=original;begin(true);keys={A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(!profile_editor_save && saves==prior_saves && cfg.bitrate_kbps==original.bitrate_kbps+1000);
+    begin(true);keys={DOWN_FLAG,DOWN_FLAG,A_FLAG};finish();assert(profile_editor_save && saves==prior_saves);profile_editor_active=profile_editor_save=false;
+    // Destructive preferences require the existing explicit confirmation; failed writes preserve data.
     keys={A_FLAG};maintenance_menu(0);assert(keys.empty() && !restarts);
     cfg.bitrate_kbps=70000;strcpy(cfg.host,"PC");strcpy(cfg.host_uuid,"uuid");
-    keys={DOWN_FLAG,A_FLAG};maintenance_menu(0);assert(cfg.bitrate_kbps==30000 && !strcmp(cfg.host,"PC") && !strcmp(cfg.host_uuid,"uuid"));
+    keys={DOWN_FLAG,A_FLAG};maintenance_menu(0);assert(cfg.bitrate_kbps==12000 && !strcmp(cfg.host,"PC") && !strcmp(cfg.host_uuid,"uuid"));
     cfg.bitrate_kbps=50000;allow_write=false;keys={DOWN_FLAG,A_FLAG};maintenance_menu(0);assert(cfg.bitrate_kbps==50000);
     keys={DOWN_FLAG,A_FLAG};maintenance_menu(1);assert(!restarts);allow_write=true;
     keys={DOWN_FLAG,A_FLAG};maintenance_menu(1);assert(restarts==1);
-    begin();open_category(SETTINGS_SYSTEM);keys.push_back(A_FLAG);keys.push_back(RB_FLAG);finish();assert(restarts==1 && navigation_pending==UI_HOME);
-    // Technical info is read-only, and all three logging fields stay independently scoped.
-    original=cfg;begin();open_category(SETTINGS_DIAGNOSTICS);down(2);keys.push_back(A_FLAG);down(4);keys.push_back(A_FLAG);back(3);finish();assert(!memcmp(&cfg,&original,sizeof(cfg)));
-    begin();open_category(SETTINGS_DIAGNOSTICS);down(2);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);
-    keys.push_back(A_FLAG);down(2);keys.push_back(A_FLAG);back(4);finish();assert(cfg.diagnostic_log!=original.diagnostic_log && cfg.session_report!=original.session_report);
-    puts("PASS: real menu tree A/B, six categories, focus, ancestry, Stream tab in descendants, nested LB/RB, discoverable appearance/HUD, scoped fields and safe maintenance.");
+    puts("PASS: actual full-width Settings / Stream separation, A/B/Left/Right, inline fields, Stream tab, nested tabs, host details/test, appearance, decoder and safe maintenance.");
 }
 
 '''
-code=function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void settings_menu(void)\n{')
+code=function('static void cycle_stream_profile(')+'\n'+function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void settings_menu(void)\n{')
 Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',code))

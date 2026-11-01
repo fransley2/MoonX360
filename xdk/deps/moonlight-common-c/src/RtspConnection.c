@@ -393,6 +393,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
     char* responseBuffer;
     int responseBufferSize;
     int connectRetries;
+    uint64_t transactionDeadline;
 
     *error = -1;
     ret = false;
@@ -409,7 +410,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
             *error = LastSocketError();
             if (*error == ECONNREFUSED) {
                 // Try again after 500 ms on ECONNREFUSED
-                PltSleepMs(RTSP_RETRY_DELAY_MS);
+                for (int delay = 0; delay < RTSP_RETRY_DELAY_MS && !ConnectionInterrupted; delay += 10) PltSleepMs(10);
             }
             else {
                 // Fail if we get some other error
@@ -435,7 +436,21 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
     // Send our message split into smaller chunks to avoid MTU issues.
     // enableNoDelay() must have been called for sendMtuSafe() to work.
     enableNoDelay(sock);
-    err = sendMtuSafe(sock, serializedMessage, messageLen);
+    setSocketNonBlocking(sock, true);
+    transactionDeadline = PltGetMillis() + RTSP_RECEIVE_TIMEOUT_SEC * 1000;
+    offset = 0;err = 0;
+    while (offset < messageLen) {
+        struct pollfd writable;
+        if (ConnectionInterrupted || PltGetMillis() >= transactionDeadline) { err = SOCKET_ERROR;break; }
+        int chunk = messageLen - offset;if (chunk > 536) chunk = 536;
+        int sent = (int)send(sock, serializedMessage + offset, chunk, 0);
+        if (sent > 0) { offset += sent;continue; }
+        if (sent < 0 && (LastSocketError() == EWOULDBLOCK || LastSocketError() == EAGAIN)) {
+            writable.fd = sock;writable.events = POLLOUT;
+            if (pollSockets(&writable, 1, 50) >= 0) continue;
+        }
+        err = SOCKET_ERROR;break;
+    }
     if (err == SOCKET_ERROR) {
         *error = LastSocketError();
         Limelog("Failed to send RTSP message: %d\n", *error);
@@ -466,7 +481,15 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
 
         pfd.fd = sock;
         pfd.events = POLLIN;
-        err = pollSockets(&pfd, 1, RTSP_RECEIVE_TIMEOUT_SEC * 1000);
+        {
+            uint64_t until = transactionDeadline;
+            do {
+                uint64_t now = PltGetMillis();
+                if (ConnectionInterrupted || now >= until) { err = 0; break; }
+                int slice = (int)(until - now); if (slice > 50) slice = 50;
+                err = pollSockets(&pfd, 1, slice);
+            } while (err == 0);
+        }
         if (err == 0) {
             *error = ETIMEDOUT;
             Limelog("RTSP request timed out\n");
@@ -479,6 +502,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
         }
 
         err = recv(sock, &responseBuffer[offset], responseBufferSize - offset, 0);
+        if (err < 0 && (LastSocketError() == EWOULDBLOCK || LastSocketError() == EAGAIN)) continue;
         if (err < 0) {
             // Error reading
             *error = LastSocketError();

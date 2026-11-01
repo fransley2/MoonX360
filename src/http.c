@@ -24,6 +24,7 @@
 #endif
 
 #include <mbedtls/ssl.h>
+#include <mbedtls/rsa.h>
 #include <mbedtls/error.h>
 #include <mbedtls/net_sockets.h>   /* only for the MBEDTLS_ERR_NET_* codes */
 
@@ -38,6 +39,7 @@ struct conn {
     volatile int *cancel;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
+    mbedtls_pk_context client_key;
 };
 
 static bool probe_live(const struct conn *c)
@@ -83,7 +85,7 @@ static bool probe_open(struct conn *c,const char *host,int port,int timeout_ms,v
 
 static int bio_send(void *ctx, const unsigned char *buf, size_t len)
 {
-    int fd = *(int *)ctx;
+    struct conn *c=(struct conn*)ctx;int fd=c->fd;
     int n = (int)send(fd, (const char *)buf, (int)len, 0);
 
     if (n < 0)
@@ -93,58 +95,27 @@ static int bio_send(void *ctx, const unsigned char *buf, size_t len)
 
 static int bio_recv(void *ctx, unsigned char *buf, size_t len)
 {
-    int fd = *(int *)ctx;
+    struct conn *c=(struct conn*)ctx;int fd=c->fd;
     int n = (int)recv(fd, (char *)buf, (int)len, 0);
 
     if (n < 0)
-        return sock_again() ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_RECV_FAILED;
+        /* Appasset sockets are nonblocking. An empty receive buffer is normal
+         * during TLS negotiation; TIMEOUT here aborts the handshake before
+         * probe_wait can enforce its bounded readiness/deadline policy. */
+        return sock_again() ? (c->probe?MBEDTLS_ERR_SSL_WANT_READ:MBEDTLS_ERR_SSL_TIMEOUT) : MBEDTLS_ERR_NET_RECV_FAILED;
     return n;
 }
 
-static int tcp_connect(const char *host, int port, int timeout_ms)
-{
-    struct sockaddr_in sa;
-    int fd, one = 1;
-#ifdef _XBOX
-    DWORD tv = (DWORD)timeout_ms;   /* Winsock takes milliseconds */
-#else
-    struct timeval tv;
-#endif
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons((unsigned short)port);
-    sa.sin_addr.s_addr = inet_addr(host);
-    if (sa.sin_addr.s_addr == INADDR_NONE)
-        return -1;
-
-    fd = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd < 0)
-        return -1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
-#ifndef _XBOX
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-#endif
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
-
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        sock_close(fd);
-        return -1;
-    }
-    return fd;
-}
-
 static bool conn_open(struct conn *c, const char *host, int port, bool https,
-                      const struct client_identity *id, int timeout_ms,bool trace)
+                      const struct client_identity *id, int timeout_ms,bool trace,volatile int *cancel)
 {
     int ret;
     uint32_t begun=plat_now_ms();char timing[128];
 
-    memset(c, 0, sizeof(*c));
-    c->trace=trace;
-    c->fd = tcp_connect(host, port, timeout_ms);
+    /* Use the same absolute deadline for every request, including TLS and
+     * pairing. SO_RCVTIMEO does not bound blocking connect on Winsock. */
+    bool opened=probe_open(c,host,port,timeout_ms,cancel);c->trace=trace;
+    if(!opened)return false;
     if(trace && perf_enabled())perf_record(PERF_TCP,(uint64_t)(plat_now_ms()-begun)*1000);
     if(trace){snprintf(timing,sizeof(timing),"[NET] TCP %s:%d: %u ms (ok=%d)\n",host,port,plat_now_ms()-begun,c->fd>=0);plat_log(timing);}
     if (c->fd < 0)
@@ -156,6 +127,7 @@ static bool conn_open(struct conn *c, const char *host, int port, bool https,
     begun=plat_now_ms();
     mbedtls_ssl_init(&c->ssl);
     mbedtls_ssl_config_init(&c->conf);
+    mbedtls_pk_init(&c->client_key);
     if (mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
                                     MBEDTLS_SSL_PRESET_DEFAULT) != 0)
         return false;
@@ -164,18 +136,27 @@ static bool conn_open(struct conn *c, const char *host, int port, bool https,
      * pairing; we do not pin it yet, so the server certificate isn't checked.
      */
     mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
-    mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, crypto_drbg());
-    if (id && mbedtls_ssl_conf_own_cert(&c->conf, (mbedtls_x509_crt *)&id->cert, (mbedtls_pk_context *)&id->key) != 0)
-        return false;
+    mbedtls_ssl_conf_rng(&c->conf, crypto_rng_callback, crypto_drbg());
+    /* Cover HTTP may overlap launch HTTP. Each connection owns RSA blinding
+     * state; the paired identity is read-only and the shared DRBG is locked. */
+    if(id) {
+        if(mbedtls_pk_get_type(&id->key)!=MBEDTLS_PK_RSA ||
+           mbedtls_pk_setup(&c->client_key,mbedtls_pk_info_from_type(MBEDTLS_PK_RSA))!=0 ||
+           mbedtls_rsa_copy(mbedtls_pk_rsa(c->client_key),mbedtls_pk_rsa(id->key))!=0 ||
+           mbedtls_ssl_conf_own_cert(&c->conf,(mbedtls_x509_crt*)&id->cert,&c->client_key)!=0)return false;
+    }
     if (mbedtls_ssl_setup(&c->ssl, &c->conf) != 0)
         return false;
-    mbedtls_ssl_set_bio(&c->ssl, &c->fd, bio_send, bio_recv, NULL);
+    mbedtls_ssl_set_bio(&c->ssl, c, bio_send, bio_recv, NULL);
 
     while ((ret = mbedtls_ssl_handshake(&c->ssl)) != 0) {
+        if(!probe_live(c))return false;
+        if(c->probe && (ret==MBEDTLS_ERR_SSL_WANT_READ || ret==MBEDTLS_ERR_SSL_WANT_WRITE) &&
+           !probe_wait(c,ret==MBEDTLS_ERR_SSL_WANT_WRITE))return false;
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             char err[128];
             mbedtls_strerror(ret, err, sizeof(err));
-            printf("TLS handshake with %s:%d failed: %s\n", host, port, err);
+            if(trace || perf_enabled())printf("TLS handshake with %s:%d failed: %s\n", host, port, err);
             return false;
         }
     }
@@ -187,9 +168,11 @@ static void conn_close(struct conn *c)
 {
     uint32_t begun=plat_now_ms();
     if (c->tls) {
-        mbedtls_ssl_close_notify(&c->ssl);
+        /* Best effort only: never wait on a peer to acknowledge cancellation. */
+        if(probe_live(c))mbedtls_ssl_close_notify(&c->ssl);
         mbedtls_ssl_free(&c->ssl);
         mbedtls_ssl_config_free(&c->conf);
+        mbedtls_pk_free(&c->client_key);
     }
     if (c->fd >= 0)
         sock_close(c->fd);
@@ -202,12 +185,14 @@ static int conn_write(struct conn *c, const char *buf, size_t len)
     size_t off = 0;
 
     while (off < len) {
-        if(c->probe && !probe_wait(c,true))return -1;
+        if(c->probe && (!probe_live(c) || (!c->tls && !probe_wait(c,true))))return -1;
         int n = c->tls ? mbedtls_ssl_write(&c->ssl, (const unsigned char *)buf + off, len - off)
                        : (int)send(c->fd, buf + off, (int)(len - off), 0);
-        if (c->tls && (n == MBEDTLS_ERR_SSL_WANT_WRITE || n == MBEDTLS_ERR_SSL_WANT_READ))
+        if (c->tls && (n == MBEDTLS_ERR_SSL_WANT_WRITE || n == MBEDTLS_ERR_SSL_WANT_READ)) {
+            if(c->probe && !probe_wait(c,n==MBEDTLS_ERR_SSL_WANT_WRITE))return -1;
             continue;
-        if(c->probe && n<0 && sock_again())continue;
+        }
+        if(c->probe && !c->tls && n<0 && sock_again())continue;
         if (n <= 0)
             return -1;
         off += (size_t)n;
@@ -219,14 +204,16 @@ static int conn_write(struct conn *c, const char *buf, size_t len)
 static int conn_read(struct conn *c, char *buf, size_t len)
 {
     for (;;) {
-        if(c->probe && !probe_wait(c,false))return -1;
+        if(c->probe && (!probe_live(c) || (!c->tls && !probe_wait(c,false))))return -1;
         int n = c->tls ? mbedtls_ssl_read(&c->ssl, (unsigned char *)buf, len)
                        : (int)recv(c->fd, buf, (int)len, 0);
-        if(c->probe && n<0 && sock_again())continue;
+        if(c->probe && !c->tls && n<0 && sock_again())continue;
         if (!c->tls)
             return n;
-        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE)
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if(c->probe && !probe_wait(c,n==MBEDTLS_ERR_SSL_WANT_WRITE))return -1;
             continue;
+        }
         if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n == 0)
             return 0;
         return n < 0 ? -1 : n;
@@ -276,13 +263,14 @@ static bool http_get_impl(const char *host, int port, bool https, const char *pa
     struct conn c;
     char *req, *buf, *hdr_end, *body;
     size_t cap = 16384, len = 0, req_len;
+    size_t response_limit=probe?16384:(!strncmp(path,"/appasset",9)?1024*1024+16384:MAX_RESPONSE);
     long content_length = -1;
     bool chunked = false;
     int n;
 
     memset(out, 0, sizeof(*out));
     bool opened=probe?probe_open(&c,host,port,timeout_ms,cancel):
-        conn_open(&c, host, port, https, id, timeout_ms,strncmp(path,"/appasset",9)!=0);
+        conn_open(&c, host, port, https, id, timeout_ms,strncmp(path,"/appasset",9)!=0,cancel);
     if (!opened) {
         conn_close(&c);
         return false;
@@ -303,9 +291,10 @@ static bool http_get_impl(const char *host, int port, bool https, const char *pa
     for (;;) {
         if (len == cap) {
             char *nb;
-            if (cap >= (size_t)(probe?16384:MAX_RESPONSE))
+            if (cap >= response_limit)
                 goto fail;
             cap *= 2;
+            if(cap>response_limit)cap=response_limit;
             nb = (char *)realloc(buf, cap + 1);
             if (nb == NULL)
                 goto fail;
@@ -364,8 +353,13 @@ fail:
 
 bool http_get(const char *host,int port,bool https,const char *path,const struct client_identity *id,int timeout_ms,struct http_response *out)
 {
+    return http_get_cancel(host,port,https,path,id,timeout_ms,NULL,out);
+}
+
+bool http_get_cancel(const char *host,int port,bool https,const char *path,const struct client_identity *id,int timeout_ms,volatile int *cancel,struct http_response *out)
+{
     bool trace=strncmp(path,"/appasset",9)!=0;uint32_t begun=plat_now_ms();
-    bool ok=http_get_impl(host,port,https,path,id,timeout_ms,out,false,NULL);
+    bool ok=http_get_impl(host,port,https,path,id,timeout_ms,out,false,cancel);
     if(trace){char endpoint[48],line[144];size_t n=strcspn(path,"?");if(n>=sizeof(endpoint))n=sizeof(endpoint)-1;
         memcpy(endpoint,path,n);endpoint[n]=0;
         snprintf(line,sizeof(line),"[NET] HTTP %s done %u ms (ok=%d)\n",endpoint,plat_now_ms()-begun,ok);plat_log(line);}

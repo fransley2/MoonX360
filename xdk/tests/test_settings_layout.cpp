@@ -16,10 +16,13 @@ int main(void)
             children[entry.child]++;
         }
     }
-    for(int id=0;id<SET_COUNT;id++)assert(occurrences[id]==1);
+    for(int id=0;id<SET_COUNT;id++)assert(occurrences[id]==(id==SET_USER_PROFILES?0:1));
     for(int node=MENU_PCS;node<MENU_COUNT;node++)assert(children[node]==1);
-    for(int c=0;c<6;c++)assert(settings_pages[MENU_PCS+c].category==c);
-    assert(settings_node(SET_PRESET)==MENU_STREAM && settings_node(SET_USER_PROFILES)==MENU_STREAM);
+    assert(settings_node(SET_PRESET)==MENU_STREAM && settings_node(SET_USER_PROFILES)==-1);
+    int stream_rows=0,settings_rows=0;for(int i=0;i<SETTINGS_ENTRY_COUNT;i++){if(settings_entries[i].page==MENU_STREAM)stream_rows++;if(settings_entries[i].page==MENU_SETTINGS)settings_rows++;}
+    assert(stream_rows==4 && settings_rows==5);
+    assert(settings_pages[MENU_STREAM_ADJUST].parent==MENU_STREAM && settings_pages[MENU_AUDIO].parent==MENU_STREAM);
+    assert(settings_pages[MENU_DECODER].parent==MENU_STREAM_ADJUST && settings_pages[MENU_NETWORK].parent==MENU_STREAM_ADJUST);
     const int stream[]={SET_RES,SET_FPS,SET_BITRATE,SET_ADAPTIVE,SET_VSYNC,SET_IMAGE_QUALITY,SET_RENDERER};
     for(int id:stream)assert(settings_node(id)==MENU_STREAM_ADJUST);
     assert(settings_node(SET_AUDIO_MODE)==MENU_AUDIO && settings_node(SET_AUDIO)==MENU_AUDIO);
@@ -32,8 +35,9 @@ int main(void)
     assert(settings_node(SET_PACKET)==MENU_NETWORK && settings_node(SET_SOPS)==MENU_NETWORK && settings_node(SET_TEST_BITRATE)==MENU_NETWORK);
     assert(settings_node(SET_NETWORK_INFO)==MENU_TECHNICAL && settings_node(SET_RECOVERY_INFO)==MENU_TECHNICAL);
     assert(settings_node(SET_LOG_CAPTURE)==MENU_LOGGING && settings_node(SET_REPORT)==MENU_LOGGING);
-    assert(settings_kind(SET_PRESET)==UI_OPTION_CYCLE && settings_kind(SET_MDNS)==UI_OPTION_TOGGLE);
+    assert(settings_kind(SET_PRESET)==UI_OPTION_CYCLE && settings_kind(SET_LAUNCH_COVER)==UI_OPTION_CYCLE);
+    assert(settings_kind(SET_MDNS)==UI_OPTION_TOGGLE);
     assert(settings_kind(SET_LOG_VIEW)==UI_OPTION_OPEN && settings_kind(SET_BENCH)==UI_OPTION_ACTION);
     assert(settings_kind(SET_RECOVERY_INFO)==UI_OPTION_INFO && settings_kind(SET_DISPLAY_INFO)==UI_OPTION_INFO);
-    puts("PASS: all 38 setting IDs have exactly one destination; all submenu links have one parent; six categories and interaction types.");
+    puts("PASS: all setting IDs have exactly one destination; all submenu links have one parent; distinct Stream and application settings and interaction types.");
 }

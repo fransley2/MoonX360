@@ -11,9 +11,9 @@ int main(){
     char disk[SESSION_HISTORY_BYTES];size_t n=history_encode(&h,disk,sizeof(disk));assert(n && n<16384);
     session_history restored;history_decode(&restored,disk);
     history_home_targets t=history_home_select(&restored,"PC-A",ids,6,0);
-    assert(ids[t.resume]==66 && t.count==4);
-    for(int i=0;i<4;i++)assert(ids[t.recent[i]]==ids[4-i]); // 55,44,33,22; no duplicate Continue
-    t=history_home_select(&restored,"PC-A",ids,6,11);assert(ids[t.resume]==11 && t.count==4 && ids[t.recent[0]]==66);
+    assert(ids[t.resume]==66 && t.count==5);
+    for(int i=0;i<5;i++)assert(ids[t.recent[i]]==ids[4-i]); // 55,44,33,22; no duplicate Continue
+    t=history_home_select(&restored,"PC-A",ids,6,11);assert(ids[t.resume]==11 && t.count==5 && ids[t.recent[0]]==66);
     t=history_home_select(&restored,"PC-B",ids,6,0);assert(ids[t.resume]==11 && t.count==0);
     t=history_home_select(&restored,"PC-C",ids,6,0);assert(t.resume==-1 && !t.count);
     int changed_library[]={22,33};t=history_home_select(&restored,"PC-A",changed_library,2,66);
@@ -23,5 +23,5 @@ int main(){
     t=history_home_select(&restored,"PC-A",ids,6,0);assert(ids[t.resume]==22);
     // Compatibility with existing v1 history; loading preserves repeated sessions.
     session_history old={};history_push(&old,&dup);history_push(&old,&dup);n=history_encode(&old,disk,sizeof(disk));history_decode(&restored,disk);assert(restored.count==2);
-    puts("PASS: 80 repeat sessions retain distinct games; four unique host-filtered recents, active/fallback Continue, library removal, immediate update and v1 restart");
+    puts("PASS: 80 repeat sessions retain distinct games; up to eight unique host-filtered recents, active/fallback Continue, library removal, immediate update and v1 restart");
 }

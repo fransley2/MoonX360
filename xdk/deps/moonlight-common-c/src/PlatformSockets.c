@@ -518,7 +518,15 @@ SOCKET connectTcpSocket(struct sockaddr_storage* dstaddr, SOCKADDR_LEN addrlen, 
     // Wait for the connection to complete or the timeout to elapse
     pfd.fd = s;
     pfd.events = POLLOUT;
-    err = pollSockets(&pfd, 1, timeoutSec * 1000);
+    {
+        uint64_t until = PltGetMillis() + (uint64_t)timeoutSec * 1000;
+        do {
+            uint64_t now = PltGetMillis();
+            if (ConnectionInterrupted || now >= until) { err = 0; break; }
+            int slice = (int)(until - now); if (slice > 50) slice = 50;
+            err = pollSockets(&pfd, 1, slice);
+        } while (err == 0);
+    }
     if (err < 0) {
         // pollSockets() failed
         err = LastSocketError();

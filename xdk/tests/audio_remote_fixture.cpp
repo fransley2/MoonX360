@@ -5,6 +5,28 @@
 #include <Limelight.h>
 #include "../../../src/audio_layout.h"
 #include "../../../src/performance.h"
+#include "../../../src/launch_cover.h"
+#include "../../../src/connection_flow.h"
+static bool task_interrupt_transport;static unsigned task_limit_ms;
+static bool launch_active(){return false;}
+static bool launch_cancelled(){return false;}
+static bool launch_prepared=true;
+static volatile int launch_handoff;
+static struct {const void *art;} launch_app;
+static struct {bool launch_resumed;} server;
+static struct {bool launch_animation;} cfg;
+static int app_id=42,cover_delay=5000;
+static void plat_atomic_store(volatile int *p,int v){*p=v;}
+static void launch_end(){launch_prepared=false;}
+static void launch_begin(unsigned,bool){}
+static void launch_set_status(launch_status){}
+static void launch_retry(){assert(launch_prepared);}
+static void art_launch_begin(int){}
+static void art_launch_tick(){}
+static void ui_draw_launch(const void*,const char*,uint32_t){}
+static void launch_present(){assert(launch_prepared);}
+static bool launch_prepare(){launch_prepared=true;return true;}
+static uint32_t plat_now_ms(){return 0;}
 typedef unsigned char BYTE;typedef unsigned short WORD;typedef unsigned DWORD;
 typedef long LONG;
 static LONG InterlockedExchange(volatile LONG *p,LONG v){LONG old=*p;*p=v;return old;}

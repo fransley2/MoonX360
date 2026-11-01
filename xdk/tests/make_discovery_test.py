@@ -8,9 +8,12 @@ end=s.index('/* ------------------------------------------------------------ IP 
 code=s[start:end]
 fixture=r'''
 #include <assert.h>
+#include "../src/input.h"
+static int input_menu_pressed(){return 0;}
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "../src/config.h"
 #include "../src/product_features.h"
 #include "../src/wake.h"
@@ -18,10 +21,11 @@ fixture=r'''
 #include "../src/library_state.h"
 static session_history session_history;static library_favorites favorites;
 #include <Limelight.h>
-struct gs_server {char address[64],hostname[64],mac[18],uuid[80],app_version[32],gfe_version[32];unsigned short http_port;bool paired;int info_timeout_ms;char *rtsp_session_url;SERVER_INFORMATION info;};
+struct gs_server {char address[64],hostname[64],mac[18],uuid[80],app_version[32],gfe_version[32];unsigned short http_port;bool paired;int info_timeout_ms;volatile int *cancel,*wake_cancel;char *rtsp_session_url;SERVER_INFORMATION info;};
 #include "../src/mdns.h"
 #include "../src/host_cache.h"
 static config cfg;
+static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
 static const char *host_key(void);
 static gs_server server;
 static bool server_ok,have_identity=true,worker_context,fail_thread,probe_valid=true;
@@ -69,7 +73,7 @@ int main(){
     assert(discovery_tick() && !server_ok && !hosts.hosts[0].online);
     cfg.mdns_discovery=true;now+=60001;discovery_tick();assert(probe_thread && sends && polls);
     unsigned dns_sends=sends,dns_polls=polls;discovery_pause();
-    assert(!probe_thread && draws && joins==3);
+    assert(!probe_thread && draws && joins==3 && server.cancel==NULL && server.wake_cancel==NULL);
     /* Streaming never invokes discovery_tick: verify idle scheduler does no independent work. */
     now+=600000;assert(sends==dns_sends && polls==dns_polls);
     memset(attempts,0,sizeof(attempts));fail_thread=true;unsigned calls=http_calls;
@@ -79,10 +83,10 @@ int main(){
 '''
 # No hidden discovery activity or changed stream negotiation.
 stream=s[s.index('static bool stream_once('):s.index('static void stream(int app_id,')]
-assert 'discovery_' not in stream and 'mdns_' not in stream
+assert stream.count('discovery_pause();')==1 and 'discovery_tick' not in stream and 'mdns_' not in stream
 for field,value in [('width','cfg.width'),('height','cfg.height'),('fps','cfg.fps'),('bitrate','cfg.bitrate_kbps')]:
     assert f'lj.sc.{field} = {value};' in stream
 assert 'lj.sc.supportedVideoFormats = VIDEO_FORMAT_H264;' in stream
 home=s[s.index('static void main_menu(void)'):]
-assert home.index('discovery_pause(); /*')<home.index('if(sel==0)')
+assert stream.index('discovery_pause();')<stream.index('refresh_server();')
 Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',code))

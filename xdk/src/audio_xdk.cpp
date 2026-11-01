@@ -3,6 +3,7 @@
  * big-endian samples). Runs on Moonlight's audio thread.
  */
 #include "xdk.h"
+#include "../../src/launch_cover.h"
 #include "../../src/performance.h"
 
 #include <xaudio2.h>
@@ -145,11 +146,12 @@ static void audio_decode_and_play(char *data, int len)
     }
 
     int volume=(int)InterlockedCompareExchange(&desired_volume,0,0);
+    if(launch_active())volume=0;
     if(volume!=applied_volume && SUCCEEDED(voice->SetVolume(volume/100.0f)))applied_volume=volume;
     {PerfScope decode(PERF_AUDIO_DECODE);
     samples = opus_multistream_decode(decoder, (const unsigned char *)data, len, out, MAX_FRAME_SAMPLES, 0);}
-    if (samples <= 0)
-        return;
+    if (samples <= 0 || launch_active())
+        return; /* Keep Opus history, discard covered PCM rather than queueing it. */
 
     /* Decode every packet to preserve Opus state, even when playback is behind. */
     voice->GetState(&state);

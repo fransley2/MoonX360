@@ -44,7 +44,7 @@ static int fake_recv(int,char *out,int capacity,int){
 #define MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY (-3)
 static int mbedtls_ssl_write(int*,const unsigned char*,size_t){assert(false);return -1;}
 static int mbedtls_ssl_read(int*,unsigned char*,size_t){assert(false);return -1;}
-static bool conn_open(conn*,const char*,int,bool,const client_identity*,int,bool){assert(false);return false;}
+static bool conn_open(conn*,const char*,int,bool,const client_identity*,int,bool,volatile int*){assert(false);return false;}
 static void conn_close(conn *c){assert(c->fd==1 && !c->tls);closed++;c->fd=-1;}
 #define MAX_RESPONSE (4*1024*1024)
 /* ACTUAL_HTTP */

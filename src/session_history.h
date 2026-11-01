@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "performance_advisor.h"
+#include "wake.h"
 
 #define SESSION_HISTORY_MAX 32
 #define SESSION_HISTORY_BYTES 16384
@@ -12,6 +13,7 @@ struct session_record {
     int app_id, width, height, fps, bitrate;
     unsigned shown_milli, decode_avg_us, decode_p99_us, rtt_ms;
     int grade, cause, rtt_valid, tail_valid;
+    char app_uuid[80]; /* optional protocol UUID; old history remains readable */
 };
 struct session_history { int count; struct session_record records[SESSION_HISTORY_MAX]; };
 static void history_text(char *dst,size_t cap,const char *src) {
@@ -43,9 +45,9 @@ static size_t history_encode(const struct session_history *h,char *out,size_t ca
     for(int i=0;i<h->count && i<SESSION_HISTORY_MAX;i++) {
         const struct session_record *r=&h->records[i];char host[96],app[64];
         history_text(host,sizeof(host),r->host);history_text(app,sizeof(app),r->app);
-        n=snprintf(out+used,cap-used,"%u\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%u\t%u\t%u\t%u\t%d\t%d\t%d\t%d\n",
+        n=snprintf(out+used,cap-used,"%u\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%u\t%u\t%u\t%u\t%d\t%d\t%d\t%d\t%s\n",
             r->timestamp,host,r->app_id,app,r->width,r->height,r->fps,r->bitrate,
-            r->shown_milli,r->decode_avg_us,r->decode_p99_us,r->rtt_ms,r->grade,r->cause,r->rtt_valid,r->tail_valid);
+            r->shown_milli,r->decode_avg_us,r->decode_p99_us,r->rtt_ms,r->grade,r->cause,r->rtt_valid,r->tail_valid,r->app_uuid);
         if(n<0 || (size_t)n>=cap-used)return 0;used+=(size_t)n;
     }return used;
 }
@@ -60,6 +62,8 @@ static void history_decode(struct session_history *h,const char *text) {
         int fields=sscanf(line,"%u\t%95[^\t]\t%d\t%63[^\t]\t%d\t%d\t%d\t%d\t%u\t%u\t%u\t%u\t%d\t%d\t%d\t%d",
             &r.timestamp,r.host,&r.app_id,r.app,&r.width,&r.height,&r.fps,&r.bitrate,
             &r.shown_milli,&r.decode_avg_us,&r.decode_p99_us,&r.rtt_ms,&r.grade,&r.cause,&r.rtt_valid,&r.tail_valid);
+        const char *uuid=line;int tabs=0;while(*uuid && tabs<16){if(*uuid++=='\t')tabs++;}
+        if(tabs==16 && wake_identity_valid(uuid))snprintf(r.app_uuid,sizeof(r.app_uuid),"%s",uuid);
         if(fields==16 && r.app_id>0 && r.shown_milli<=240000 && r.width>0 && r.width<=1920 && r.height>0 && r.height<=1080 &&
            r.fps>=24 && r.fps<=60 && r.bitrate>=1000 && r.bitrate<=70000 &&
            r.grade>=PERF_UNKNOWN && r.grade<=PERF_UNSTABLE && r.cause>=0 && r.cause<=PERF_GPU &&
@@ -70,7 +74,7 @@ static void history_decode(struct session_history *h,const char *text) {
 
 /* Library indices, never unverified history titles/IDs. Continue owns its
  * cover/name/action; the recent strip excludes that same target. */
-struct history_home_targets { int resume,count,recent[4]; };
+struct history_home_targets { int resume,count,recent[8]; };
 static struct history_home_targets history_home_select(const struct session_history *h,const char *host,
     const int *library_ids,int library_count,int running_id)
 {
@@ -83,7 +87,7 @@ static struct history_home_targets history_home_select(const struct session_hist
         if(out.resume<0){out.resume=index;continue;}
         if(library_ids[out.resume]==r->app_id)continue;
         bool duplicate=false;for(int j=0;j<out.count;j++)if(library_ids[out.recent[j]]==r->app_id)duplicate=true;
-        if(!duplicate && out.count<4)out.recent[out.count++]=index;
+        if(!duplicate && out.count<8)out.recent[out.count++]=index;
     }
     return out;
 }

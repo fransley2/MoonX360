@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "../../src/config.h"
+#define STORAGE_OS_ERROR() ((unsigned)GetLastError())
 #include "../../src/safe_storage.h"
 #include "../../src/platform.h"
 #include "../../src/ui/canvas.h"
@@ -302,7 +303,10 @@ char *storage_read(const char *name, size_t *len)
     if(fseek(f,0,SEEK_END)!=0){fclose(f);errno=EIO;return NULL;}
     size = ftell(f);
     if(size<0 || ((!strcmp(name,"profiles-a.tsv") || !strcmp(name,"profiles-b.tsv")) && size>=CONFIG_PROFILES_BYTES) ||
-       (!strcmp(name,"sessions.tsv") && size>16384)) {fclose(f);errno=ERANGE;return NULL;}
+       (!strcmp(name,"sessions.tsv") && size>16384) ||
+       ((!strcmp(name,"launch-settings.tsv") || !strcmp(name,"launch-settings.tsv.bak")) && size>8192) ||
+       (!strcmp(name,"game-bindings.tsv") && size>8192) ||
+       (!strcmp(name,"profile-link-pending.tsv") && size>34816)) {fclose(f);errno=ERANGE;return NULL;}
     if(fseek(f,0,SEEK_SET)!=0){fclose(f);errno=EIO;return NULL;}
     buf = (char *)malloc(size + 1);
     if (buf && fread(buf, 1, size, f) != (size_t)size) {
@@ -318,21 +322,35 @@ char *storage_read(const char *name, size_t *len)
     return buf;
 }
 
+static void storage_log_failure(const char *path)
+{
+    const struct storage_write_diagnostic *d=&storage_write_diagnostic;
+    char line[320];snprintf(line,sizeof(line),"[STORAGE] path=%s stage=%s errno=%d os=%u expected=%u written/read=%u\n",
+        path,d->stage?d->stage:"unknown",d->error,d->os_error,(unsigned)d->expected,(unsigned)d->actual);
+    plat_log(line);errno=d->error;
+}
 bool storage_write(const char *name, const void *data, size_t len)
 {
-    char path[128];
-    FILE *f;
-    bool ok;
-
-    if (!storage_ok)
-        return false;
-    snprintf(path, sizeof(path), "%s\\%s", storage_root, name);
-    if(storage_recoverable_name(name))return storage_replace_file(path,data,len);
-    f = fopen(path, "wb");
-    if (f == NULL)
-        return false;
-    ok = fwrite(data, 1, len, f) == len;
-    ok = (fclose(f) == 0) && ok;
+    char path[128];bool ok=false;
+    int n=snprintf(path,sizeof(path),"%s\\%s",storage_root,name);
+    if(n<0 || (size_t)n>=sizeof(path)) {
+        storage_write_failed("path",EINVAL,0,len,0);storage_log_failure(name);return false;
+    }
+    DWORD attr=GetFileAttributesA(storage_root);DWORD os=GetLastError();
+    if(!storage_ok || attr==INVALID_FILE_ATTRIBUTES || !(attr&FILE_ATTRIBUTE_DIRECTORY)) {
+        storage_write_failed("storage-directory",EIO,os,len,0);storage_log_failure(path);return false;
+    }
+    if(storage_recoverable_name(name))ok=storage_replace_file(path,data,len);
+    else {
+        errno=0;FILE *f=fopen(path,"wb");int e=errno;unsigned error=GetLastError();
+        if(!f)storage_write_failed("open",e,error,len,0);
+        else {
+            errno=0;size_t written=fwrite(data,1,len,f);e=errno;error=GetLastError();
+            if(written!=len){fclose(f);storage_write_failed("write",e,error,len,written);}
+            else {errno=0;int rc=fclose(f);e=errno;error=GetLastError();ok=rc==0;if(!ok)storage_write_failed("close",e,error,len,written);}
+        }
+    }
+    if(!ok)storage_log_failure(path);
     return ok;
 }
 

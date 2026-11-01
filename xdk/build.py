@@ -20,7 +20,7 @@ XDK_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(XDK_DIR)
 DEPS = os.path.join(XDK_DIR, "deps")
 OUT = os.path.abspath(os.environ.get("XDK_BUILD_DIR", os.path.join(XDK_DIR, "build")))
-XEDK = os.environ.get("XEDK", r"C:\AI\xbox\dev kits\XBOX360 SDK 21256.3\extracted\XDK")
+XEDK = os.environ.get("XEDK", r"C:\Program Files (x86)\Microsoft Xbox 360 SDK")
 JUL12 = os.path.join(XEDK, "TechPreview", "Jul12Compiler")
 
 TOOLS = {name: os.path.join(JUL12, "bin", "win32", name + ".exe") for name in ("cl", "lib", "link")}

@@ -45,6 +45,7 @@ static const char *gs_error(){return "Permission denied";}
 static void host_options_menu(){}
 static bool stream_once(int,const char*){stream_calls++;used_width=cfg.width;used_audio=cfg.audio_mode;return false;}
 static void refresh_server(){}
+static void remember_played_art(int){}
 /* ACTUAL_FUNCTIONS */
 int main(){
     config_defaults(&cfg);cfg.language=2;strcpy(cfg.host,"10.1.2.3");hosts.count=1;strcpy(hosts.hosts[0].uuid,"ABC");strcpy(hosts.hosts[0].name,"Server");strcpy(hosts.hosts[0].ip,cfg.host);hosts.hosts[0].port=47989;

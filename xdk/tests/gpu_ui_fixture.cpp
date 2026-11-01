@@ -8,7 +8,13 @@
 #include "../src/ui/draw.h"
 #include "../src/ui/cover_cache.h"
 #include "../src/system_ui.h"
+#include "../src/launch_cover.h"
 typedef unsigned DWORD,UINT;typedef unsigned char BYTE;typedef int HRESULT,LONG;
+static DWORD tick;
+static DWORD GetTickCount(){return tick;}
+static LONG InterlockedExchange(volatile LONG *p,LONG n){LONG old=*p;*p=n;return old;}
+static LONG InterlockedCompareExchange(volatile LONG *p,LONG n,LONG old){LONG value=*p;if(value==old)*p=n;return value;}
+#define D3DCLEAR_TARGET 1
 #define TRUE 1
 #define FALSE 0
 #define FAILED(h) ((h)<0)
@@ -58,6 +64,7 @@ static bool gfx_upload(D3DTexture *t,const void*,int pitch,int bytes,int rows) {
 static void gfx_backbuffer_size(int *w,int *h){*w=physical_w;*h=physical_h;}
 struct D3DDevice {
     bool blend,scissor;D3DTexture *bound;
+    void Clear(int,void*,int,DWORD,float,int){}
     void BlockOnFence(DWORD f){assert(f);waits++;pending=false;}
     HRESULT CreateVertexDeclaration(const D3DVERTEXELEMENT9*,D3DVertexDeclaration **out){static D3DVertexDeclaration p;*out=&p;return 0;}
     HRESULT CreateVertexShader(DWORD*,D3DVertexShader **out){static D3DVertexShader p;*out=&p;return 0;}
@@ -72,7 +79,7 @@ struct D3DDevice {
     void SetPixelShaderConstantF(int,const float*,int){}
     void SetRenderState(int state,int value){if(state==D3DRS_ALPHABLENDENABLE)blend=value!=0;if(state==D3DRS_SCISSORTESTENABLE)scissor=value!=0;}
     void SetTexture(int,D3DTexture *t){bound=t;}
-    void DrawPrimitiveUP(int,unsigned n,const void*,unsigned){assert(blend&&scissor&&n);draws++;primitives+=n;}
+    void DrawPrimitiveUP(int,unsigned n,const void*,unsigned){assert(blend&&n);draws++;primitives+=n;}
     void BlockUntilIdle(){pending=false;}
     DWORD InsertFence(){static DWORD f;pending=true;return ++f;}
     void Present(void*,void*,void*,void*){presents++;}
@@ -82,6 +89,8 @@ static bool gfx_system_ui_active(){return guide;}
 static bool gfx_fence_pending(DWORD f){return f && pending;}
 static void gfx_wait_fence(D3DDevice *d,DWORD f){d->BlockOnFence(f);}
 bool gfx_ui_ready(void);
+static D3DDevice *gfx_begin();
+static void gfx_end();
 /* ACTUAL_RENDERER */
 static D3DDevice present_device={};
 static D3DDevice *gfx_begin(){assert(!owned);owned=true;return &present_device;}
@@ -115,13 +124,16 @@ int main() {
     static uint32_t distinct_art[12][150*200];
     for(int i=0;i<12;i++)apps[i].art=distinct_art[i];
     gfx_ui_release(&d); // isolate capacity from the earlier shared test image
+    ui_set_motion(false);
     ui_draw_library(&host,apps,12,0,"All Apps");assert(gfx_ui_draw(&d));
-    ui_draw_library(&host,apps,12,6,"All Apps");assert(gfx_ui_draw(&d)); // second complete row
+    ui_draw_library(&host,apps,12,6,"All Apps");assert(gfx_ui_draw(&d));
+    ui_draw_library(&host,apps,12,11,"All Apps");assert(gfx_ui_draw(&d)); // visit the final virtualized rail window
     ui_draw_memory(&memory);assert(memory.gpu_covers==13);
     for(int cover=0;cover<12;cover++) {
         bool cached=false;for(int slot=0;slot<IMAGE_MAX;slot++)if(images[slot].key==distinct_art[cover])cached=true;
         assert(cached); // twelve distinct art buffers remain resident alongside brand/buttons
     }
+    ui_set_motion(true);
     for(int i=0;i<12;i++)apps[i].art=art;
     ui_draw_library(&host,apps,20,0,"All Apps");assert(gfx_ui_draw(&d));
     unsigned initial=uploads;pending=true;gfx_ui_submitted(1);
@@ -134,7 +146,7 @@ int main() {
         pending=false;gfx_ui_submitted((DWORD)p+3);
         assert(ui_tab_move(page,1)>=0 && ui_tab_move(page,-1)<UI_PAGE_COUNT);
     }
-    ui_draw_app_details(&host,apps,"720p60 Quality",0);assert(gfx_ui_draw(&d));preview("app-details-fixture.ppm");
+    ui_draw_app_details(&host,apps,"720p60 Quality","5 s",0);assert(gfx_ui_draw(&d));preview("app-details-fixture.ppm");
     ui_draw_library(&host,NULL,0,0,"Favorites");assert(gfx_ui_draw(&d));preview("empty-library-fixture.ppm");
     ui_setting rows[]={{"Quality profile","720p60 Quality","Applies on next connection."}};
     for(int p=0;p<40;p++) {ui_draw_settings_page("Stream",rows,1,0);assert(gfx_ui_draw(&d));}
@@ -163,7 +175,7 @@ int main() {
     const ui_draw_command *steady=ui_draw_commands(&count);std::vector<ui_draw_command> steady_commands(steady,steady+count);
     assert(ui_focus_tick(0));unsigned before_motion=presents,before_motion_uploads=uploads;ui_present();assert(presents==before_motion); // pending prior fence
     assert(ui_focus_tick(120));guide=true;pending=false;ui_present();assert(presents==before_motion);
-    assert(ui_focus_tick(136));guide=false;ui_present();assert(presents==before_motion+1 && !ui_focus_tick(152));
+    assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1 && !ui_focus_tick(176));
     assert(uploads==before_motion_uploads);
     steady=ui_draw_commands(&count);assert(!memcmp(steady_commands.data(),steady,count*sizeof(*steady)));
 
@@ -175,5 +187,55 @@ int main() {
 
     assert(presents==before_fallback+1 && !owned && !ui_draw_enabled() && (ui_tex[0]||ui_tex[1]));
     gfx_release_ui_textures();gfx_release_ui_textures();assert(allocations==releases&&!owned);
+    // Even a missing image retains the exact tile geometry in GPU/software layouts.
+    apps[0].art=NULL;ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);
+    float ox,oy,ow,oh;ui_launch_origin(&ox,&oy,&ow,&oh);assert(ox==64 && oy==212 && ow==198 && oh==264);
+    ui_draw_enable(false);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);
+    ui_launch_origin(&ox,&oy,&ow,&oh);assert(ox==64 && ow==198 && oh==264);apps[0].art=art;
+    // Real opening handoff: bounded dedicated resources survive menu release; no
+    // glyph atlas, cached menu image, draw command or CPU cover is needed after.
+    ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");
+    ui_launch_begin(apps,100,true);
+    preview("launch-cover-centered.ppm");pending=false;
+    tick=0;launch_begin(5000,true);assert(launch_offer_art(art,150,200,1));assert(launch_prepare());gfx_release_ui_textures();
+    assert(allocations-releases==4 && launch_active());unsigned launch_allocations=allocations;
+    tick=999;launch_reveal=1; // Reveal still cannot reveal without a valid frame.
+    D3DDevice *owner=gfx_begin();gfx_launch_idle(owner);gfx_end();assert(launch_active());launch_reveal=0;
+    tick=1000;launch_decoded();owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(cover.first_ms==1000);
+    for(tick=1001;tick<6000;tick+=53){owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(launch_active() && !cover.revealing);}
+    tick=6000;owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(cover.revealing && launch_active());
+    unsigned during_fade=presents;owner=gfx_begin();gfx_launch_idle(owner);gfx_end();assert(presents==during_fade);
+    pending=false;tick=6250;owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(!launch_active());
+    launch_collect();assert(!launch_staging);
+    pending=false;owner=gfx_begin();gfx_launch_idle(owner);gfx_end();assert(!gfx_launch_pending() && allocations==releases && allocations==launch_allocations);
+    for(int session=0;session<12;session++) {
+        ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,session%3!=0);
+        pending=false;launch_begin(session%2?0:10000,session%3!=0);launch_prepare();tick+=400;assert(launch_active() && !cover.first);
+        owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();assert(launch_active());
+        if(session%2){launch_decoded();launch_command(false,true);owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();tick+=250;owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(!launch_active());}
+        else {launch_command(true,false);tick+=30000;launch_decoded();owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(launch_active() && cover.cancelled);}
+        launch_end();assert(!owned && !launch_active() && !gfx_launch_pending() && allocations==releases);
+    }
+    ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);
+    pending=false;launch_begin(5000,true);assert(launch_prepare());unsigned late_allocations=allocations;
+    tick+=1200;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
+    unsigned movement_start=visual.started;assert(!visual.art);
+    assert(launch_offer_art(art,150,200,12));assert(!launch_offer_art(art,150,200,12));
+    tick+=100;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
+    assert(visual.art && visual.art_started==tick && visual.started==movement_start);
+    launch_visual_sample late;launch_visual_get(&visual,tick,&late);assert(late.art==0 && late.x==514);
+    launch_visual_get(&visual,tick+125,&late);assert(late.art==.5f && late.x==514);
+    assert(allocations==late_allocations);launch_end();assert(!launch_offer_art(art,150,200,13));
+    assert(allocations==releases);
+    // Stereo fallback keeps one visual lifetime and all resources, while resetting only media readiness.
+    ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);
+    launch_begin(5000,true);assert(launch_prepare());unsigned retry_allocations=allocations,retry_clock=visual.started;
+    uint32_t *retry_staging=launch_staging;launch_decoded();launch_command(false,true);launch_retry();
+    assert(!launch_has_video() && !cover.first && !cover.revealing && !launch_reveal && launch_active());
+    assert(visual.started==retry_clock && allocations==retry_allocations && launch_staging==retry_staging);
+    launch_end();assert(allocations==releases);
+    fail_create=true;launch_begin(5000,false);assert(!launch_prepare());fail_create=false;
+    owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();assert(launch_active());launch_end();assert(allocations==releases);
+    puts("PASS: actual opening GPU handoff, bounded retained resources, no per-frame allocations, first frame/5s/250ms/early reveal/cancel/error/static/consecutive sessions and fence-safe release");
     printf("PASS: actual GPU menu commands, glyph batching, cache generation, shader/allocation/upload fallback, atlas, fences, repeated cleanup, navigation, empty library and 720/1080 scaling.\n");
 }

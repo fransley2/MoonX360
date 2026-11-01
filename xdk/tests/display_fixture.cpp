@@ -19,7 +19,7 @@ enum {D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,D3DDECLUSAG
  D3DDEVTYPE_HAL,D3DCREATE_HARDWARE_VERTEXPROCESSING,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,
  D3DTEXF_LINEAR,D3DTEXF_NONE,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP,
  D3DRS_CULLMODE,D3DCULL_NONE,D3DRS_ZENABLE,D3DRS_HALFPIXELOFFSET,D3DRS_ALPHABLENDENABLE,D3DPT_TRIANGLESTRIP};
-enum {GFX_SHADER_RGB,GFX_SHADER_YUV_FAST,GFX_SHADER_YUV_QUALITY};
+enum {GFX_SHADER_RGB,GFX_SHADER_YUV_FAST,GFX_SHADER_YUV_QUALITY,GFX_SHADER_RGBA};
 struct vertex {float x,y,u,v;};
 struct D3DVERTEXELEMENT9 {int a,b,c,d,e,f;};
 #define D3DDECL_END() {0,0,0,0,0,0}
@@ -75,7 +75,7 @@ static Direct3D *Direct3DCreate9(int) { return &direct; }
 static void QueryPerformanceFrequency(LARGE_INTEGER *v) { v->QuadPart=1000000; }
 static void XGetVideoMode(XVIDEO_MODE *m) { *m=video_mode; }
 static void InitializeCriticalSection(int *p) { *p=1; }
-static const char *vs_src="vs",*ps_rgb_src="rgb",*ps_yuv_src="fast",*ps_yuv_quality_src="quality",*ps_rgba_src="rgba";
+static const char *vs_src="vs",*ps_rgb_src="rgb",*ps_rgba_src="rgba",*ps_yuv_src="fast",*ps_yuv_quality_src="quality";
 struct ID3DXBuffer {DWORD code;const DWORD *GetBufferPointer(){return &code;}void Release(){delete this;} };
 static ID3DXBuffer *compile(const char *s,const char*) { return reject_quality && !strcmp(s,"quality") ? NULL : new ID3DXBuffer; }
 /* ACTUAL_INIT */

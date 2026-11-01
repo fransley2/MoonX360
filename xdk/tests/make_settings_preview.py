@@ -41,7 +41,7 @@ static void name(const char *page,int selected) {
 }
 int main(void) {
     const int sizes[][2]={{640,480},{1280,720}};
-    const char *values[]={"1280x720","30 FPS","12 Mbps","On","GPU","On","On","Off","Run test","Standard","LB+RB+L3+R3","L 0-100% | R 0-100%","Off","1024 bytes","Off","Off","View logs","Auto","12 Mbps","Auto Quality","On","12 sessions","View analysis","On","View usage","Automatic (current)","View metrics","Manual","1280x720 / 60 Hz","Auto","Portuguese (Brazil)","Balanced","4","Confirm...","Confirm...","Manage","Stereo","Back + R3"};
+    const char *values[]={"1280x720","30 FPS","12 Mbps","On","GPU","On","On","Off","Run test","Standard","LB+RB+L3+R3","L 0-100% | R 0-100%","Off","1024 bytes","Off","Off","View logs","Auto","12 Mbps","Auto Quality","On","12 sessions","View analysis","On","View usage","Automatic (current)","View metrics","Manual","1280x720 / 60 Hz","Auto","Portuguese (Brazil)","Balanced","4","Confirm...","Confirm...","Manage","Stereo","Back + R3","Save","5 s"};
     static_assert(sizeof(values)/sizeof(values[0])==SET_COUNT,"Preview needs every setting value");
     for(int size=0;size<2;size++)for(language=0;language<CONFIG_LANGUAGE_COUNT;language++) {
         width=sizes[size][0];height=sizes[size][1];assert(ui_init(width,height));ui_draw_enable(true);ui_set_language(language);

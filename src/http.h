@@ -18,6 +18,11 @@ struct http_response {
  */
 bool http_get(const char *host, int port, bool https, const char *path,
               const struct client_identity *id, int timeout_ms, struct http_response *out);
+/* One absolute connect/TLS/send/body deadline; cooperative cancellation in <=10ms
+ * socket waits. The worker owns and closes its socket (no cross-thread fd reuse). */
+bool http_get_cancel(const char *host,int port,bool https,const char *path,
+                     const struct client_identity *id,int timeout_ms,
+                     volatile int *cancel,struct http_response *out);
 void http_response_free(struct http_response *r);
 /* Wake-only plain HTTP: one absolute deadline covers connect/send/read;
  * cancellation is sampled at most every 10 ms while waiting for the socket. */

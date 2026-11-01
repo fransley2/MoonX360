@@ -8,6 +8,20 @@
 struct game_binding {char host[96],profile[80];int app;};
 struct game_bindings {int count;bool read_only;struct game_binding items[GAME_BINDINGS_MAX];};
 static unsigned feature_checksum(const char *s,size_t n) {unsigned h=2166136261u;for(size_t i=0;i<n;i++)h=(h^(unsigned char)s[i])*16777619u;return h;}
+/* The Xbox CRT accepts %n but does not store its result. Parse the complete
+ * checksum record explicitly, including its length and terminating LF. */
+static bool feature_checksum_read(const char *p,size_t bytes,unsigned *hash)
+{
+    if(bytes!=9 || p[8]!='\n')return false;
+    unsigned value=0;
+    for(int i=0;i<8;i++) {
+        unsigned digit;char c=p[i];
+        if(c>='0' && c<='9')digit=c-'0';else if(c>='a' && c<='f')digit=c-'a'+10;
+        else if(c>='A' && c<='F')digit=c-'A'+10;else return false;
+        value=(value<<4)|digit;
+    }
+    *hash=value;return true;
+}
 static bool feature_search(const char *text,const char *query)
 {
     if(!*query)return true;
@@ -64,7 +78,7 @@ static bool bindings_decode_impl(struct game_bindings *s,const char *text)
         profile[l]=0;if(!binding_profile_valid(profile) || binding_find(s,host,app)>=0 || !binding_set(s,host,app,profile)){s->read_only=true;return false;}
         p=end+1;
     }
-    unsigned h;int consumed=0;if(sscanf(p,"CHECKSUM %8x\n%n",&h,&consumed)!=1 || consumed!=18 || p[consumed] || h!=feature_checksum(text,p-text)){s->read_only=true;return false;}
+    unsigned h;if(strlen(p)!=18 || !feature_checksum_read(p+9,9,&h) || h!=feature_checksum(text,p-text)){s->read_only=true;return false;}
     return true;
 }
 static bool bindings_decode(struct game_bindings *s,const char *text)

@@ -18,6 +18,7 @@ fixture=r"""
 #include <Limelight.h>
 #include "../src/config.h"
 #include "../src/app_list_cache.h"
+#include "../src/host_compat.h"
 static app_list_cache app_cache;
 static uint32_t plat_now_ms();
 #include "../src/settings_layout.h"
@@ -31,6 +32,14 @@ struct Done {};
 struct plat_thread {};
 static config cfg;
 static const char *host_key(){return cfg.host;}
+static const char *home_key(){return cfg.host;}
+static void art_drain(){}
+static void art_home_update(int,int,const int*,int){}
+static void art_pause(bool){}
+static void art_loader_start(){}
+static plat_thread *art_worker;
+static struct {} art_cache;
+static void ui_cover_invalidate(void*,const char*){}
 static int selected_host_index();
 static bool wake_accept=true;static int wake_calls;
 static bool wake_host(){wake_calls++;return wake_accept;}
@@ -46,6 +55,10 @@ static host_cache hosts;
 static int selected_host_index(){for(int i=0;i<hosts.count;i++)if(!strcmp(hosts.hosts[i].ip,cfg.host))return i;return -1;}
 static home_art_cache home_art;
 static struct {bool used;} attempts[32];
+static bool task_was_cancelled;
+static bool recover_host_ui(){return true;}
+static const char *host_display_name(){return "PC";}
+static gs_error_code gs_error_kind(){return GS_ERROR_PROTOCOL;}
 static bool server_ok=true,stream_return_home,host_cache_save_failed,details_play;
 static unsigned next_discovery=99,next_socket_retry=99,discovery_round=3;
 static int navigation_pending=-1,settings_initial_group=-1;
@@ -78,6 +91,7 @@ static bool host_details(){details++;return details_play;}
 static bool tab_from_host_settings;
 static void manage_host(){details++;if(tab_from_host_settings)navigation_pending=UI_STREAM;}
 static bool edit_ip(char *ip,size_t cap){manual_calls++;if(manual_accept){snprintf(ip,cap,"192.168.1.10");return true;}return false;}
+static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
 const char *ui_translate(const char *s){return s;}
 static ui_host host_view(){ui_host h={"PC","PC",HOST_PAIRED,NULL,NULL};return h;}
 static const char *app_name(int id){for(int i=0;i<app_count;i++)if(apps[i].id==id)return apps[i].name;return NULL;}
@@ -89,7 +103,7 @@ static void stream(int id,const char *name){
 static bool app_details(int){details++;return details_play;}
 static bool app_details_for(int id,const char *name,int index){assert(index>=0 && index<app_count && apps[index].id==id && !strcmp(name,apps[index].name));details++;return details_play;}
 static void library_context(int*){context_calls++;}
-static int library_map(int,int *map){map[0]=0;return app_count?1:0;}
+static int library_map(int,int *map){for(int i=0;i<app_count;i++)map[i]=i;return app_count;}
 static void draw_apps(int,int,const int*,int){draws++;}
 static void stop_art_loader(plat_thread **p){*p=NULL;}
 static void plat_atomic_store(int *p,int v){*p=v;}
@@ -98,11 +112,14 @@ static plat_thread *plat_thread_start(void *(*)(void*),void*){return NULL;}
 static void art_update(const int*,int,int,int){}
 static void *applist_task(void*){return NULL;}
 static void run_busy(const char*,const char*,void *(*)(void*),void *count){app_list_cache_store(&app_cache,host_key(),plat_now_ms());loads++;*(int*)count=library_size;app_count=library_size;for(int i=0;i<library_size;i++){apps[i].id=42+i;sprintf(apps[i].name,"Library game %d",42+i);}}
+static void artwork_refresh_apps(const char *title,int *count){run_busy(title,NULL,applist_task,count);}
 static const char *gs_error(){return "Error";}
 int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}
 void ui_present(){}
 bool ui_focus_tick(uint32_t){return false;}
+bool ui_home_tick(uint32_t){return false;}
+bool ui_library_tick(uint32_t){return false;}
 static uint32_t plat_now_ms(){return 0;}
 void ui_draw_hosts(const ui_setting *rows,int n,int sel,int page,bool){
     assert(n==hosts.count+2 && sel>=0 && sel<n);assert(page==UI_HOME || page==UI_SETTINGS);
@@ -113,8 +130,8 @@ void ui_art_size(int *w,int *h){*w=150;*h=200;}
 void ui_drop_main_cache(){}
 void ui_draw_dashboard(const ui_host*,const ui_menu_item*,int n,int sel,const char*,const ui_dashboard *d){
     assert(n==5+d->recent_count && sel>=0 && sel<n && d->recent_count<=4);
-    assert(!strcmp(d->profile,"Custom"));
-    assert(!strcmp(d->connection,"720p60  \xE2\x80\xA2  30 Mbps"));
+    assert(!strcmp(d->profile,"Smooth"));
+    assert(!strcmp(d->connection,"720p60  \xE2\x80\xA2  12 Mbps"));
     last_resume_id=d->resume_id;
     if(d->resume){bool valid=false;for(int i=0;i<app_count;i++)if(apps[i].id==d->resume_id && !strcmp(apps[i].name,d->resume->name))valid=true;assert(valid);}
     for(int i=0;i<d->recent_count;i++)assert(!d->resume || strcmp(d->recent[i].name,d->resume->name));
@@ -136,6 +153,7 @@ int main(){
     reset();keys={X_FLAG,B_FLAG};actual_app_menu();assert(plays==0 && details==1);
     reset();details_play=true;keys={X_FLAG,B_FLAG};actual_app_menu();assert(plays==1 && details==1);
     reset();keys={Y_FLAG,B_FLAG};actual_app_menu();assert(loads==2 && plays==0);
+    reset();library_size=6;keys={RIGHT_FLAG,RIGHT_FLAG,Y_FLAG,A_FLAG,B_FLAG};actual_app_menu();assert(last_play_id==44 && loads==2);
     reset();keys={PLAY_FLAG,B_FLAG};actual_app_menu();assert(context_calls==1 && plays==0);
     reset();home({A_FLAG});assert(library_calls==1 && details==0);
     reset();server.current_game=42;home({A_FLAG});assert(plays==1 && details==0);

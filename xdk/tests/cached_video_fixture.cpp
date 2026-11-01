@@ -133,9 +133,14 @@ static bool input_stats_visible(){return true;}
 static void gfx_overlay_mark_used(DWORD) {}
 /* ACTUAL_PUBLISH */
 /* ACTUAL_FALLBACK */
+static bool opening,opening_drawn;
+static bool gfx_launch_pending(){return opening;}
+static bool launch_active(){return opening;}
+static void gfx_launch_draw(D3DDevice*,bool usable){assert(owned && usable);opening_drawn=true;}
 /* ACTUAL_PRESENT */
 static const AVFrame *present_frame;
 static void on_present() {
+    if(opening)assert(opening_drawn);opening_drawn=false;
     assert(owned && expected_slot>=0 && cached_slots[expected_slot].fence==next_fence);
     for(int i=0;i<3;i++)assert(!device.bound[i]);
     clock_us+=50000; // simulated VSync must not enter shader submission measurement
@@ -214,6 +219,8 @@ int main() {
         gfx_begin();present_video(&device,planes,expected_slot,"",false);gfx_end();
         assert(last_shader==(request==1 || (request==0 && automatic)?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY));cleanup();
     }
+    reset();assert(cached_video_init(65,33));publish_frame(&f);expected_slot=cached_video_take(planes,&discarded);
+    opening=true;gfx_begin();present_video(&device,planes,expected_slot,"",false);gfx_end();opening=false;cleanup();
     const int layouts[][4]={{64,64,64,16},{80,128,65,33},{96,64,64,6},
         {1920,1920,1920,1080},{2048,2048,1920,1080},{960,1024,960,540}};
     for(int test=0;test<6;test++) {

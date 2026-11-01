@@ -172,14 +172,32 @@ static int hmac_rng_yield(void *p, unsigned char *out, size_t len)
     return mbedtls_hmac_drbg_random(p, out, len);
 }
 
+#ifdef _XBOX
+static CRITICAL_SECTION shared_rng_lock;
+#endif
+int crypto_rng_callback(void *context,unsigned char *out,size_t len)
+{
+#ifdef _XBOX
+    EnterCriticalSection(&shared_rng_lock);
+#endif
+    int result=mbedtls_ctr_drbg_random((mbedtls_ctr_drbg_context*)context,out,len);
+#ifdef _XBOX
+    LeaveCriticalSection(&shared_rng_lock);
+#endif
+    return result;
+}
+
 static int ctr_rng_yield(void *p, unsigned char *out, size_t len)
 {
     rng_yield();
-    return mbedtls_ctr_drbg_random(p, out, len);
+    return crypto_rng_callback(p, out, len);
 }
 
 bool crypto_init(void)
 {
+#ifdef _XBOX
+    InitializeCriticalSection(&shared_rng_lock);
+#endif
     unsigned char personal[16];
     uint64_t tb = timestamp();
 
@@ -200,7 +218,7 @@ mbedtls_ctr_drbg_context *crypto_drbg(void)
 
 void crypto_random(void *out, size_t len)
 {
-    mbedtls_ctr_drbg_random(&drbg, (unsigned char *)out, len);
+    crypto_rng_callback(&drbg, (unsigned char *)out, len);
 }
 
 /*

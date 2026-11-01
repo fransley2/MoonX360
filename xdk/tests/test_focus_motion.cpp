@@ -55,5 +55,24 @@ int main()
     assert(ui_focus_tick(6120));ui_focus_presented();assert(!ui_focus_tick(6136));
     ui_draw_library(&host,games,12,6,"All Apps");assert(ui_focus_tick(6200)); // same screen position, different game
     ui_focus_finish();ui_focus_presented();assert(!ui_focus_tick(6216));
+    // Two views of the same cover (recent + Continue), retained scene reuse,
+    // clock wrap and final-frame acknowledgement must settle together.
+    uint32_t pixels[4]={0xffffffff,0xffffffff,0xffffffff,0xffffffff};
+    ui_draw_begin(ui_canvas());
+    ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,64,194,174,232,255,100);ui_cover_fade_mark();
+    ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,438,194,174,232,255,100);ui_cover_fade_mark();
+    assert(ui_scene_store());assert(ui_focus_tick(0xfffffff0u));
+    p=ui_draw_commands(&count);assert(count==2 && !(p[0].color>>24) && !(p[1].color>>24));
+    ui_focus_presented();assert(ui_focus_tick(0xfffffff0u+80));
+    p=ui_draw_commands(&count);assert((p[0].color>>24)==127 && p[0].color==p[1].color);
+    assert(ui_scene_restore(ui_canvas()));assert(ui_focus_tick(0xfffffff0u+100));
+    p=ui_draw_commands(&count);assert((p[0].color>>24)>127 && p[0].color==p[1].color);
+    assert(ui_focus_tick(0xfffffff0u+160));p=ui_draw_commands(&count);
+    assert(p[0].color==0xffffffff && p[1].color==0xffffffff);
+    assert(ui_focus_tick(0xfffffff0u+176));ui_focus_presented();assert(!ui_focus_tick(0xfffffff0u+192));
+    assert(ui_scene_restore(ui_canvas()));assert(!ui_focus_tick(500));
+    ui_draw_begin(ui_canvas());ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,64,194,174,232,255,101);ui_cover_fade_mark();
+    assert(ui_focus_tick(600));ui_set_motion(false);assert(ui_focus_tick(601));
+    p=ui_draw_commands(&count);assert(p[0].color==0xffffffff);ui_focus_presented();assert(!ui_focus_tick(602));
     puts("PASS: 120ms focus limit, clock wrap, single-outline edits, terminal-frame retry/ack, same-target redraw, retarget, disable, unrelated screen, CPU fallback and retained Home terminal equality.");
 }

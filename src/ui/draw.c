@@ -1,5 +1,6 @@
 #include "draw.h"
 #include "font.h"
+#include "layout.h"
 #include <math.h>
 #include <string.h>
 
@@ -12,7 +13,43 @@ static canvas_t *target;
 static canvas_t buttons;
 static struct ui_memory_info memory;
 static bool motion_enabled=true;
+bool ui_motion_enabled(void){return motion_enabled;}
 static bool focus_feedback; /* Older synchronous presenters need no terminal-frame retry. */
+static struct cover_fade {const void *pixels;uint32_t generation,start,stamp;bool started,active;} art_fades[12];
+static struct cover_ref {unsigned command,slot;uint32_t color;} art_refs[16];
+static unsigned art_ref_count,art_stamp;
+static bool art_pending;
+static bool cover_tick(uint32_t now)
+{
+    bool changed=false;
+    for(unsigned i=0;i<art_ref_count;i++) {
+        struct cover_ref *r=art_refs+i;struct cover_fade *a=art_fades+r->slot;
+        if(r->command>=used)continue;
+        if(!a->active){if(commands[r->command].color!=r->color){commands[r->command].color=r->color;changed=true;}continue;}
+        if(!a->started){a->started=true;a->start=now;}
+        unsigned elapsed=now-a->start,alpha=r->color>>24;
+        if(!motion_enabled || elapsed>=UI_ART_FADE_MS)a->active=false;
+        else alpha=alpha*elapsed/UI_ART_FADE_MS;
+        uint32_t color=(r->color&0xffffffu)|(alpha<<24);
+        if(commands[r->command].color!=color){commands[r->command].color=color;changed=true;}
+        /* Include the final opaque frame in the present/ack protocol. */
+        if(a->active)changed=true;
+    }
+    if(changed)art_pending=true;
+    return changed || (focus_feedback && art_pending);
+}
+void ui_cover_fade_mark(void)
+{
+    if(!ready || !used || commands[used-1].kind!=UI_IMAGE || art_ref_count==16)return;
+    struct ui_draw_command *c=commands+used-1;int slot=-1,oldest=0;
+    for(int i=0;i<12;i++) {
+        if(art_fades[i].pixels==c->pixels && art_fades[i].generation==c->generation){slot=i;break;}
+        if(!art_fades[i].pixels || (int32_t)(art_fades[i].stamp-art_fades[oldest].stamp)<0)oldest=i;
+    }
+    if(slot<0){slot=oldest;memset(art_fades+slot,0,sizeof(art_fades[slot]));art_fades[slot].pixels=c->pixels;art_fades[slot].generation=c->generation;art_fades[slot].active=motion_enabled;}
+    art_fades[slot].stamp=++art_stamp;
+    struct cover_ref *r=art_refs+art_ref_count++;r->command=used-1;r->slot=(unsigned)slot;r->color=c->color;
+}
 static struct {
     bool known,registered,active,started,dirty,pending;
     int context,item;
@@ -21,7 +58,7 @@ static struct {
     struct ui_draw_command base;
 } focus;
 
-void ui_focus_presented(void){focus_feedback=true;focus.pending=false;}
+void ui_focus_presented(void){focus_feedback=true;focus.pending=art_pending=false;}
 void ui_focus_finish(void)
 {
     if(ready && focus.registered && focus.index<used)commands[focus.index]=focus.base;
@@ -48,17 +85,19 @@ void ui_focus_mark(int context,int item)
 }
 bool ui_focus_tick(uint32_t now)
 {
-    if(!enabled || !ready || !focus.registered || focus.index>=used)return false;
-    if(!focus.active)return focus_feedback && focus.pending;
+    if(!enabled || !ready)return false;
+    bool art_changed=cover_tick(now);
+    if(!focus.registered || focus.index>=used)return art_changed;
+    if(!focus.active)return art_changed || (focus_feedback && focus.pending);
     uint32_t elapsed=0;
     if(!focus.started){focus.started=true;focus.start=now;}
-    else {elapsed=(uint32_t)(now-focus.start);if(elapsed==focus.last && !focus.dirty)return focus_feedback && focus.pending;}
+    else {elapsed=(uint32_t)(now-focus.start);if(elapsed==focus.last && !focus.dirty)return art_changed || (focus_feedback && focus.pending);}
     focus.dirty=false;focus.pending=true;
     focus.last=elapsed;
     struct ui_draw_command *c=commands+focus.index;
     *c=focus.base;
-    if(elapsed>=120){focus.active=false;return true;}
-    float remaining=1.0f-(float)elapsed/120.0f;
+    if(elapsed>=UI_FOCUS_MS){focus.active=false;return true;}
+    float remaining=1.0f-(float)elapsed/UI_FOCUS_MS;
     float ease=remaining*remaining*remaining;
     float spread=focus.base.t*1.3f*ease;
     c->x-=spread;c->y-=spread;c->w+=2*spread;c->h+=2*spread;c->r+=spread;
@@ -91,6 +130,9 @@ static void raster(const struct ui_draw_command *c) {
 }
 void ui_draw_software(void) {
     if(!ready)return;
+    /* A CPU fallback has no retained GPU animation loop. Complete cover fades
+     * before rasterizing so a failed shader cannot leave permanently dim art. */
+    for(unsigned i=0;i<art_ref_count;i++){commands[art_refs[i].command].color=art_refs[i].color;art_fades[art_refs[i].slot].active=false;}
     int clip[4]={target->cx0,target->cy0,target->cx1,target->cy1};
     for(unsigned i=0;i<used;i++)raster(commands+i);
     cv_clip(target,clip[0],clip[1],clip[2]-clip[0],clip[3]-clip[1]);
@@ -106,18 +148,25 @@ static struct ui_draw_command *push(canvas_t *c,int kind) {
 void ui_draw_enable(bool value) {enabled=value;if(!value)ui_draw_suspend();}
 bool ui_draw_enabled(void) {return enabled;}
 bool ui_draw_recording(void) {return recording;}
-void ui_draw_begin(canvas_t *c) {focus.registered=focus.pending=false;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
-void ui_draw_suspend(void) {focus.known=focus.active=focus.registered=focus.pending=false;recording=ready=false;used=0;}
+void ui_draw_begin(canvas_t *c) {art_ref_count=0;art_pending=false;focus.registered=focus.pending=false;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
+void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;memset(art_fades,0,sizeof(art_fades));focus.known=focus.active=focus.registered=focus.pending=false;recording=ready=false;used=0;}
 void ui_scene_drop(void) {scene_count=0;}
 bool ui_scene_store(void) {
     scene_count=0;
     if(!ready || used>sizeof(scene)/sizeof(scene[0]))return false;
-    memcpy(scene,commands,used*sizeof(commands[0]));scene_count=used;return true;
+    memcpy(scene,commands,used*sizeof(commands[0]));scene_count=used;
+    for(unsigned i=0;i<art_ref_count;i++)scene[art_refs[i].command].color=art_refs[i].color;
+    return true;
 }
 bool ui_scene_restore(canvas_t *canvas) {
     if(!enabled || !scene_count)return false;
     ui_draw_begin(canvas);memcpy(commands,scene,scene_count*sizeof(commands[0]));
-    used=scene_count;memory.commands=used;return true;
+    used=scene_count;memory.commands=used;
+    /* Recover only known cover commands; brand/button images never fade. */
+    unsigned total=used;
+    for(unsigned i=0;i<total;i++)if(commands[i].kind==UI_IMAGE)for(int j=0;j<12;j++)
+        if(art_fades[j].pixels==commands[i].pixels && art_fades[j].generation==commands[i].generation){used=i+1;ui_cover_fade_mark();break;}
+    used=total;return true;
 }
 const struct ui_draw_command *ui_draw_commands(int *count) {*count=ready?(int)used:0;return ready?commands:NULL;}
 void ui_draw_gpu_memory(uint32_t glyph,uint32_t covers,uint32_t atlas,unsigned count) {
@@ -165,6 +214,7 @@ void ui_picture(canvas_t *c,const uint32_t *p,int w,int h,int x,int y,float r,un
     (void)r;ui_picture_region(c,p,w,h,0,0,w,h,(float)x,(float)y,(float)w,(float)h,a,0);
 }
 void ui_glyph(canvas_t *c,int x,int y,const uint8_t *mask,int w,int h,int stride,uint32_t color) {
+    if(x+w<=c->cx0 || y+h<=c->cy0 || x>=c->cx1 || y>=c->cy1)return;
     struct ui_draw_command *d=push(c,UI_GLYPH);if(!d){cv_mask(c,x,y,mask,w,h,stride,color);return;}
     d->x=(float)x;d->y=(float)y;d->pixels=mask;d->iw=w;d->ih=h;d->stride=stride;d->color=color;
 }
@@ -188,4 +238,17 @@ bool ui_button(canvas_t *c,const char *label,int x,int y,int w,int h) {
     }
     int sx=index<4?index*32:128+(index-4)*48,sw=index<4?32:48;
     ui_picture_region(c,buttons.px,256,32,sx,0,sw,32,(float)x,(float)y,(float)w,(float)h,255,1);return true;
+}
+
+bool ui_focus_bounds(float *x,float *y,float *w,float *h)
+{
+    if(!ready || !focus.registered)return false;
+    *x=focus.base.x;*y=focus.base.y;*w=focus.base.w;*h=focus.base.h;return true;
+}
+
+void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h)
+{
+    if(!ready)return;
+    for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels &&
+        commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h)commands[i].color&=0x00ffffffu;
 }

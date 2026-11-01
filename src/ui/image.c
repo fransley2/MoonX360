@@ -11,10 +11,14 @@
 /* libxenon has no thread-local storage: __thread variables address through r2,
  * which holds garbage on bare metal and crashes. */
 #define STBI_NO_THREAD_LOCALS
+#ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "../../third_party/stb/stb_image.h"
+#ifdef __GNUC__
 #pragma GCC diagnostic pop
+#endif
 
 uint32_t *image_decode_argb(const unsigned char *data, size_t len, int *w, int *h)
 {
@@ -24,13 +28,14 @@ uint32_t *image_decode_argb(const unsigned char *data, size_t len, int *w, int *
 
     if (rgba == NULL)
         return NULL;
-    out = (uint32_t *)malloc((size_t)*w * *h * sizeof(uint32_t));
-    if (out) {
+    /* STB's RGBA allocation already has the required four bytes per pixel.
+     * Convert in place: keep only one full-resolution decode buffer. */
+    out = (uint32_t *)rgba;
+    {
         for (i = 0; i < *w * *h; i++) {
             const unsigned char *p = rgba + i * 4;
             out[i] = ((uint32_t)p[3] << 24) | ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
         }
     }
-    stbi_image_free(rgba);
     return out;
 }

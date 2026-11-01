@@ -31,6 +31,9 @@ struct config {
     int stream_profile; /* 0 Custom. Factory selection stores resolution/FPS/bitrate;
                          * Smooth/Performance also have effective fast decoder/GPU defaults.
                          * Custom edits capture those defaults; user profiles own stream_options. */
+    char user_profile[64]; /* separate namespace; displayed only while options match */
+    bool launch_animation; /* independent of the legacy focus animation */
+    int launch_cover_ms; /* global 0..10000; not part of stream profiles */
     bool mdns_discovery;
     int adaptive_quality; /* 0 manual, 1 bounded automatic reconnect on sustained pressure */
     int display_mode; /* render target: 0 auto, 1 480p, 2 720p, 3 1080p; next app start */
@@ -56,6 +59,7 @@ bool storage_write(const char *name, const void *data, size_t len);
 void config_defaults(struct config *c);
 void config_load(struct config *c);
 bool config_save(const struct config *c);
+size_t config_serialize(const struct config *c,char *text,size_t capacity);
 /* Reset preferences atomically, preserving the selected PC and pairing files. */
 bool config_reset_preferences(struct config *c);
 
@@ -67,6 +71,7 @@ void config_customize_stream(struct config *c);
 /* Request a host rate; this does not interpolate frames or alter bitrate. */
 bool config_fps_supported(int fps);
 int config_cycle_fps(int fps, int direction);
+#define CONFIG_FPS_DEFAULT 60
 
 #define CONFIG_BITRATE_MIN 1000
 #define CONFIG_BITRATE_MAX 70000
@@ -106,8 +111,17 @@ struct user_profiles {
 bool config_profile_name_valid(const char *name);
 void config_profile_capture(struct stream_options *out,const struct config *c);
 bool config_profiles_load(struct user_profiles *profiles);
+size_t config_profiles_serialize(const struct user_profiles *profiles,char *text,size_t capacity);
 bool config_profiles_save(struct user_profiles *current,const struct user_profiles *next);
 bool config_profiles_create(struct user_profiles *profiles,const struct config *c,const char *name);
 bool config_profiles_rename(struct user_profiles *profiles,int index,const char *name);
 bool config_profiles_delete(struct user_profiles *profiles,int index);
 bool config_profiles_apply(const struct user_profiles *profiles,int index,struct config *c);
+
+int config_profiles_selected(const struct user_profiles *p,const struct config *c);
+/* Five factories and valid saved profiles; no storage writes. Custom is a
+ * derived unmatched state, never a synthetic selectable preset. */
+bool config_cycle_profile(const struct user_profiles *p,struct config *c,int direction);
+/* Canonical factory comparison for display, independent of legacy preset hint. */
+int config_match_factory(const struct config *c);
+void config_select_factory(struct config *c,int preset);

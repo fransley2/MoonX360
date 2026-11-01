@@ -95,6 +95,7 @@ enum {TIME_DECODE,TIME_FRAME_COPY,TIME_TEXTURE_LOCK,TIME_TEXTURE_COPY,TIME_GPU_S
 static gpu_time_window pipeline_times[TIME_COUNT];
 static uint32_t pipeline_ema[TIME_COUNT];
 static int session_slices=8;
+static int setup_fps_argument=40;
 static void gfx_backbuffer_size(int *w,int *h) {*w=1920;*h=1080;}
 static float gfx_display_hz() {return 60;}
 static bool gfx_display_interlaced() {return false;}
@@ -141,6 +142,8 @@ int main(void) {
     assert(overlay_text(text,sizeof(text)));
     assert(strstr(text,"38.0 / 40 FPS") && strstr(text,"8.00 / 60.00 Mbps (actual / set)"));
     assert(strstr(text,"Network RTT: 9 ms") && strstr(text,"Host: 4.1 ms"));
+    assert(strstr(text,"FPS requested / negotiated: 40 / unknown"));
+    assert(strstr(text,"FPS callback / decoded / presented: 40.0 / 40.0 / 38.0"));
     assert(strstr(text,"Decode: 24.00 ms | Budget: 25.00 ms") && strstr(text,"H.264 filter: Fast | Fast Decode: On"));
     assert(strstr(text,"GPU image: Auto Quality | Active: Quality"));
     assert(!strstr(text,"Connection:") && !strstr(text,"Pipeline"));
@@ -182,7 +185,8 @@ int main(void) {
         ui_set_language(language);options.overlay_mode=mode;tick+=1000;
         stats.received+=30;stats.decoded+=27;stats.rendered+=27;observations.payload_bytes+=750000;
         assert(overlay_text(text,sizeof(text)));
-        if(mode==1)assert(!strstr(text,"p95"));
+        if(mode==1)assert(!strstr(text,"p95") && !strstr(text,"negotiated"));
+        if(mode>1)assert(strstr(text,"FPS requested / negotiated: 30 / unknown") && strstr(text,"FPS callback / decoded / presented:"));
         if(mode==3)assert(strstr(text,"p95 / p99") && strstr(text,"256") && strstr(text,"CPU_CACHED_TEXTURE"));
         assert(gfx_overlay_set(text));check_text_fits(text);
         for(int height=480;height<=720;height+=240){assert((16+overlay_canvas.w)*height/720.0f<1280*height/720.0f);assert((16+overlay_canvas.h)*height/720.0f<height);

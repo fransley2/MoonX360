@@ -42,6 +42,12 @@ static void stream_observe(struct stream_observations *m, uint32_t frame, int by
 }
 struct stream_counters { uint32_t received, decoded, shown, payload_bytes; };
 struct stream_rates { double received, decoded, shown, payload_mbps; };
+/* These are backend stage rates. Callbacks are not network arrivals; a video
+ * Present call is not proof of scanout or visibility under an opaque cover. */
+static double stream_rate_per_second(uint32_t count,uint64_t duration_us)
+{
+    return duration_us?count*1000000.0/duration_us:0.0;
+}
 static struct stream_rates stream_rates_between(const struct stream_counters *before,
                                                 const struct stream_counters *after, uint32_t ms)
 {

@@ -2,7 +2,7 @@
 from pathlib import Path
 import os,subprocess,sys
 ROOT=Path(__file__).resolve().parents[2]
-OUT=Path(os.environ.get('MOONX_REMOTE_OUT',ROOT/'host-tests/remote/host'))
+OUT=Path(os.environ.get('MOONX_REMOTE_OUT',ROOT/'evidencias/recursos-20261028/host'))
 OUT.mkdir(parents=True,exist_ok=True)
 vcvars=Path(os.environ.get('VS_VCVARS64',r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat'))
 r=subprocess.run(f'cmd.exe /d /s /c ""{vcvars}" >nul && set"',capture_output=True,text=True,check=True)
@@ -15,7 +15,7 @@ def run(args):
     r=subprocess.run(list(map(str,args)),cwd=OUT,env=env,capture_output=True,text=True,errors='replace')
     print(r.stdout,r.stderr,flush=True)
     if r.returncode:raise SystemExit(r.returncode)
-flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/I'+str(OUT),'/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/FI'+str(ROOT/'src/performance.h')]
+flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/I'+str(ROOT/'evidencias/recursos-20261028/host'),'/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/FI'+str(ROOT/'src/performance.h')]
 def function(text,signature):
     a=text.index(signature);b=text.index('{',a)+1;depth=1
     while depth:
@@ -26,7 +26,7 @@ run([OUT/'remote-features.exe'])
 audio=(ROOT/'xdk/src/audio_xdk.cpp').read_text()
 audio=audio[audio.index('#define MAX_FRAME_SAMPLES'):]
 fixture=(ROOT/'xdk/tests/audio_remote_fixture.cpp').read_text().replace('/* ACTUAL_AUDIO */',audio)
-fixture=fixture.replace('/* ACTUAL_RETRY */',function((ROOT/'src/app.c').read_text(),'    if(cj.ret!=0 && lj.sc.audioConfiguration==AUDIO_CONFIGURATION_51_SURROUND)'))
+fixture=fixture.replace('/* ACTUAL_RETRY */',function((ROOT/'src/app.c').read_text(),'    if(cj.ret!=0 && !launch_cancelled() && lj.sc.audioConfiguration==AUDIO_CONFIGURATION_51_SURROUND)'))
 (OUT/'audio-remote.cpp').write_text(fixture)
 run([cl,*flags,OUT/'audio-remote.cpp','/Feaudio-remote.exe'])
 run([OUT/'audio-remote.exe'])

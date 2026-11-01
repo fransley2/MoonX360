@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -125,24 +126,27 @@ static void test() {
     reset(); slot_pending=1; consume_during_copy=1; publish(&f);
     assert(slot_pending==2 && stats.dropped==0 && slot_rendering==0);
     reset(); slot_pending=1; publish(&f);
-    assert(slot_pending==2 && stats.dropped==1 && slot_rendering==0);
+    assert(slot_pending==2 && stats.dropped==1 && stats.render_superseded==1 && slot_rendering==0);
 }
 }
 namespace input_test {
 #define MAX_PADS 4
 #define SEND_INTERVAL_MS 4
-struct pad {bool present;};
+struct pad {bool present;int buttons;unsigned char lt,rt;short lx,ly,rx,ry;};
 struct input_session {};
 static volatile LONG stream_active,quit_requested;
 static struct {int quit_combo;} stream_settings;
 static int steps, releases, slept[5], polls;
+static bool test_cover;static int cover_commands,remote_forwards;
+static bool launch_active(){return test_cover && polls<=2;}
+static void launch_command(bool cancel,bool reveal){assert(cancel && reveal);cover_commands++;}
 /* This fixture tests cadence; remote key/mouse behavior has its own state tests. */
 typedef unsigned char BYTE;typedef unsigned short WORD;
 enum {XINPUT_MAX_KEYBOARD_STATE=6,ERROR_SUCCESS=0,
  XINPUT_MODIFIER_LSHIFT=1,XINPUT_MODIFIER_RSHIFT=2,XINPUT_MODIFIER_LCONTROL=4,XINPUT_MODIFIER_RCONTROL=8,
  XINPUT_MODIFIER_LALT=16,XINPUT_MODIFIER_RALT=32,XINPUT_MODIFIER_LGUI=64,XINPUT_MODIFIER_RGUI=128};
 struct XINPUT_KEYBOARDSTATE {WORD VKCodes[6];BYTE bModifiers;};
-static int XInputGetKeyboardState(DWORD,XINPUT_KEYBOARDSTATE*){return 1;}
+static int XInputGetKeyboardState(DWORD,XINPUT_KEYBOARDSTATE *state){memset(state,0,sizeof(*state));if(!test_cover)return 1;if(polls<=3)state->VKCodes[0]=65;return ERROR_SUCCESS;}
 struct remote_input {bool mouse[4],suppress[4];int speed,acceleration,scroll_ms;};
 struct quick_menu {bool open,neutral,latch,muted,stats;int volume;};
 static int pointer_speed=100,pointer_acceleration,pointer_scroll_ms=100;
@@ -153,8 +157,8 @@ static bool quick_step(quick_menu*,pad*,bool,int,bool*,int*,DWORD){return false;
 static unsigned quick_pack(quick_menu*){return 0;}
 static void remote_mouse_release(remote_input*,int){}
 static void remote_release(remote_input*){}
-static void remote_keys(remote_input*,bool*,bool){}
-static void remote_pad(remote_input*,pad*,int,DWORD,bool,int){}
+static void remote_keys(remote_input*,bool*,bool enabled){if(test_cover && polls<=4)assert(!enabled);}
+static void remote_pad(remote_input*,pad*,int port,DWORD,bool,int){if(test_cover && !port){assert(polls==5);remote_forwards++;}}
 static void audio_set_volume(int){}
 static volatile LONG rumble_connected_mask;
 static LONG InterlockedExchange(volatile LONG *p,LONG n){LONG old=*p;*p=n;return old;}
@@ -164,8 +168,8 @@ static void input_rumble(unsigned short,unsigned short,unsigned short){}
 static DWORD tick;
 static const DWORD costs[]={0,1,3,4,17};
 static DWORD GetTickCount() { return tick; }
-static int input_poll(pad *pads) {memset(pads,0,4*sizeof(*pads));tick+=costs[polls++]; return 1; }
-static bool input_session_step(input_session*,pad*,int,DWORD,void*) { return ++steps==3; }
+static int input_poll(pad *pads) {memset(pads,0,4*sizeof(*pads));tick+=test_cover?17:costs[polls];polls++;if(test_cover){pads[0].present=true;pads[0].buttons=polls<=3?(B_FLAG|X_FLAG):polls==5?A_FLAG:0;}return 1; }
+static bool input_session_step(input_session*,pad *pads,int,DWORD,void*) {if(test_cover){if(polls<=4)assert(!pads[0].buttons);else assert(pads[0].buttons==A_FLAG);}return ++steps==3;}
 static void input_session_release(input_session*) { releases++; }
 static void Sleep(DWORD delay) {
     assert(delay>=1 && delay<=4); slept[polls-1]=(int)delay;tick+=delay;
@@ -181,6 +185,8 @@ static void test() {
         assert(polls==5 && steps==5 && releases==1 && quit_requested);
         for(int i=0;i<5;i++) assert(slept[i]==expected[i]);
     }
+    test_cover=true;tick=0;polls=steps=releases=cover_commands=remote_forwards=0;stream_active=true;quit_requested=false;
+    input_stream_main(NULL);assert(cover_commands==2 && remote_forwards==1 && polls==5 && releases==1);
 }
 }
 int main() {

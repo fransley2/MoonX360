@@ -18,12 +18,13 @@ fixture=r'''
 #include <deque>
 #include "../src/config.h"
 #include "../src/product_features.h"
+#include "../src/launch_settings.h"
 #include "../src/video.h"
 #include "../src/ui/ui.h"
 #include "../src/session_history.h"
 #include "../src/library_state.h"
 #define MAX_APPS 64
-static struct {int id;char name[64];} apps[MAX_APPS];
+static struct {int id;char name[64],uuid[80];} apps[MAX_APPS];
 static uint32_t *app_art[MAX_APPS],art_generation[MAX_APPS];
 static int app_count;
 static library_favorites favorites;
@@ -55,11 +56,13 @@ static int navigation_pending=-1;
 static bool tab_key(int key,int page);
 static int settings_initial_group,settings_calls,history_calls;
 static void settings_menu() {settings_calls++;}
+static void launch_settings_menu(int){settings_calls++;}
 static void game_profile_menu(int){settings_calls++;}
+static void cycle_game_profile(int,int){}
 static const char *game_profile_label(int){return "Profile";}
 static void history_menu() {history_calls++;}
 static ui_host host_view() {ui_host h={"PC","PC",HOST_PAIRED,NULL,NULL};return h;}
-void ui_draw_app_details(const ui_host*,const ui_app *a,const char*,int selected) {assert(a->name && selected>=0 && selected<5);}
+void ui_draw_app_details(const ui_host*,const ui_app *a,const char*,const char*,int selected) {assert(a->name && selected>=0 && selected<6);}
 void ui_set_page(int) {}
 int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}
@@ -76,6 +79,8 @@ static void run_busy(const char*,const char*,void *(*task)(void*),void *p){task(
 static const char *gs_error(){return "Stop failed";}
 const char *ui_translate(const char *s){return s;}
 int ui_location_enter_raw(const char *s){return ui_location_enter(s);}
+static void remember_played_art(int){}
+static bool stream_session(int id,const char *title){return stream_once(id,title);}
 /* ACTUAL_FUNCTIONS */
 int main() {
     config_defaults(&cfg);strcpy(cfg.host,"PC");
@@ -114,16 +119,16 @@ int main() {
     buttons.push_back(DOWN_FLAG);buttons.push_back(DOWN_FLAG);buttons.push_back(A_FLAG);buttons.push_back(B_FLAG);assert(!app_details(0));assert(library_favorite_has(&favorites,"PC",45));
     buttons.push_back(DOWN_FLAG);buttons.push_back(DOWN_FLAG);buttons.push_back(DOWN_FLAG);buttons.push_back(A_FLAG);buttons.push_back(B_FLAG);assert(!app_details(0));assert(details==2);
     server.current_game=45;stop_ok=true;
-    buttons={UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==1 && server.current_game==0);
+    buttons={UP_FLAG,UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==1 && server.current_game==0);
     server.current_game=45;stop_ok=false;
-    buttons={UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==2 && server.current_game==45);
+    buttons={UP_FLAG,UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==2 && server.current_game==45);
     server.current_game=0;
-    buttons={UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==2);
+    buttons={UP_FLAG,UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==2);
     reconnects=0;
     strcpy(cfg.host,"Another PC");assert(library_map(0,map)==0 && library_map(1,map)==0);strcpy(cfg.host,"PC");
-    strcpy(unstable_title,"Original title");stream(7,unstable_title);assert(stream_calls==2 && reconnects==1);
+    strcpy(unstable_title,"Original title");stream(7,unstable_title);assert(stream_calls==2 && reconnects==0);
     stream_calls=0;reconnects=0;server_ok=false;strcpy(unstable_title,"Original title");
-    stream(7,unstable_title);assert(stream_calls==1 && reconnects==1); // failed reconnect returns safely
+    stream(7,unstable_title);assert(stream_calls==2 && reconnects==0); // preflight belongs to stream_once, covered by launch-flow
     // Reports must record the effective decoder flag, including factory overrides.
     cfg.fast_decode=false;cfg.image_quality=2;cfg.session_report=true;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);
     save_session_report(10000);assert(last_report.find("fast_decode=1\nfast_decode_saved=0\nimage_quality=1\n")!=std::string::npos);

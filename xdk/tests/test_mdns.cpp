@@ -73,12 +73,12 @@ int main(){
     assert(host_cache_upsert(&cache,&h)==0 && cache.count==1);
     strcpy(h.ip,"192.168.1.101");strcpy(h.uuid,"abc");assert(host_cache_upsert(&cache,&h)==0 && cache.count==1);
     h.uuid[0]=0;strcpy(h.name,"GAMING-PC");strcpy(h.ip,"192.168.1.102");assert(host_cache_upsert(&cache,&h)==1 && cache.count==2 && !cache.hosts[1].uuid[0]);
-    strcpy(h.uuid,"ABC");assert(host_cache_upsert(&cache,&h)==0 && cache.count==1);
+    strcpy(h.uuid,"ABC");assert(host_cache_upsert(&cache,&h)==0 && cache.count==2); // ambiguous IP-only record is preserved
     char saved[4096];size_t len=host_cache_encode(&cache,saved,sizeof(saved));assert(len);
-    host_cache restored={};host_cache_decode(&restored,saved);assert(restored.count==1 && !restored.hosts[0].online && !restored.hosts[0].paired);
+    host_cache restored={};host_cache_decode(&restored,saved);assert(restored.count==2 && !restored.hosts[0].online && !restored.hosts[0].paired);
     assert(!strcmp(restored.hosts[0].ip,"192.168.1.102"));assert(!host_cache_encode(&cache,saved,4));
     char invalid[]="bad\n\t\t999.1.2.3\t47989\n";host_cache_decode(&restored,invalid);assert(!restored.count);
-    for(int i=1;i<HOST_CACHE_MAX;i++){snprintf(h.uuid,sizeof(h.uuid),"host-%d",i);snprintf(h.name,sizeof(h.name),"PC-%d",i);snprintf(h.ip,sizeof(h.ip),"10.0.0.%d",i);assert(host_cache_upsert(&cache,&h)>=0);}
+    for(int i=cache.count;i<HOST_CACHE_MAX;i++){snprintf(h.uuid,sizeof(h.uuid),"host-%d",i);snprintf(h.name,sizeof(h.name),"PC-%d",i);snprintf(h.ip,sizeof(h.ip),"10.0.0.%d",i);assert(host_cache_upsert(&cache,&h)>=0);}
     strcpy(h.uuid,"full");strcpy(h.name,"extra");strcpy(h.ip,"10.0.0.254");assert(host_cache_upsert(&cache,&h)==-1);
     puts("PASS: DNS names/compression/PTR/SRV/A/TXT, split/multiple answers, wrong service, TTL goodbye, truncation, 30000 malformed packets, dedup and cached hosts.");
 }

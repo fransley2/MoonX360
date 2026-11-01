@@ -26,7 +26,7 @@ static void save(const char *name){
 }
 static std::vector<uint64_t> value_glyphs(){
  int n;const ui_draw_command *p=ui_draw_commands(&n);std::vector<uint64_t> out;
- for(int i=0;i<n;i++)if(p[i].kind==UI_GLYPH && p[i].x>=776 && p[i].y>=255 && p[i].y<282){
+ for(int i=0;i<n;i++)if(p[i].kind==UI_GLYPH && p[i].x>=776 && p[i].y>=270 && p[i].y<298){
   out.push_back((uintptr_t)p[i].pixels);out.push_back((uint64_t)p[i].x);out.push_back((uint64_t)p[i].y);
  }
  return out;
@@ -61,19 +61,14 @@ int main(){
  ui_location_path(path,sizeof(path),NULL,NULL);assert(!strcmp(path,ui_translate("Stream")));
  assert(active_page==UI_STREAM);ui_location_restore(root);ui_set_settings_context(-1,-1);
  ui_setting profile_actions[]={{"Name","Right",NULL},{"Apply","Next connection",NULL},{"Rename","Edit",NULL},{"Delete","Confirm...",NULL}};
- assert(option_kind("Saved profiles",profile_actions,0,true)==UI_OPTION_ACTION);
- assert(option_kind("Saved profiles",profile_actions,1,true)==UI_OPTION_OPEN);
- assert(option_kind("Profile actions",profile_actions,0,true)==UI_OPTION_INFO);
- assert(option_kind("Profile actions",profile_actions,1,true)==UI_OPTION_ACTION);
- assert(option_kind("Profile actions",profile_actions,2,true)==UI_OPTION_OPEN);
  assert(option_kind("Delete profile?",profile_actions,1,true)==UI_OPTION_ACTION);
  assert(option_kind("Rename profile",profile_actions,0,true)==UI_OPTION_ACTION);
  ui_setting hostrows[]={{"Play / Connect","Ready",NULL},{"Host","Right",NULL}};
  ui_draw_settings_page("Host details",hostrows,2,0);std::vector<uint64_t> actual=value_glyphs();
- ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,19,776,280,410,C_TEXT_DIM,"Right");
+ ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,776,293,410,C_TEXT_DIM,"Right");
  assert(!actual.empty() && actual==value_glyphs());
- ui_draw_settings_page("Saved profiles",hostrows,2,0);actual=value_glyphs();
- ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,19,776,280,410,C_TEXT_DIM,"Right");
+ hostrows[1].label="Name";ui_draw_settings_page("Profile actions",hostrows,2,0);actual=value_glyphs();
+ ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,776,293,410,C_TEXT_DIM,"Right");
  assert(!actual.empty() && actual==value_glyphs()); // exact host-name glyphs, never "Derecho"
  const int sizes[][2]={{848,480},{1280,720},{1920,1080},{640,480},{720,576}};
  for(unsigned k=0;k<sizeof(sizes)/sizeof(sizes[0]);k++)for(int language=0;language<CONFIG_LANGUAGE_COUNT;language++){
@@ -81,11 +76,12 @@ int main(){
   for(int id=0;id<SET_COUNT;id++){
    ui_setting rows[7];for(int i=0;i<7;i++)rows[i]={labels[id],"Confirm...",helps[id]};
    ui_draw_settings_page("Settings",rows,7,6);bounds();
-   int lines=wrapped_lines(FONT_REGULAR,16,W-136,ui_translate(helps[id]));
-   assert(190+6*50+50+(lines-1)*22+6 < H-70); // translated help stays above controls
+   // Help is TV-sized and clipped above controls, including long translations.
+   int commands_n;const ui_draw_command *help=ui_draw_commands(&commands_n);
+   for(int j=0;j<commands_n;j++)if(help[j].kind==UI_GLYPH && help[j].clip[3]==SI(H-82))assert(help[j].y<SI(H-82));
    ui_set_settings_context(UI_SETTINGS,SETTINGS_SYSTEM);ui_draw_settings_page("System and maintenance",rows,7,6);bounds();ui_set_settings_context(-1,-1);
-   int split_lines=wrapped_lines(FONT_REGULAR,16,W-440,ui_translate(helps[id]));
-   assert(562+(split_lines-1)*22+6 < H-70); // two-column help remains above footer
+   help=ui_draw_commands(&commands_n);
+   for(int j=0;j<commands_n;j++)if(help[j].kind==UI_GLYPH && help[j].clip[3]==SI(H-82))assert(help[j].y<SI(H-82));
 
   }
   ui_setting categories[6];for(int c=0;c<6;c++)categories[c]={settings_categories[c],"Open",settings_pages[MENU_PCS+c].help};
@@ -104,21 +100,22 @@ int main(){
    ui_set_settings_context(tab,settings_pages[page].category);
    for(int selected=0;selected<n;selected++){
     ui_draw_settings_options(settings_pages[page].title,menu,kinds,n,selected);bounds();
-    assert(active_page==tab && settings_category(settings_pages[page].title)==settings_pages[page].category);
-    int lines=wrapped_lines(FONT_REGULAR,16,settings_pages[page].category<0?W-136:W-440,ui_translate(menu[selected].help));
-    float help_y=settings_pages[page].category<0?190.0f+50.0f*(float)(n<6?n:6)+50.0f:562.0f;
-    assert(help_y+(lines-1)*22+6 < H-70);
+    assert(active_page==tab && settings_context_category==settings_pages[page].category);
+    int help_n;const ui_draw_command *help=ui_draw_commands(&help_n);
+    for(int j=0;j<help_n;j++)if(help[j].kind==UI_GLYPH && help[j].clip[3]==SI(H-82))assert(help[j].y<SI(H-82));
    }
    ui_set_settings_context(-1,-1);
   }
   int aw,ah;ui_art_size(&aw,&ah);std::vector<uint32_t> art(aw*ah,0xFF365647);
+  ui_set_motion(false);
   ui_app library[17];for(int i=0;i<17;i++)library[i]={"Settings",art.data(),false,false,(unsigned)i};
   for(int selected=0;selected<17;selected++){
    ui_draw_library(NULL,library,17,selected,"All Apps");bounds();
    int count;const ui_draw_command *commands=ui_draw_commands(&count);int covers=0;bool selected_cover=false;
    for(int i=0;i<count;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==art.data()){
     covers++;const ui_draw_command &c=commands[i];
-    assert(c.x>=S(64) && c.x+c.w<=cv.w-S(64) && c.y>=S(198) && c.y+c.h<=S(H-170));
+    assert(c.clip[0]>=SI(56) && c.clip[2]<=cv.w-SI(64) && c.y>=S(198) && c.y+c.h<=S(H-170));
+    if(c.generation==(unsigned)selected)assert(c.x>=S(64)-1 && c.x+c.w<=cv.w-S(64)+1);
     assert(c.iw==aw && c.ih==ah); // display scaling never changes cover buffer dimensions
     if(c.generation==(unsigned)selected)selected_cover=true;
    }

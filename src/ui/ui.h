@@ -57,6 +57,7 @@ canvas_t *ui_canvas(void);
 void ui_art_size(int *w, int *h);
 /* Columns in the app grid, for d-pad navigation. */
 int ui_apps_columns(void);
+int ui_apps_rows(void);
 
 void ui_draw_splash(const char *status, uint32_t t_ms);
 void ui_draw_main(const struct ui_host *host, const struct ui_menu_item *items, int n, int sel,
@@ -76,6 +77,9 @@ void ui_location_path(char *out,int capacity,const char *section,const char *lea
 void ui_draw_ip_editor(const int octets[4], int sel);
 void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms);
 void ui_draw_busy(const char *title, const char *message, uint32_t t_ms);
+void ui_draw_host_failure(const char *title,const char *reason);
+void ui_draw_confirm(const char *title,const char *message,const char *confirm);
+void ui_draw_profiles(const struct ui_setting *rows,int n,int selected,int factory_count);
 void ui_draw_message(int icon, const char *title, const char *text);
 void ui_draw_stats(const char *title, const struct ui_stat *stats, int n, const char *note);
 void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n, const char *note, bool retry);
@@ -104,10 +108,10 @@ int ui_dashboard_move(int selected,int dx,int dy,int count);
 void ui_set_page(int page);
 void ui_set_language(int language);
 const char *ui_translate(const char *english);
-/* Home: host + up to four recents and four quick-access tiles. */
+/* Home: compact Continue + up to eight recents and four quick-access tiles. */
 int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents);
 
-void ui_draw_app_details(const struct ui_host*,const struct ui_app*,const char *profile,int selected);
+void ui_draw_app_details(const struct ui_host*,const struct ui_app*,const char *profile,const char *coverage,int selected);
 void ui_draw_performance(const char *grade,const char *mode,float shown,const char *decode,
     const char *latency,const char *cause,const char *note,bool can_apply);
 
@@ -122,3 +126,15 @@ bool ui_focus_tick(uint32_t now);
 void ui_set_stream_hud(int menu_style,int mouse_hud);
 int ui_stream_menu_style(void);
 int ui_mouse_hud_mode(void);
+
+void ui_launch_begin(const struct ui_app *app,uint32_t now,bool motion);
+void ui_launch_pair_pin(const char *pin);
+void ui_launch_session(const char *profile,int width,int height,int fps,int bitrate_kbps);
+
+void ui_launch_origin(float *x,float *y,float *w,float *h);
+void ui_launch_text(uint32_t *pixels,int width,int height);
+
+/* Tick only while Library owns the menu; returns whether its container moved. */
+bool ui_library_tick(uint32_t now);
+
+bool ui_home_tick(uint32_t now);

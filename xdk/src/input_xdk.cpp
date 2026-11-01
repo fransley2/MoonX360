@@ -1,3 +1,4 @@
+#include <stdlib.h>
 /*
  * Controllers through XInput: wired and wireless pads, up to four.
  * Disconnected ports are re-probed at most every 100 ms (polling empty XInput
@@ -5,6 +6,7 @@
  * uses hardware thread 0 in Balanced mode or thread 5 in Legacy mode.
  */
 #include "xdk.h"
+#include "../../src/launch_cover.h"
 #include "../../src/performance.h"
 
 #include <string.h>
@@ -179,7 +181,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
     DWORD keyboard_probe[MAX_PADS]={0};
     bool keyboard_present[MAX_PADS]={false};
     for(int i=0;i<MAX_PADS;i++)keyboard_probe[i]=GetTickCount();
-    bool guide_seen=false;
+    bool guide_seen=false,launch_neutral=true; /* also swallow the menu Play button if a zero-delay cover already ended */
     uint64_t previous_poll=0;
     (void)arg;
     xdk_audit_thread("InputPoll");
@@ -191,13 +193,22 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         DWORD started = GetTickCount();
         int mask = input_poll(pads);
         InterlockedExchange(&rumble_connected_mask,mask);
+        bool cover_input=launch_active();
+        bool any=false,cancel=false,reveal=false;
+        for(int i=0;i<MAX_PADS;i++)if(pads[i].present) {
+            any=any || pads[i].buttons || pads[i].lt>30 || pads[i].rt>30 || abs(pads[i].lx)>8000 || abs(pads[i].ly)>8000 || abs(pads[i].rx)>8000 || abs(pads[i].ry)>8000;
+            cancel=cancel || (pads[i].buttons&B_FLAG)!=0;reveal=reveal || (pads[i].buttons&X_FLAG)!=0;
+        }
+        if(cover_input){launch_command(cancel,reveal);launch_neutral=true;}
+        bool block_launch=cover_input || launch_neutral;
         bool guide=gfx_system_ui_active();
         if(guide && !guide_seen)for(int i=0;i<MAX_PADS;i++)input_rumble((unsigned short)i,0,0);
         struct pad quick_pads[MAX_PADS];memcpy(quick_pads,pads,sizeof(pads));
         for(int i=0;i<MAX_PADS;i++)if(!physical_connected[i])quick_pads[i].present=false;
         bool quick_quit=false;int mouse_action=-1;
         if(!InterlockedCompareExchange(&quick_available,0,0)){if(quick.open){quick.open=false;quick.neutral=true;}quick.latch=true;}
-        bool local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&mouse_action,started);
+        bool local=block_launch;
+        if(!block_launch)local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&mouse_action,started);
         if(quick_quit)InterlockedExchange(&quit_requested,1);
         if(mouse_action>=0) {
             bool old=remote.mouse[mouse_action];
@@ -226,6 +237,8 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
             const BYTE vk[]={0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c};
             for(int k=0;k<8;k++)if(keyboard.bModifiers&bits[k])keys[vk[k]]=true;
         }
+        for(int k=0;k<256;k++)any=any || keys[k];
+        if(launch_neutral && !cover_input && !any)launch_neutral=false;
         remote_keys(&remote,keys,!guide && !local);
         if(local)for(int i=0;i<MAX_PADS;i++){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         for(int i=0;i<MAX_PADS;i++) {

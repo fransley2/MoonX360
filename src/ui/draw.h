@@ -25,6 +25,8 @@ bool ui_focus_tick(uint32_t now);
 void ui_set_motion(bool enabled);
 void ui_focus_presented(void);
 void ui_focus_finish(void);
+/* Call immediately after a cover image. Retained alpha edits only, bounded. */
+void ui_cover_fade_mark(void);
 /* Bounded retained menu scene. Glyph/cover owners invalidate before releasing data. */
 bool ui_scene_store(void);
 bool ui_scene_restore(canvas_t *canvas);
@@ -48,3 +50,9 @@ void ui_picture_region(canvas_t*,const uint32_t*,int,int,int,int,int,int,float,f
 void ui_glyph(canvas_t*,int,int,const uint8_t*,int,int,int,uint32_t);
 /* Single original button atlas; generated locally using the embedded OFL font. */
 bool ui_button(canvas_t*,const char*,int,int,int,int);
+
+bool ui_focus_bounds(float *x,float *y,float *w,float *h);
+
+void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h);
+
+bool ui_motion_enabled(void);

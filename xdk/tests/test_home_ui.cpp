@@ -1,5 +1,6 @@
 #include "../../src/ui/ui.h"
 #include "../../src/ui/draw.h"
+#include "../../src/launch_cover.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -152,7 +153,7 @@ int main(void)
         if(cmd[i].kind==UI_IMAGE && cmd[i].pixels==recent[0].art)images++;
         if(cmd[i].kind==UI_IMAGE && cmd[i].pixels==resume.art)resume_images++;
     }
-    assert(images==1 && resume_images==1); // each distinct game uses its own matching cover, once
+    assert(images==1 && resume_images==1); // Continue and Hero share the same cached thumbnail; no additional texture
     printf("Refined Home GPU commands: %d (four covers, Continue, no host list)\n",command_count);
     assert(command_count<400);
     ui_draw_software();save_preview("series-dashboard-refined.ppm");
@@ -197,7 +198,7 @@ int main(void)
     ui_location_restore(child);ui_location_path(path,sizeof(path),NULL,NULL);
     assert(!strcmp(path,"Library  >  GTA San Andreas"));
     recent[0].running=true;
-    ui_draw_app_details(&host,recent,"Smooth",4);ui_draw_software();save_preview("navigation-stop-app.ppm");
+    ui_draw_app_details(&host,recent,"Smooth","5 s",4);ui_draw_software();save_preview("navigation-stop-app.ppm");
     ui_location_restore(root);
     ui_set_page(UI_SETTINGS);root=ui_location_enter("Settings");
     ui_location_path(path,sizeof(path),"Developer","Renderer");
@@ -206,6 +207,8 @@ int main(void)
         {"Image quality","Auto Quality","Change the renderer quality policy."},{"V-Sync","On","Synchronize presentation."}};
     int renderer_kinds[]={UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_TOGGLE};
     ui_draw_settings_options("Renderer",renderer_rows,renderer_kinds,3,0);ui_draw_software();save_preview("navigation-renderer-options.ppm");
+    ui_launch_begin(recent,1000,true);ui_launch_session("Smooth",1280,720,60,12000);
+    ui_draw_software();save_preview("launch-native-preview.ppm");
     // The active tab underline must exactly match its measured label.
     ui_draw_settings_options("Stream",stream_rows,stream_kinds,3,0);
     const ui_draw_command *tab_cmd=ui_draw_commands(&command_count);assert(tab_cmd);

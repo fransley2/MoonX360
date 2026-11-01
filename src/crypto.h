@@ -10,6 +10,7 @@
 bool crypto_init(void);
 mbedtls_ctr_drbg_context *crypto_drbg(void);
 void crypto_random(void *out, size_t len);
+int crypto_rng_callback(void *context,unsigned char *out,size_t len);
 
 /*
  * Client identity used for pairing and HTTPS. Loaded from storage, or

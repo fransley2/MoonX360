@@ -4,6 +4,7 @@
 #include "draw.h"
 #include "translations.h"
 #include "brand.h"
+#include "layout.h"
 #include "../config.h"
 #include "../settings_layout.h"
 
@@ -82,7 +83,7 @@ void ui_set_settings_context(int page,int category)
     settings_context_page=page;settings_context_category=category;
     if(page>=0)ui_set_page(page);
 }
-static const char *page_names[]={"HOME","LIBRARY","STREAM","SETTINGS"};
+static const char *page_names[]={"Home","Library","Stream","Settings"};
 void ui_set_page(int page) {active_page=page>=0&&page<UI_PAGE_COUNT?page:UI_HOME;}
 
 static char location_parts[8][80];
@@ -169,8 +170,10 @@ void ui_set_appearance(int background,int accent)
     if(bg.px)cv_free(&bg); /* CPU fallback regenerates once on its next redraw. */
 }
 
+static void reset_scroll(void);
 bool ui_init(int width, int height)
 {
+    reset_scroll();
     ui_drop_main_cache();
     if (!font_init())
         return false;
@@ -194,7 +197,16 @@ canvas_t *ui_canvas(void)
 #define TILE_W 150
 #define TILE_H 200
 
-#define TILE_GAP 18
+/* Last selected art rectangle, also available for placeholders/software UI. */
+static char launch_source_name[64];
+static float launch_source[4];
+static void launch_source_tile(const struct ui_app *app,float x,float y,float w,float h)
+{
+    if(!app || !app->name)return;
+    snprintf(launch_source_name,sizeof(launch_source_name),"%s",app->name);
+    launch_source[0]=x;launch_source[1]=y;launch_source[2]=w;launch_source[3]=h;
+}
+#define TILE_GAP UI_CARD_GAP
 #define LIBRARY_W 174
 #define LIBRARY_H 232
 
@@ -208,6 +220,11 @@ int ui_apps_columns(void)
 {
     int cols = (int)((W - 144 + TILE_GAP) / (LIBRARY_W + TILE_GAP));
     return cols < 1 ? 1 : cols;
+}
+
+int ui_apps_rows(void)
+{
+    int rows=(int)((H-170-198)/(LIBRARY_H+52));return rows>0?rows:1;
 }
 
 /* ------------------------------------------------------------ helpers */
@@ -255,7 +272,7 @@ static void rrect(float x, float y, float w, float h, float r, uint32_t c)
 static void card(float x, float y, float w, float h, float r, bool selected)
 {
     rrect(x,y,w,h,r,selected?C_CARD_SEL:C_CARD);
-    cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(r),S(selected?2:1),selected?C_ACCENT:WITH_ALPHA(C_BORDER,100));
+    cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(r),S(selected?UI_FOCUS_BORDER:1),selected?C_ACCENT:WITH_ALPHA(C_BORDER,100));
 }
 
 static uint32_t state_color(int state)
@@ -420,7 +437,7 @@ static void keycap(float x, float baseline, const char *button, float *out_w)
 
 static void footer(const struct hint *hints, int n, const char *right)
 {
-    float x = 64, y = H - 34;
+    float x = UI_SAFE_X, y = H - 40;
     int i;
 
     cv_fill(&cv,0,SI(H-70),cv.w,SI(70),HEX(0x171C20));
@@ -450,7 +467,7 @@ static void header(const struct ui_host *host)
             snprintf(label, sizeof(label), "%s", state_text(host->state));
         else
             snprintf(label, sizeof(label), "%s  \xC2\xB7  %s",
-                     host->name && host->name[0] ? host->name : host->address, state_text(host->state));
+                     host->name && host->name[0] ? host->name : ui_translate("Your streaming PC"), state_text(host->state));
         tw = text_w(FONT_REGULAR, 16, label);
         pw = tw + 46;
         px = W - 64 - pw;
@@ -476,8 +493,8 @@ static void begin_frame(void)
 static void tabs(void)
 {
     for(int i=0;i<UI_PAGE_COUNT;i++) {
-        float x=64+(float)i*194;
-        text(FONT_BOLD,22,x,115,i==active_page?C_ACCENT:C_TEXT_DIM,ui_translate(page_names[i]));
+        float x=UI_SAFE_X+(float)i*UI_TAB_STEP;
+        text(FONT_BOLD,UI_TEXT_PRIMARY,x,UI_TAB_BASELINE,i==active_page?C_TEXT:C_TEXT_DIM,ui_translate(page_names[i]));
         if(i==active_page)cv_fill(&cv,SI(x),SI(123),SI(text_w(FONT_BOLD,22,ui_translate(page_names[i]))),SI(2),C_ACCENT);
     }
     text_right(FONT_REGULAR,16,W-64,115,C_TEXT_DIM,ui_translate("LB / RB"));
@@ -525,13 +542,21 @@ int ui_dashboard_move(int sel,int dx,int dy,int n)
     int next=sel+(dy?dy:dx);
     return next<0?0:next>=n?n-1:next;
 }
+static struct {float current,target,origin;uint32_t now,started;bool active;} home_scroll;
+bool ui_home_tick(uint32_t now)
+{
+    home_scroll.now=now;if(!home_scroll.active)return false;
+    float t=(now-home_scroll.started)/(float)UI_SCROLL_MS;if(t>1 || !ui_motion_enabled())t=1;
+    float r=1-t;home_scroll.current=home_scroll.origin+(home_scroll.target-home_scroll.origin)*(1-r*r*r);
+    if(t>=1){home_scroll.current=home_scroll.target;home_scroll.active=false;}return true;
+}
 /* Fixed logical coordinates: no per-frame layout allocation or measurement. */
 static void dashboard_rect(int item,int recents,float *x,float *y,float *w,float *h)
 {
     *y=186;*h=258;
-    if(!item) {*x=64;*w=332;return;}
-    if(item<=recents) {*x=438+(float)(item-1)*196;*w=174;return;}
-    *x=64+(float)(item-recents-1)*290;*y=476;*w=272;*h=152;
+    if(!item) {*x=UI_SAFE_X;*w=300;return;}
+    if(item<=recents) {*x=400+(float)(item-1)*192-home_scroll.current;*w=174;return;}
+    *x=64+(float)(item-recents-1)*290;*y=500;*w=272;*h=128;
 }
 int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents)
 {
@@ -548,16 +573,17 @@ int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents)
     return target+(column<length?column:length-1);
 }
 
+static void placeholder_art(const char *name,float x,float y,float w,float h);
 static void dashboard_art(const struct ui_app *app,float x,float y,float w,float h)
 {
+    float fit=w/TILE_W;if(h/TILE_H<fit)fit=h/TILE_H;
+    float dw=TILE_W*fit,dh=TILE_H*fit;
+    x+=(w-dw)/2;y+=(h-dh)/2;
     if(app && app->art) {
         ui_picture_region(&cv,app->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),
-            S(x),S(y),S(w),S(h),255,app->generation);
-    } else {
-        rrect(x,y,w,h,0,HEX(0x26312F));
-        text_fit(FONT_BOLD,24,x+14,y+h*.48f,w-28,C_TEXT,app && app->name?app->name:ui_translate("Your games"));
-        text_fit(FONT_REGULAR,14,x+14,y+h*.48f+27,w-28,C_TEXT_DIM,ui_translate("Cover unavailable"));
-    }
+            S(x),S(y),S(dw),S(dh),255,app->generation);
+        ui_cover_fade_mark();
+    } else placeholder_art(app && app->name?app->name:ui_translate("Your games"),x,y,dw,dh);
 }
 static void dashboard_shortcut_icon(int item,float x,float y)
 {
@@ -613,10 +639,17 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
     const char *profile=dashboard && dashboard->profile?dashboard->profile:"Custom";
     const char *mode=dashboard && dashboard->connection?dashboard->connection:"";
     int recent=dashboard?dashboard->recent_count:0;
-    if(recent<0)recent=0;if(recent>4)recent=4;if(recent>=n)recent=n>0?n-1:0;
+    if(recent<0)recent=0;if(recent>8)recent=8;if(recent>=n)recent=n>0?n-1:0;
     int visible=n<recent+5?n:recent+5;
     if(sel<0 || sel>=visible)sel=0;
+    float rail_target=recent>4 && sel>4 && sel<=recent?(float)(sel-4)*192:0.0f;
+    if(sel>0 && sel<=recent && rail_target!=home_scroll.target) {
+        home_scroll.origin=home_scroll.current;home_scroll.target=rail_target;home_scroll.started=home_scroll.now;
+        home_scroll.active=ui_motion_enabled();if(!home_scroll.active)home_scroll.current=rail_target;
+    }
+    if(recent<=4){home_scroll.current=home_scroll.target=0;home_scroll.active=false;}
     uint64_t key=main_hash_text(main_hash_text(main_key(host,items,visible,console_ip),profile),mode)^(unsigned)recent;
+    key=key*1099511628211ULL+(unsigned)(home_scroll.current*16);
     for(int i=0;dashboard && dashboard->recent && i<recent;i++) {
         const struct ui_app *a=dashboard->recent+i;
         key=main_hash_text(key,a->name);key^=(uint64_t)(uintptr_t)a->art;
@@ -637,47 +670,42 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
         }
     }
     if(!reused) {
-        ui_set_page(UI_HOME);begin_frame();header(NULL);tabs();
-        text(FONT_BOLD,22,438,167,C_TEXT,ui_translate("Recent Games & Apps"));
-        text(FONT_REGULAR,17,64,463,C_TEXT_DIM,ui_translate("Quick access"));
+        ui_set_page(UI_HOME);begin_frame();header(host);tabs();
+        text(FONT_BOLD,UI_TEXT_SECTION,UI_SAFE_X,167,C_TEXT,ui_translate(dashboard && dashboard->resume?"Continue Playing":"Play / Connect"));
+        text(FONT_BOLD,UI_TEXT_SECTION,400,167,C_TEXT,ui_translate("Recent Games"));
+        text(FONT_REGULAR,17,64,482,C_TEXT_DIM,ui_translate("Quick access"));
         for(int i=0;i<visible;i++) {
             float x,y,w,h;dashboard_rect(i,recent,&x,&y,&w,&h);
             if(!i) {
-                rrect(x,y,w,h,8,cv_mix(C_CARD,C_ACCENT,24));
-                rrect(x+20,y+22,30,3,1,C_ACCENT);
-                const char *name=host && host->name && *host->name?host->name:
-                    host && host->address && *host->address?host->address:ui_translate("Your streaming PC");
-                text_fit(FONT_BOLD,30,x+24,y+67,w-48,C_TEXT,name);
-                cv_circle(&cv,S(x+29),S(y+94),S(4),host?state_color(host->state):C_TEXT_FAINT);
-                text(FONT_REGULAR,18,x+42,y+100,host?state_color(host->state):C_TEXT_DIM,host?state_text(host->state):ui_translate("Searching..."));
-                text_fit(FONT_BOLD,25,x+24,y+145,w-48,C_TEXT,ui_translate(profile));
-                text_fit(FONT_REGULAR,19,x+24,y+173,w-48,C_TEXT_DIM,ui_translate(mode));
-                rrect(x+24,y+182,w-48,1,0,HEX(0x43604A));
-                float kw;keycap(x+24,y+209,"A",&kw);text(FONT_REGULAR,18,x+62,y+209,C_TEXT,ui_translate("Play"));
-                keycap(x+166,y+209,"X",&kw);text(FONT_REGULAR,18,x+204,y+209,C_TEXT,ui_translate("Details"));
+                rrect(x,y,w,h,UI_CORNER,cv_mix(C_CARD,C_ACCENT,24));
+                dashboard_art(dashboard?dashboard->resume:NULL,x+20,y+20,108,144);
+                text_fit(FONT_BOLD,23,x+148,y+47,w-168,C_TEXT,profile);
+                wrapped(FONT_REGULAR,18,x+148,y+80,w-168,26,C_TEXT_DIM,mode);
+                float kw;keycap(x+148,y+147,"A",&kw);text(FONT_REGULAR,18,x+184,y+147,C_TEXT,ui_translate("Play"));
+                const char *name=dashboard && dashboard->resume?dashboard->resume->name:ui_translate("Your streaming PC");
+                text_fit(FONT_BOLD,24,x+20,y+206,w-40,C_TEXT,name);
+                text_fit(FONT_REGULAR,17,x+20,y+236,w-40,C_TEXT_DIM,ui_translate(dashboard && dashboard->resume?"Continue Playing":"Open Library to choose a game"));
             } else if(i<=recent) {
                 const struct ui_app *app=dashboard && dashboard->recent?dashboard->recent+i-1:NULL;
+                if(x+w<388 || x>W-UI_SAFE_X)continue;
+                cv_clip(&cv,SI(388),SI(176),SI(W-UI_SAFE_X-388),SI(278));
                 dashboard_art(app,x,y,w,232);
                 rrect(x,y+232,w,26,0,HEX(0x20272A));
                 text_fit(FONT_REGULAR,16,x+8,y+251,w-16,C_TEXT,items[i].title);
+                cv_unclip(&cv);
             } else {
                 int shortcut=i-recent-1;
                 static const uint32_t colors[]={0x263431,0x28372E,0x26302F,0x292F34};
                 rrect(x,y,w,h,6,HEX(colors[shortcut]));
                 cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(6),S(1),WITH_ALPHA(C_BORDER,100));
-                if(shortcut==2 && dashboard && dashboard->resume) {
-                    dashboard_art(dashboard->resume,x,y,114,152);
-                    text(FONT_BOLD,24,x+130,y+47,C_TEXT,ui_translate("Continue"));
-                    text_fit(FONT_REGULAR,17,x+130,y+79,w-146,C_TEXT_DIM,dashboard->resume->name);
-                } else {
-                    dashboard_shortcut_icon(shortcut,x+22,y+20);
-                    text_fit(FONT_BOLD,24,x+22,y+111,w-44,C_TEXT,ui_translate(items[i].title));
-                }
+                dashboard_shortcut_icon(shortcut,x+22,y+24);
+                text_fit(FONT_BOLD,24,x+78,y+51,w-100,C_TEXT,ui_translate(items[i].title));
+
             }
         }
         if(!recent) {
-            text(FONT_BOLD,27,438,279,C_TEXT,ui_translate("Your next game starts here"));
-            text(FONT_REGULAR,19,438,314,C_TEXT_DIM,ui_translate("Open Library. Your recent games will appear here."));
+            text(FONT_BOLD,27,400,279,C_TEXT,ui_translate("Your next game starts here"));
+            text(FONT_REGULAR,19,400,314,C_TEXT_DIM,ui_translate("Open Library. Your recent games will appear here."));
         }
         footer(hints,5,NULL);
         main_cache_key=key;main_cache_gpu=ui_draw_enabled();
@@ -687,11 +715,16 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
     }
     if(visible>0) {
         float x,y,w,h;dashboard_rect(sel,recent,&x,&y,&w,&h);
-        cv_rrect_outline(&cv,S(x-4),S(y-4),S(w+8),S(h+8),S(6),S(3),C_ACCENT);
+        if(sel>0 && sel<=recent)cv_clip(&cv,SI(388),SI(176),SI(W-UI_SAFE_X-388),SI(278));
+        cv_rrect_outline(&cv,S(x-4),S(y-4),S(w+8),S(h+8),S(6),S(UI_FOCUS_BORDER),C_ACCENT);
         ui_focus_mark(UI_HOME,sel);
+        if(sel>0 && sel<=recent && dashboard && dashboard->recent)
+            launch_source_tile(dashboard->recent+sel-1,x,y,w,232);
+        else if((!sel || sel==recent+3) && dashboard && dashboard->resume)
+            launch_source_tile(dashboard->resume,84,206,108,144);
+        cv_unclip(&cv);
         if(sel>recent && items[sel].subtitle) {
-            bool resume=sel==recent+3 && dashboard && dashboard->resume;
-            text_fit(FONT_REGULAR,16,x+(resume?130:22),y+137,w-(resume?146:44),C_TEXT_DIM,ui_translate(items[sel].subtitle));
+            text_fit(FONT_REGULAR,17,x+78,y+83,w-100,C_TEXT_DIM,ui_translate(items[sel].subtitle));
         }
     }
 }
@@ -728,106 +761,76 @@ static uint32_t name_color(const char *name)
 }
 
 /* Placeholder art: vertical gradient in a colour derived from the name. */
-static void placeholder_tile(const char *name, int px, int py, int pw, int ph)
+static void placeholder_art(const char *name,float x,float y,float w,float h)
 {
     uint32_t base = name_color(name);
     uint32_t top = cv_mix(base, HEX(0xFFFFFF), 40), bottom = cv_mix(base, HEX(0x000000), 110);
-    cv_vgradient(&cv,px,py,pw,ph,top,bottom);
+    cv_vgradient(&cv,SI(x),SI(y),SI(w),SI(h),top,bottom);
+    icon(ICON_PLAY,x+w/2,y+h*.32f,18,WITH_ALPHA(C_TEXT,160));
+    /* One shared fallback, including small Continue cards. Title uses the same
+     * truncation as real artwork captions; no status claim while work is pending. */
+    text_fit(FONT_BOLD,UI_TEXT_SECONDARY,x+14,y+h*.62f,w-28,C_TEXT,name);
+    cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),0,S(1),WITH_ALPHA(C_BORDER,130));
 }
 
-static void app_tile(const struct ui_app *a, float x, float y, bool on,int item)
+static void app_tile(const struct ui_app *a,float x,float y,bool on,int item)
 {
-    float w = LIBRARY_W, h = LIBRARY_H;
-
-    if (on)
-        cv_shadow(&cv, S(x), S(y), S(w), S(h), S(5), S(8), WITH_ALPHA(C_ACCENT, 55));
-    else
-        cv_shadow(&cv, S(x), S(y + 5), S(w), S(h), S(5), S(6), C_SHADOW);
-
-    if (a->art) {
+    float w=UI_RAIL_CARD_WIDTH,h=UI_RAIL_CARD_HEIGHT;
+    if(on)launch_source_tile(a,x,y,w,h);
+    if(a->art) {
         ui_picture_region(&cv,a->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(x),S(y),S(w),S(h),255,a->generation);
-    } else {
-        char initial[8] = { 0 };
-        int n = 1;
-
-        if (((unsigned char)a->name[0] & 0xE0) == 0xC0) n = 2;
-        else if (((unsigned char)a->name[0] & 0xF0) == 0xE0) n = 3;
-        memcpy(initial, a->name, n);
-        placeholder_tile(a->name, SI(x), SI(y), SI(w), SI(h));
-        text_center(FONT_BOLD, 72, x + w / 2, y + h / 2 + 24, WITH_ALPHA(HEX(0xFFFFFF), 210), initial);
-    }
-
-    if(a->favorite) {rrect(x+w-56,y+10,46,24,8,C_YELLOW);text_center(FONT_BOLD,12,x+w-33,y+27,C_BG_BOTTOM,ui_translate("FAV"));}
-    /* Selection ring sits just outside the art. */
-    if (on) {
-        cv_rrect_outline(&cv, S(x - 6), S(y - 6), S(w + 12), S(h + 12), S(6), S(3), C_ACCENT);
+        ui_cover_fade_mark();
+    } else placeholder_art(a->name,x,y,w,h);
+    if(on) {
+        cv_rrect_outline(&cv,S(x-5),S(y-5),S(w+10),S(h+10),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
         ui_focus_mark(UI_LIBRARY,item);
     }
-    if (a->running) {
-        rrect(x + 10, y + 10, 82, 24, 12, C_GREEN);
-        text_center(FONT_BOLD, 12, x + 51, y + 26.5f, HEX(0x08140E), ui_translate("RUNNING"));
-    }
+    if(a->favorite){rrect(x+w-52,y+10,42,24,4,C_YELLOW);text_center(FONT_BOLD,12,x+w-31,y+27,C_BG_BOTTOM,ui_translate("FAV"));}
+    if(a->running){rrect(x+10,y+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,x+51,y+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
 }
-
-void ui_draw_library(const struct ui_host *host, const struct ui_app *apps, int n, int sel, const char *filter)
+static struct {float current,target,origin;uint32_t now,started;uint64_t context;bool active,known;} library_scroll;
+static void reset_scroll(void){memset(&home_scroll,0,sizeof(home_scroll));memset(&library_scroll,0,sizeof(library_scroll));}
+bool ui_library_tick(uint32_t now)
 {
-    static const struct hint hints[] = { { "A", "Play" }, { "B", "Back" }, { "X", "Details" }, { "Start", "Menu" }, { "Y", "Refresh" } };
-    const float gap = TILE_GAP, row_h = LIBRARY_H + 52, top = 198, bottom = H - 170;
-    int cols = ui_apps_columns();
-    float x0;
-    int rows_visible, first_row, i;
-    char title[160], count[32];
-
-    ui_set_page(UI_LIBRARY);begin_frame();
-    header(host);
-    tabs();
-
-    snprintf(title, sizeof(title), "%s", ui_translate(filter?filter:"All Apps"));
-    snprintf(count, sizeof(count), ui_translate(n == 1 ? "1 app" : "%d apps"), n);
-    text(FONT_BOLD, 28, 64, 168, C_TEXT, title);
-    text(FONT_REGULAR, 17, 64 + text_w(FONT_BOLD, 28, title) + 14, 167, C_TEXT_DIM, count);
-
-    if (n == 0) {
-        text_fit(FONT_REGULAR, 21, 64, 330, W-128, C_TEXT_DIM, ui_translate("No apps here. Use Start to change view."));
-        static const struct hint empty_hints[]={{"B","Back"},{"Start","Menu"},{"Y","Refresh"}};
-        footer(empty_hints,3,NULL);
-        return;
+    library_scroll.now=now;if(!library_scroll.active)return false;
+    unsigned elapsed=now-library_scroll.started;float t=elapsed/(float)UI_SCROLL_MS;if(t>1 || !ui_motion_enabled())t=1;
+    float remaining=1-t;library_scroll.current=library_scroll.origin+(library_scroll.target-library_scroll.origin)*(1-remaining*remaining*remaining);
+    if(t>=1){library_scroll.current=library_scroll.target;library_scroll.active=false;}
+    return true;
+}
+void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,int sel,const char *filter)
+{
+    static const struct hint hints[]={{"A","Play"},{"B","Back"},{"X","Details"},{"Start","Menu"},{"Y","Refresh"}};
+    ui_set_page(UI_LIBRARY);begin_frame();header(host);tabs();
+    char count[32];snprintf(count,sizeof(count),ui_translate(n==1?"1 app":"%d apps"),n);
+    text(FONT_BOLD,UI_TEXT_TITLE,UI_SAFE_X,168,C_TEXT,ui_translate(filter?filter:"All Apps"));
+    text_right(FONT_REGULAR,UI_TEXT_META,W-UI_SAFE_X,168,C_TEXT_DIM,count);
+    if(n<=0){text(FONT_REGULAR,UI_TEXT_PRIMARY,UI_SAFE_X,330,C_TEXT_DIM,ui_translate("No apps here. Use Start to change view."));footer(hints+1,4,NULL);return;}
+    if(sel<0 || sel>=n)sel=0;
+    int first=sel>=UI_RAIL_VISIBLE?sel-UI_RAIL_VISIBLE+1:0;
+    uint64_t context=main_hash_text(main_hash_text(14695981039346656037ULL,filter),host?host->name:NULL)^(unsigned)n;
+    float target=(float)first*(float)UI_RAIL_STEP;
+    if(!library_scroll.known || library_scroll.context!=context) {
+        library_scroll.current=library_scroll.target=target;library_scroll.active=false;library_scroll.known=true;library_scroll.context=context;
+    } else if(target!=library_scroll.target) {
+        library_scroll.origin=library_scroll.current;library_scroll.target=target;library_scroll.started=library_scroll.now;
+        library_scroll.active=ui_motion_enabled();if(!library_scroll.active)library_scroll.current=target;
     }
-
-    x0 = 72;
-    rows_visible = (int)((bottom - top) / row_h);
-    if (rows_visible < 1)
-        rows_visible = 1;
-    first_row = sel / cols - rows_visible + 1;
-    if (first_row < 0)
-        first_row = 0;
-
-    cv_clip(&cv, SI(52), SI(top - 20), cv.w-SI(100), SI(bottom - top + 20));
-    for (i = 0; i < n; i++) {
-        int row = i / cols - first_row, col = i % cols;
-        float tx = x0 + col * (LIBRARY_W + gap), ty = top + 8 + row * row_h;
-
-        if (row < 0 || row >= rows_visible)
-            continue;
-        if (i != sel) {
-            app_tile(&apps[i], tx, ty, false,i);
-            text_fit(FONT_REGULAR, 18, tx + 2, ty + LIBRARY_H + 26, LIBRARY_W - 4, C_TEXT_DIM, apps[i].name);
-        }
-    }
-    /* Draw the focused cover last; only complete rows are visible. */
-    {
-        int row = sel / cols - first_row, col = sel % cols;
-        float tx = x0 + col * (LIBRARY_W + gap), ty = top + 8 + row * row_h;
-        app_tile(&apps[sel], tx, ty, true,sel);
-        text_fit(FONT_BOLD, 20, tx + 2, ty + LIBRARY_H + 26, LIBRARY_W - 4, C_TEXT, apps[sel].name);
+    /* Draw just the clipped visible rail and one overscan card either side.
+     * All cards share one position; no per-card animation or allocation. */
+    float top=212;cv_clip(&cv,SI(UI_SAFE_X-8),SI(top-10),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(UI_RAIL_CARD_HEIGHT+66));
+    int begin=(int)(library_scroll.current/UI_RAIL_STEP)-1;if(begin<0)begin=0;
+    int end=begin+UI_RAIL_VISIBLE+3;if(end>n)end=n;
+    for(int i=begin;i<end;i++) {
+        float x=UI_SAFE_X+(float)i*UI_RAIL_STEP-library_scroll.current;
+        app_tile(apps+i,x,top,i==sel,i);
+        text_fit(i==sel?FONT_BOLD:FONT_REGULAR,i==sel?(float)UI_TEXT_PRIMARY:20.0f,x,top+UI_RAIL_CARD_HEIGHT+31,UI_RAIL_CARD_WIDTH,i==sel?C_TEXT:C_TEXT_DIM,apps[i].name);
     }
     cv_unclip(&cv);
-    card(64,H-145,W-128,60,6,false);
-    text_fit(FONT_BOLD,22,84,H-107,W-400,C_TEXT,apps[sel].name);
-    char position[40];snprintf(position,sizeof(position),"%d / %d",sel+1,n);
-    text_right(FONT_REGULAR,18,W-88,H-107,C_TEXT_DIM,position);
-
-    footer(hints, 5, NULL);
+    card(UI_SAFE_X,568,W-2*UI_SAFE_X,60,UI_CORNER,false);
+    text_fit(FONT_BOLD,UI_TEXT_PRIMARY,UI_SAFE_X+20,606,W-2*UI_SAFE_X-150,C_TEXT,apps[sel].name);
+    char position[40];snprintf(position,sizeof(position),"%d / %d",sel+1,n);text_right(FONT_REGULAR,UI_TEXT_META,W-UI_SAFE_X-20,606,C_TEXT_DIM,position);
+    footer(hints,5,NULL);
 }
 
 void ui_draw_apps(const struct ui_host *host,const struct ui_app *apps,int n,int sel,uint32_t t_ms)
@@ -845,50 +848,17 @@ static int option_kind(const char *title,const struct ui_setting *row,int index,
     if(!adjustable || !strcmp(title,"Settings") || !strcmp(title,"Developer / Advanced"))return UI_OPTION_OPEN;
     if(!strcmp(title,"Host details"))return index==0?UI_OPTION_ACTION:index==3?UI_OPTION_OPEN:UI_OPTION_INFO;
     if(!strcmp(title,"Host actions") || !strcmp(title,"Delete profile?") || !strcmp(title,"Rename profile"))return UI_OPTION_ACTION;
-    if(!strcmp(title,"Saved profiles"))return index==0?UI_OPTION_ACTION:UI_OPTION_OPEN;
-    if(!strcmp(title,"Profile actions"))return index==0?UI_OPTION_INFO:index==1?UI_OPTION_ACTION:UI_OPTION_OPEN;
     if(!strcmp(title,"Library menu"))return index==0?UI_OPTION_CYCLE:UI_OPTION_OPEN;
+    if(!strcmp(title,"Stream Profile"))return UI_OPTION_ACTION;
+    if(!strcmp(row->label,"Saved profile") || !strcmp(row->label,"Factory profile"))return UI_OPTION_ACTION;
+    if(!strcmp(row->label,"Name"))return UI_OPTION_INFO;
     if(!strcmp(row->value,"On") || !strcmp(row->value,"Off"))return UI_OPTION_TOGGLE;
     if(!strcmp(row->value,"Open") || !strcmp(row->value,"Manage") || !strcmp(row->value,"Press A"))return UI_OPTION_OPEN;
     return UI_OPTION_CYCLE;
 }
-/* Settings root keeps the six categories and the existing A/B flow.
- * On child pages the rail is context only; focus stays on the option list. */
-static int settings_category(const char *title)
-{
-    if(settings_context_page>=0)return settings_context_category;
-    for(int i=0;i<MENU_COUNT;i++)if(!strcmp(title,settings_pages[i].title))return settings_pages[i].category;
-    return -1;
-}
-static void settings_rail(int selected)
-{
-    rrect(64,194,288,418,8,HEX(0x191E22));
-    text(FONT_BOLD,24,86,232,C_TEXT,ui_translate("Settings"));
-    for(int i=0;i<SETTINGS_STREAM;i++) {
-        float y=250+(float)i*58;
-        if(i==selected)rrect(76,y,264,56,5,C_CARD_SEL);
-        if(i==selected)rrect(76,y+10,3,36,1,C_ACCENT);
-        wrapped(FONT_REGULAR,19,94,y+21,226,23,i==selected?C_TEXT:C_TEXT_DIM,ui_translate(settings_categories[i]));
-    }
-}
-static bool settings_root(const char *title,const struct ui_setting *rows,int n,int sel)
-{
-    if(strcmp(title,"Settings") || n!=SETTINGS_STREAM || strcmp(rows[0].label,settings_categories[0]) || sel<0 || sel>=n)return false;
-    settings_rail(sel);
-    card(368,194,W-432,418,8,false);
-    icon(sel==0?ICON_MONITOR:ICON_GEAR,410,246,22,C_ACCENT);
-    text_fit(FONT_BOLD,30,452,257,W-544,C_TEXT,ui_translate(rows[sel].label));
-    wrapped(FONT_REGULAR,21,398,314,W-496,30,C_TEXT_DIM,ui_translate(rows[sel].help));
-    rrect(398,518,206,54,5,C_CARD_SEL);
-    float kw;keycap(414,553,"A",&kw);
-    text_fit(FONT_BOLD,19,450,553,140,C_TEXT,ui_translate("Open menu"));
-    static const struct hint hints[]={{"A","Open menu"},{"B","Back"}};
-    footer(hints,2,NULL);return true;
-}
-
 static void settings_page(const char *title, const struct ui_setting *rows, int n, int sel, bool adjustable,const int *kinds)
 {
-    float x = 64, y = 190, w = W - 128, rh = 50;
+    float x = UI_SAFE_X, y = UI_CONTENT_TOP, w = W - 2*UI_SAFE_X, rh = UI_ROW_HEIGHT;
     int i, visible = n < 6 ? n : 6;
     int first = sel - visible / 2;
     if (first < 0) first = 0;
@@ -898,34 +868,31 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
     header(NULL);
     tabs();
     breadcrumb(NULL,ui_translate(title));
-    if(settings_root(title,rows,n,sel))return;
-    int category=settings_category(title);
-    bool split=category>=0;
-    if(split){settings_rail(category);x=368;w=W-432;y=194;rh=56;}
-    card(x, y, w, rh * visible + 16, 8, false);
-    for (i = first; i < first + visible; i++) {
+    float panel_h=rh*visible+16+(n>visible?UI_SETTINGS_PEEK:0);
+    card(x,y,w,panel_h,UI_CORNER,false);
+    cv_clip(&cv,SI(x+8),SI(y+8),SI(w-16),SI(panel_h-16));
+    int last=first+visible+(n>visible?1:0);if(last>n)last=n;
+    for (i = first; i < last; i++) {
         float ry = y + 8 + (i - first) * rh;
         bool on = i == sel;
 
         if (on) {
-            rrect(x + 8, ry, w - 16, rh, 10, C_CARD_SEL);
-            rrect(x + 8, ry + 10, 4, rh - 20, 2, C_ACCENT);
+            rrect(x + 8, ry, w - 16, rh, UI_CORNER, C_CARD_SEL);
+            cv_rrect_outline(&cv,S(x+8),S(ry),S(w-16),S(rh),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
         } else if (i > 0) {
             cv_fill(&cv, SI(x + 24), SI(ry), SI(w - 48), 1, WITH_ALPHA(C_BORDER, 200));
         }
         int kind=kinds?kinds[i]:option_kind(title,rows+i,i,adjustable);
-        const char *type=kind==UI_OPTION_OPEN?"Opens menu":kind==UI_OPTION_CYCLE?"Change value":
-            kind==UI_OPTION_TOGGLE?"On / Off":kind==UI_OPTION_ACTION?"Run action":"Read only";
-        float value_width=split?250.0f:410.0f;
+        bool literal_value=!strcmp(rows[i].label,"Saved profile") || !strcmp(rows[i].label,"Name") || !strcmp(rows[i].label,"Use profile") || !strcmp(rows[i].label,"Stream Profile");
+        const char *display_value=literal_value?rows[i].value:ui_translate(rows[i].value);
+        float value_width=410.0f;
         float value_x=x+w-value_width-30;
-        text_fit(FONT_REGULAR,19,x+30,ry+(split?23:32),split?w-350:430,on?C_TEXT:C_TEXT_DIM,ui_translate(rows[i].label));
-        if(split)text_fit(FONT_REGULAR,13,x+30,ry+44,w-350,C_TEXT_FAINT,ui_translate(type));
-        else text(FONT_REGULAR,14,x+476,ry+31,C_TEXT_FAINT,ui_translate(type));
-        if (on && kind==UI_OPTION_CYCLE) {
-            float vw = text_w(FONT_BOLD, 19, ui_translate(rows[i].value));
+        text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,x+30,ry+35,value_x-x-50,on?C_TEXT:C_TEXT_DIM,(!strcmp(title,"Stream Profile") || !strcmp(title,"Game stream profile"))?rows[i].label:ui_translate(rows[i].label));
+        if (kind==UI_OPTION_CYCLE) {
+            float vw = text_w(FONT_BOLD, UI_TEXT_PRIMARY, display_value);
             if(vw>value_width-40)vw=value_width-40;
             float vx = x + w - 52 - vw;
-            text_fit(FONT_BOLD, 19, vx, ry + 32, value_width-40, C_TEXT, ui_translate(rows[i].value));
+            text_fit(FONT_BOLD, UI_TEXT_PRIMARY, vx, ry + 35, value_width-40, on?C_TEXT:C_TEXT_DIM, display_value);
             /* < value > chevrons */
             cv_line(&cv, S(vx - 16), S(ry + rh / 2 - 6), S(vx - 22), S(ry + rh / 2), S(2.2f), C_ACCENT);
             cv_line(&cv, S(vx - 22), S(ry + rh / 2), S(vx - 16), S(ry + rh / 2 + 6), S(2.2f), C_ACCENT);
@@ -933,18 +900,22 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
             cv_line(&cv, S(x + w - 30), S(ry + rh / 2), S(x + w - 36), S(ry + rh / 2 + 6), S(2.2f), C_ACCENT);
         } else {
             const char *value=kind==UI_OPTION_OPEN && (!strcmp(rows[i].value,"Open") || !strcmp(rows[i].value,"Manage") || !strcmp(rows[i].value,"Press A"))?"Open  >":rows[i].value;
-            bool raw=(!strcmp(title,"Host settings") && (i==0 || i==3 || i==4 || i==5)) || (!strcmp(title,"Game stream profile") && i>=CONFIG_PROFILE_COUNT) || (!strcmp(title,"Host details") && i==1) || (!strcmp(title,"Saved profiles") && i>0) || (!strcmp(title,"Profile actions") && i==0) || (!strcmp(title,"Delete profile?") && i==1) || !strcmp(title,"Rename profile");
-            if(split && kind==UI_OPTION_TOGGLE) {
+            bool raw=literal_value || (!strcmp(title,"Host settings") && (i==0 || i==3 || i==4 || i==5)) || (!strcmp(title,"Game stream profile") && i>=CONFIG_PROFILE_COUNT) || (!strcmp(title,"Host details") && i==1) || ((!strcmp(title,"Delete profile?") || !strcmp(title,"Delete profile")) && i==1) || !strcmp(title,"Rename profile");
+            if(kind==UI_OPTION_TOGGLE) {
                 bool enabled=!strcmp(rows[i].value,"On");
                 rrect(x+w-82,ry+17,48,24,12,enabled?C_ACCENT:C_BORDER);
                 cv_circle(&cv,S(x+w-(enabled?46:70)),S(ry+29),S(8),enabled?C_BG_BOTTOM:C_TEXT);
-                text_fit(FONT_REGULAR,18,value_x,ry+34,value_width-80,C_TEXT_DIM,ui_translate(value));
-            } else text_fit(on?FONT_BOLD:FONT_REGULAR,19,value_x,ry+32,value_width,on?C_TEXT:C_TEXT_DIM,raw?value:ui_translate(value));
+                text_fit(FONT_REGULAR,18,value_x,ry+34,value_width-80,C_TEXT_DIM,literal_value?value:ui_translate(value));
+            } else text_fit(on?FONT_BOLD:FONT_REGULAR,UI_TEXT_PRIMARY,value_x,ry+35,value_width,on?C_TEXT:C_TEXT_DIM,raw?value:ui_translate(value));
         }
     }
 
-    if (sel >= 0 && sel < n && ui_translate(rows[sel].help))
-        wrapped(FONT_REGULAR, 16, x + 4, (split?562:y + rh * visible + 50), w - 8, 22, C_TEXT_DIM, ui_translate(rows[sel].help));
+    cv_unclip(&cv);
+    if (sel >= 0 && sel < n && ui_translate(rows[sel].help)) {
+        cv_clip(&cv,SI(x),SI(y+panel_h+20),SI(w),SI(H-82-(y+panel_h+20)));
+        wrapped(FONT_REGULAR, UI_TEXT_SECONDARY, x + 4, (y + panel_h + 44), w - 8, 25, C_TEXT_DIM, ui_translate(rows[sel].help));
+        cv_unclip(&cv);
+    }
 
     if (n > visible) {
         char position[32];
@@ -953,7 +924,8 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
     }
 
     int kind=sel>=0 && sel<n?(kinds?kinds[sel]:option_kind(title,rows+sel,sel,adjustable)):UI_OPTION_INFO;
-    const char *action=!strcmp(title,"Rename profile")?"Save":kind==UI_OPTION_OPEN?"Open menu":kind==UI_OPTION_CYCLE?"Next value":
+    bool details=sel>=0 && sel<n && (!strcmp(rows[sel].label,"Stream Profile") || !strcmp(rows[sel].label,"Launch coverage")) && !strcmp(title,"Stream");
+    const char *action=!strcmp(title,"Rename profile")?"Save":!strcmp(title,"Stream Profile")?"Select":kind==UI_OPTION_OPEN?"Open":kind==UI_OPTION_CYCLE?(details?"Details":"Next value"):
         kind==UI_OPTION_TOGGLE?(sel>=0 && sel<n && !strcmp(rows[sel].value,"On")?"Turn off":"Turn on"):
         (sel>=0 && sel<n?rows[sel].label:"Run action");
     struct hint hints[]={{"A",action},{"Left / Right","Change"},{"B","Back"}};
@@ -973,6 +945,33 @@ void ui_draw_settings_page(const char *title,const struct ui_setting *rows,int n
 {settings_page(title,rows,n,sel,true,NULL);}
 void ui_draw_settings_options(const char *title,const struct ui_setting *rows,const int *kinds,int n,int sel)
 {settings_page(title,rows,n,sel,true,kinds);}
+void ui_draw_profiles(const struct ui_setting *rows,int n,int sel,int factory_count)
+{
+    ui_set_page(UI_STREAM);begin_frame();header(NULL);tabs();breadcrumb(NULL,ui_translate("Stream Profile"));
+    int first=sel>2?sel-2:0;if(first>n-5)first=n>5?n-5:0;
+    float y=222;
+    text(FONT_BOLD,18,UI_SAFE_X,198,C_ACCENT,ui_translate(first<factory_count?"Factory":"My Profiles"));
+    for(int i=first;i<n && i<first+5;i++) {
+        if(i==factory_count && i>first){text(FONT_BOLD,18,UI_SAFE_X,y+18,C_ACCENT,ui_translate("My Profiles"));y+=28;}
+        bool on=i==sel;card(UI_SAFE_X,y,W-2*UI_SAFE_X,58,UI_CORNER,on);
+        text_fit(on?FONT_BOLD:FONT_REGULAR,22,UI_SAFE_X+24,y+36,600,on?C_TEXT:C_TEXT_DIM,rows[i].label);
+        text_right(FONT_REGULAR,19,W-UI_SAFE_X-24,y+36,C_TEXT_DIM,i==n-1?ui_translate(rows[i].value):rows[i].value);y+=66;
+    }
+    wrapped(FONT_REGULAR,18,UI_SAFE_X,608,W-2*UI_SAFE_X,24,C_TEXT_DIM,ui_translate(rows[sel].help));
+    struct hint hints[]={{"A","Use profile"},{"X","Edit"},{"Y","Manage"},{"B","Back"}};
+    if(sel==n-1){struct hint save[]={{"A","Save"},{"B","Back"}};footer(save,2,NULL);}
+    else footer(hints,4,NULL);
+}
+void ui_draw_confirm(const char *title,const char *message,const char *confirm)
+{
+    cv_unclip(&cv);cv_fill(&cv,0,0,cv.w,cv.h,ARGB(170,0,0,0));
+    card(280,246,720,230,UI_CORNER,false);
+    text(FONT_BOLD,28,312,294,C_TEXT,ui_translate(title));
+    wrapped(FONT_REGULAR,21,312,340,656,28,C_TEXT_DIM,message);
+    rrect(312,405,184,48,4,C_RED);float width;keycap(328,436,"A",&width);
+    text(FONT_BOLD,20,366,436,C_TEXT,ui_translate(confirm));
+    keycap(542,436,"B",&width);text(FONT_REGULAR,20,580,436,C_TEXT,ui_translate("Cancel"));
+}
 void ui_draw_list(const char *title,const struct ui_setting *rows,int n,int sel)
 {
     if(strcmp(title,"Recent Sessions")){settings_page(title,rows,n,sel,false,NULL);return;}
@@ -1009,26 +1008,27 @@ void ui_draw_advisor(const struct ui_stat *rows,int n,const char *note,bool can_
     ui_draw_performance(n?rows[0].value:"Not measured",n>3?rows[3].value:"Standard",-1,
         "See measured details","See measured details",n>1?rows[1].value:"Unknown",note,can_apply);
 }
-void ui_draw_app_details(const struct ui_host *host,const struct ui_app *app,const char *profile,int selected)
+void ui_draw_app_details(const struct ui_host *host,const struct ui_app *app,const char *profile,const char *coverage,int selected)
 {
     ui_set_page(UI_LIBRARY);begin_frame();header(host);tabs();
     breadcrumb(NULL,app->name);
-    app_tile(app,312,186,false,0);
+    app_tile(app,284,186,false,0);launch_source_tile(app,284,186,UI_RAIL_CARD_WIDTH,UI_RAIL_CARD_HEIGHT);
     text_fit(FONT_BOLD,32,500,207,W-564,C_TEXT,app->name);
     text_fit(FONT_REGULAR,19,500,244,W-564,C_TEXT_DIM,host && host->name?host->name:ui_translate("Your PC"));
     text_fit(FONT_REGULAR,19,500,277,W-564,C_TEXT_DIM,ui_translate(profile));
-    const char *options[]={"Play","Stream profile",app->favorite?"Remove favorite":"Add favorite","Performance history","Stop app"};
-    const char *actions[]={"Start now","Open settings  >",app->favorite?"Remove":"Add","Open history  >",app->running?"Stop on PC":"Not running"};
-    for(int i=0;i<5;i++) {
-        float y=300+(float)i*58;bool enabled=i!=4 || app->running;
+    const char *options[]={"Play","Stream Profile",app->favorite?"Remove favorite":"Add favorite","Performance history","Stop app","Launch coverage"};
+    const char *actions[]={"Start now",profile,app->favorite?"Remove":"Add","Open history  >",app->running?"Stop on PC":"Not running",coverage};
+    for(int i=0;i<6;i++) {
+        float y=290+(float)i*49;bool enabled=i!=4 || app->running;
         card(500,y,W-564,50,2,i==selected);
-        text(FONT_BOLD,21,524,y+33,!enabled?C_TEXT_FAINT:i==selected?C_TEXT:C_TEXT_DIM,ui_translate(options[i]));
-        text_right(FONT_REGULAR,16,W-84,y+32,!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM,ui_translate(actions[i]));
+        text_fit(FONT_BOLD,21,524,y+33,260,!enabled?C_TEXT_FAINT:i==selected?C_TEXT:C_TEXT_DIM,ui_translate(options[i]));
+        text_fit(FONT_REGULAR,18,796,y+32,W-880,!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM,(i==1 || i==5)?actions[i]:ui_translate(actions[i]));
     }
     const char *action=selected==0?"Play now":selected==1?"Open stream settings":selected==2?(app->favorite?"Remove favorite":"Add favorite"):
-        selected==3?"Open history":app->running?"Stop app":"Not running";
+        selected==3?"Open history":selected==5?"Open settings  >":app->running?"Stop app":"Not running";
     struct hint hints[]={{"A",action},{"B","Back"}};
-    footer(selected==4 && !app->running?hints+1:hints,selected==4 && !app->running?1:2,NULL);
+    if(selected==1 || selected==5){struct hint inline_hints[]={{"Left / Right","Change"},{"A","Details"},{"B","Back"}};footer(inline_hints,3,NULL);}
+    else footer(selected==4 && !app->running?hints+1:hints,selected==4 && !app->running?1:2,NULL);
 }
 
 void ui_draw_ip_editor(const int octets[4], int sel)
@@ -1082,7 +1082,7 @@ void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms)
              host ? host->address : ui_translate("host"));
     text_fit(FONT_BOLD, 26, dx + 40, dy + 58, dw - 80, C_TEXT, title);
     wrapped(FONT_REGULAR, 17, dx + 40, dy + 90, dw - 80, 24, C_TEXT_DIM,
-            ui_translate("On your PC, open Vibepollo or Sunshine and enter this pairing PIN:"));
+            ui_translate("On your PC, open Sunshine, Apollo or Vibepollo and enter this pairing PIN:"));
 
     bx0 = dx + (dw - (4 * bw + 3 * gap)) / 2;
     for (i = 0; i < 4 && pin[i]; i++) {
@@ -1094,7 +1094,18 @@ void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms)
     }
 
     spinner(dx + 60, dy + dh - 50, 11, t_ms);
-    text(FONT_REGULAR, 17, dx + 84, dy + dh - 44, C_TEXT_DIM, ui_translate("Waiting for the PIN to be entered on the PC..."));
+    text(FONT_REGULAR, 17, dx + 84, dy + dh - 44, C_TEXT_DIM, ui_translate("Waiting for the PIN on the PC. B cancels."));
+}
+
+void ui_draw_host_failure(const char *title,const char *reason)
+{
+    begin_frame();header(NULL);tabs();
+    card(UI_SAFE_X,UI_CONTENT_TOP,W-2*UI_SAFE_X,360,UI_CORNER,false);
+    icon(ICON_MONITOR,UI_SAFE_X+42,UI_CONTENT_TOP+58,25,C_TEXT_DIM);
+    text_fit(FONT_BOLD,UI_TEXT_TITLE,UI_SAFE_X+86,UI_CONTENT_TOP+69,W-2*UI_SAFE_X-116,C_TEXT,title);
+    wrapped(FONT_REGULAR,UI_TEXT_PRIMARY,UI_SAFE_X+32,UI_CONTENT_TOP+130,W-2*UI_SAFE_X-64,32,C_TEXT_DIM,ui_translate(reason));
+    static const struct hint hints[]={{"A","Try again"},{"X","Host details"},{"Y","Forget host"},{"B","Back"}};
+    footer(hints,4,NULL);
 }
 
 void ui_draw_busy(const char *title, const char *message, uint32_t t_ms)
@@ -1111,6 +1122,7 @@ void ui_draw_busy(const char *title, const char *message, uint32_t t_ms)
     text_fit(FONT_BOLD, 24, dx + 110, dy + 56, dw - 140, C_TEXT, ui_translate(title));
     if (message)
         wrapped(FONT_REGULAR, 18, dx + 110, dy + 88, dw - 150, 25, C_TEXT_DIM, ui_translate(message));
+    static const struct hint hints[]={{"B","Cancel"}};footer(hints,1,NULL);
 }
 
 void ui_draw_message(int which, const char *title, const char *body)
@@ -1195,4 +1207,80 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
     if(retry)footer(retry_hints,2,NULL);
     else if(location_depth){static const struct hint back[]={{"B","Back"}};footer(back,1,NULL);}
     else footer(hints,1,NULL);
+}
+
+/* Capture the last visible tile geometry before replacing the scene. Art stays
+ * owned by the menu until the platform has made its immutable launch panel. */
+#include "../launch_cover.h"
+static float launch_x,launch_y,launch_w,launch_h;
+static char launch_name[192],launch_profile[128],launch_mode[96];
+static char launch_pair_label[80];
+void ui_launch_pair_pin(const char *pin){snprintf(launch_pair_label,sizeof(launch_pair_label),ui_translate("Pairing PIN: %s"),pin);}
+static const char *launch_labels[LAUNCH_STATUS_COUNT]={
+    "Starting application...","Connecting to PC...","Finding the PC...","Negotiating stream...",
+    "Preparing video...","Preparing audio...","Preparing connection...","Preparing controller...",
+    "Waiting for first video frame...","Video ready","Cancelling...","Retrying with stereo...","Connection failed",launch_pair_label
+};
+void ui_launch_session(const char *profile,int width,int height,int fps,int bitrate_kbps)
+{
+    snprintf(launch_profile,sizeof(launch_profile),"%s",profile?profile:"");
+    snprintf(launch_mode,sizeof(launch_mode),"%d x %d  |  %d FPS  |  %d.%d Mbps",width,height,fps,bitrate_kbps/1000,(bitrate_kbps%1000)/100);
+}
+void ui_launch_begin(const struct ui_app *app,uint32_t now,bool motion)
+{
+    launch_x=W/2-126;launch_y=122;launch_w=252;launch_h=336;
+    int count=0;const struct ui_draw_command *commands=ui_draw_commands(&count);
+    float fx=0,fy=0,fw=0,fh=0,best=1e30f;ui_focus_bounds(&fx,&fy,&fw,&fh);
+    if(!strcmp(launch_source_name,app->name)) {
+        launch_x=launch_source[0];launch_y=launch_source[1];launch_w=launch_source[2];launch_h=launch_source[3];
+    } else if(fw>0 && fh>0){launch_x=fx/s;launch_y=fy/s;launch_w=fw/s;launch_h=fh/s;}
+    if(commands && app->art)for(int i=0;i<count;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==app->art) {
+        float dx=commands[i].x+commands[i].w/2-fx-fw/2,dy=commands[i].y+commands[i].h/2-fy-fh/2;
+        float distance=dx*dx+dy*dy;if(distance>=best)continue;best=distance;
+        launch_x=commands[i].x/s;launch_y=commands[i].y/s;launch_w=commands[i].w/s;launch_h=commands[i].h/s;
+    }
+    /* Focus can be a wide action row. Keep the cover's ratio throughout interpolation. */
+    if(fabsf(launch_w*TILE_H-launch_h*TILE_W)>0.01f) {
+        float fit=launch_w/TILE_W;if(launch_h/TILE_H<fit)fit=launch_h/TILE_H;
+        float fitted_w=TILE_W*fit,fitted_h=TILE_H*fit;
+        launch_x+=(launch_w-fitted_w)/2;launch_y+=(launch_h-fitted_h)/2;launch_w=fitted_w;launch_h=fitted_h;
+    }
+    snprintf(launch_name,sizeof(launch_name),"%s",app->name);
+    ui_draw_hide_image(app->art,S(launch_x),S(launch_y),S(launch_w),S(launch_h));
+    (void)now;(void)motion;
+    launch_profile[0]=launch_mode[0]=0;
+}
+void ui_launch_origin(float *x,float *y,float *w,float *h)
+{*x=launch_x;*y=launch_y;*w=launch_w;*h=launch_h;}
+/* Build a straight-alpha text atlas on the menu thread, once per opening.
+ * Canvas compositing normally forces alpha opaque, so glyph masks use this
+ * explicit sink. Renderer only samples the finished atlas. */
+static void launch_text_glyph(canvas_t *c,int x,int y,const uint8_t *mask,int w,int h,int stride,uint32_t color)
+{
+    for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++) {
+        int dx=x+xx,dy=y+yy;if(dx<0 || dx>=c->w || dy<0 || dy>=c->h)continue;
+        unsigned alpha=mask[yy*stride+xx]*(color>>24)/255;uint32_t *out=c->px+dy*c->w+dx;
+        unsigned old=*out>>24,combined=alpha+old*(255-alpha)/255;
+        if(combined)*out=(combined<<24)|(color&0xffffff);
+    }
+}
+void ui_launch_text(uint32_t *pixels,int width,int height)
+{
+    if(!pixels || width!=LAUNCH_TEXT_W || height!=LAUNCH_TEXT_H)return;
+    canvas_t panel;memset(&panel,0,sizeof(panel));panel.px=pixels;panel.w=width;panel.h=height;cv_unclip(&panel);
+    memset(pixels,0,(size_t)width*height*4);font_set_sink(&panel,launch_text_glyph);
+    const char *labels[]={launch_name,launch_profile,launch_mode};
+    for(int i=0;i<3;i++) {
+        int size=i==0?28:19,face=i==0?FONT_BOLD:FONT_REGULAR;
+        int tw=font_text_width(face,(float)size,labels[i]);if(tw>480)tw=480;
+        font_draw_fit(&panel,face,(float)size,(width-tw)/2,i==0?34:i==1?66:88,480,i==0?C_TEXT:C_TEXT_DIM,labels[i]);
+    }
+    for(int i=0;i<LAUNCH_STATUS_COUNT+3;i++) {
+        const char *label=i<LAUNCH_STATUS_COUNT?launch_labels[i]:i==LAUNCH_STATUS_COUNT?"B: Cancel":i==LAUNCH_STATUS_COUNT+1?"B: Cancel | X: Reveal video":"MoonX360";
+        label=ui_translate(label);int size=i<LAUNCH_STATUS_COUNT?18:i==LAUNCH_STATUS_COUNT+2?24:16;
+        int tw=font_text_width(FONT_REGULAR,(float)size,label);if(tw>480)tw=480;
+        int row=i<LAUNCH_STATUS_COUNT?LAUNCH_STATUS_Y+i*LAUNCH_STATUS_H:i==LAUNCH_STATUS_COUNT+2?LAUNCH_LOGO_Y:LAUNCH_HINT_Y+(i-LAUNCH_STATUS_COUNT)*24;
+        font_draw_fit(&panel,FONT_REGULAR,(float)size,(width-tw)/2,row+(i<LAUNCH_STATUS_COUNT?17:19),480,i==LAUNCH_STATUS_COUNT+2?C_ACCENT:C_TEXT_DIM,label);
+    }
+    font_set_sink(&cv,ui_glyph);
 }

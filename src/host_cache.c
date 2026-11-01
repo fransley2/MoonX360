@@ -15,16 +15,15 @@ static bool same_text(const char *a,const char *b)
 }
 static bool same_host(const struct cached_host *a,const struct cached_host *b)
 {
-    if(a->uuid[0] && b->uuid[0])return same_text(a->uuid,b->uuid);
-    /* A name alone must never move a known UUID (and its wake MAC) to another PC. */
-    if(a->uuid[0] || b->uuid[0])return !strcmp(a->ip,b->ip);
-    return !strcmp(a->ip,b->ip);
+    return a->uuid[0] && b->uuid[0] && same_text(a->uuid,b->uuid);
 }
 int host_cache_upsert(struct host_cache *c,const struct cached_host *h)
 {
     if(!h->ip[0] || !h->port)return -1;
     int index=-1;
-    for(int i=0;i<c->count;i++)if(same_host(c->hosts+i,h)) {index=i;break;}
+    /* Prefer the protocol identity before considering a legacy endpoint. */
+    if(h->uuid[0])for(int i=0;i<c->count;i++)if(c->hosts[i].uuid[0] && same_text(c->hosts[i].uuid,h->uuid)){index=i;break;}
+    if(index<0)for(int i=0;i<c->count;i++)if(!c->hosts[i].uuid[0] && !strcmp(c->hosts[i].ip,h->ip)){index=i;break;}
     if(index<0) {if(c->count>=HOST_CACHE_MAX)return -1;index=c->count++;memset(c->hosts+index,0,sizeof(*c->hosts));}
     struct cached_host next=*h;
     strcpy(next.alias,c->hosts[index].alias);next.auto_wake=c->hosts[index].auto_wake;next.is_default=c->hosts[index].is_default;
@@ -35,9 +34,12 @@ int host_cache_upsert(struct host_cache *c,const struct cached_host *h)
     }
     if(!next.uuid[0])snprintf(next.uuid,sizeof(next.uuid),"%s",c->hosts[index].uuid);
     if(!next.name[0])snprintf(next.name,sizeof(next.name),"%s",c->hosts[index].name);
+    if(!next.last_seen)next.last_seen=c->hosts[index].last_seen;
+    if(!next.online)next.pairing_saved=next.pairing_saved || c->hosts[index].pairing_saved;
+    else next.pairing_saved=next.paired;
     c->hosts[index]=next;
-    /* Merge a stale IP-only cached entry after receiving a stable UUID. */
-    for(int i=c->count-1;i>=0;i--)if(i!=index && same_host(c->hosts+i,&next)) {
+    /* Only matching stable identities justify merging permanent records. */
+    for(int i=c->count-1;i>=0;i--)if(i!=index && next.uuid[0] && c->hosts[i].uuid[0] && same_host(c->hosts+i,&next)) {
         memmove(c->hosts+i,c->hosts+i+1,(size_t)(c->count-i-1)*sizeof(*c->hosts));
         c->count--;if(i<index)index--;
     }
@@ -54,17 +56,15 @@ void host_cache_decode(struct host_cache *c,char *text)
         for(int i=1;i<4;i++) {char *tab=strchr(parts[i-1],'\t');if(!tab){valid=false;break;}*tab=0;parts[i]=tab+1;}
         if(valid) {
             struct cached_host h;memset(&h,0,sizeof(h));
-            char *mac_text=strchr(parts[3],'\t');
-            if(mac_text) {
-                *mac_text++=0;char *manual=strchr(mac_text,'\t');if(manual)*manual++=0;
-                char *alias=manual?strchr(manual,'\t'):NULL,*automatic=NULL,*def=NULL;
-                if(alias){*alias++=0;automatic=strchr(alias,'\t');if(automatic){*automatic++=0;def=strchr(automatic,'\t');if(def)*def++=0;}}
-                if(alias)snprintf(h.alias,sizeof(h.alias),"%s",alias);
-                h.auto_wake=automatic && !strcmp(automatic,"1");h.is_default=def && !strcmp(def,"1");
-                unsigned char bytes[6];if(wake_mac(mac_text,bytes)) {
-                    strcpy(h.mac,mac_text);h.mac_manual=manual && !strcmp(manual,"1");
-                }
-            }
+            char *extra[7]={0};char *tail_field=strchr(parts[3],'\t');
+            if(tail_field){*tail_field++=0;for(int i=0;i<7 && tail_field;i++) {
+                extra[i]=tail_field;tail_field=strchr(tail_field,'\t');if(tail_field)*tail_field++=0;
+            }}
+            if(extra[0]){unsigned char bytes[6];if(wake_mac(extra[0],bytes)){snprintf(h.mac,sizeof(h.mac),"%s",extra[0]);h.mac_manual=extra[1] && !strcmp(extra[1],"1");}}
+            if(extra[2])snprintf(h.alias,sizeof(h.alias),"%s",extra[2]);
+            h.auto_wake=extra[3] && !strcmp(extra[3],"1");h.is_default=extra[4] && !strcmp(extra[4],"1");
+            h.last_seen=extra[5]?(uint32_t)strtoul(extra[5],NULL,10):0;
+            h.pairing_saved=extra[6] && !strcmp(extra[6],"1");
             unsigned int a,b,d,e;char tail;long port=strtol(parts[3],NULL,10);
             if(sscanf(parts[2],"%u.%u.%u.%u%c",&a,&b,&d,&e,&tail)==4 && a>0 && a<224 && a!=127 && b<256 && d<256 && e<256 && port>0 && port<=65535) {
                 snprintf(h.uuid,sizeof(h.uuid),"%s",parts[0]);snprintf(h.name,sizeof(h.name),"%s",parts[1]);
@@ -84,7 +84,7 @@ size_t host_cache_encode(const struct host_cache *c,char *out,size_t cap)
     for(int i=0;i<c->count;i++) {
         const struct cached_host *h=c->hosts+i;char uuid[80],name[64],alias[64];
         safe_text(uuid,sizeof(uuid),h->uuid);safe_text(name,sizeof(name),h->name);safe_text(alias,sizeof(alias),h->alias);
-        int n=snprintf(out+used,cap-used,"%s\t%s\t%s\t%u\t%s\t%d\t%s\t%d\t%d\n",uuid,name,h->ip,h->port,h->mac,h->mac_manual,alias,h->auto_wake,h->is_default);
+        int n=snprintf(out+used,cap-used,"%s\t%s\t%s\t%u\t%s\t%d\t%s\t%d\t%d\t%u\t%d\n",uuid,name,h->ip,h->port,h->mac,h->mac_manual,alias,h->auto_wake,h->is_default,h->last_seen,h->pairing_saved);
         if(n<0 || (size_t)n>=cap-used){out[0]=0;return 0;}used+=(size_t)n;
     }
     return used;

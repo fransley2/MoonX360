@@ -1,0 +1,104 @@
+--- a/src/Connection.c
++++ b/src/Connection.c
+@@ -5,6 +5,20 @@
+ static bool alreadyTerminated;
+ static PLT_THREAD terminationCallbackThread;
+ static int terminationCallbackErrorCode;
++#ifdef _XBOX
++static unsigned connectionGeneration;
++static volatile bool terminationThreadCreated;
++static volatile LONG terminationClaimed;
++static volatile DWORD terminationThreadOwner;
++struct MoonxTermination {ConnListenerConnectionTerminated callback;int error;unsigned generation;};
++static struct MoonxTermination terminationNotice;
++static void moonxDrainTermination(void) {
++    if (!terminationThreadCreated) return;
++    if (terminationThreadOwner == GetCurrentThreadId()) PltDetachThread(&terminationCallbackThread);
++    else PltJoinThread(&terminationCallbackThread);
++    terminationThreadCreated = false;
++}
++#endif
+ 
+ // Common globals
+ char* RemoteAddrString;
+@@ -129,6 +143,11 @@
+         // Nothing to do
+         stage--;
+     }
++#ifdef _XBOX
++    /* All notification producers have stopped. No old callback can outlive
++     * cleanup and write into the next MoonX360 session. */
++    moonxDrainTermination();
++#endif
+     if (stage == STAGE_PLATFORM_INIT) {
+         Limelog("Cleaning up platform...");
+         cleanupPlatform();
+@@ -146,7 +165,15 @@
+ static void terminationCallbackThreadFunc(void* context)
+ {
+     // Invoke the client's termination callback
++#ifdef _XBOX
++    struct MoonxTermination notice = *(struct MoonxTermination*)context;
++    terminationThreadOwner = GetCurrentThreadId();
++    if (notice.generation == connectionGeneration && !ConnectionInterrupted)
++        notice.callback(notice.error);
++    terminationThreadOwner = 0;
++#else
+     originalTerminationCallback(terminationCallbackErrorCode);
++#endif
+ }
+ 
+ // This shim callback runs the client's connectionTerminated() callback on a
+@@ -160,7 +187,13 @@
+     int err;
+ 
+     // Avoid recursion and issuing multiple callbacks
+-    if (alreadyTerminated || ConnectionInterrupted) {
++    bool ignore;
++#ifdef _XBOX
++    ignore = ConnectionInterrupted || InterlockedCompareExchange(&terminationClaimed, 1, 0) != 0;
++#else
++    ignore = alreadyTerminated || ConnectionInterrupted;
++#endif
++    if (ignore) {
+         return;
+     }
+ 
+@@ -168,7 +201,15 @@
+     alreadyTerminated = true;
+ 
+     // Invoke the termination callback on a separate thread
++#ifdef _XBOX
++    terminationNotice.callback = originalTerminationCallback;
++    terminationNotice.error = errorCode;
++    terminationNotice.generation = connectionGeneration;
++    err = PltCreateThread("AsyncTerm", terminationCallbackThreadFunc, &terminationNotice, &terminationCallbackThread);
++    if (err == 0) terminationThreadCreated = true;
++#else
+     err = PltCreateThread("AsyncTerm", terminationCallbackThreadFunc, NULL, &terminationCallbackThread);
++#endif
+     if (err != 0) {
+         // Nothing we can safely do here, so we'll just assert on debug builds
+         Limelog("Failed to create termination thread: %d\n", err);
+@@ -176,7 +217,9 @@
+     }
+ 
+     // Detach the thread since we never wait on it
++#ifndef _XBOX
+     PltDetachThread(&terminationCallbackThread);
++#endif
+ }
+ 
+ static bool parseRtspPortNumberFromUrl(const char* rtspSessionUrl, uint16_t* port)
+@@ -210,6 +253,11 @@
+     PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks, void* renderContext, int drFlags,
+     void* audioContext, int arFlags) {
+     int err;
++#ifdef _XBOX
++    moonxDrainTermination();
++    connectionGeneration++;
++    InterlockedExchange(&terminationClaimed, 0);
++#endif
+ 
+     if (drCallbacks != NULL && (drCallbacks->capabilities & CAPABILITY_PULL_RENDERER) && drCallbacks->submitDecodeUnit) {
+         Limelog("CAPABILITY_PULL_RENDERER cannot be set with a submitDecodeUnit callback\n");

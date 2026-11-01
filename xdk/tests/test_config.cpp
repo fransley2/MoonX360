@@ -26,7 +26,7 @@ int main(void)
 {
     config c, loaded;
     config_load(&c);
-    assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 30000);
+    assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000);
     assert(writes == 0 && !c.ui_motion);
     assert(c.quit_combo == 0 && c.stick_deadzone == 0 && !c.session_report);
     ini = "host=192.168.1.3\nwidth=1920\nheight=1080\nfps=60\nbitrate=14000\npacket_size=1392\nfast_decode=0\nrenderer=cpu\nvsync=0\nsops=0\nlocal_audio=1\n";
@@ -54,7 +54,7 @@ int main(void)
     config reset=c;strcpy(reset.host_uuid,"stable-uuid");reset.mouse_hud=2;reset.stream_menu_style=1;reset.ui_motion=true;
     config before_reset=reset;std::string before_ini=ini;allow_write=false;
     assert(!config_reset_preferences(&reset) && !memcmp(&reset,&before_reset,sizeof(reset)) && ini==before_ini);allow_write=true;
-    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==30000 && !reset.mouse_hud && !reset.stream_menu_style && !reset.ui_motion);
+    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==12000 && !reset.mouse_hud && !reset.stream_menu_style && !reset.ui_motion);
     assert(!strcmp(reset.host,before_reset.host) && !strcmp(reset.host_uuid,"stable-uuid"));
     for(int hud=0;hud<3;hud++)for(int style=0;style<2;style++){
         reset.mouse_hud=hud;reset.stream_menu_style=style;assert(config_save(&reset));config_load(&loaded);
@@ -87,16 +87,20 @@ int main(void)
         assert(config_cycle_fps(fps[i], -1) == fps[(i+4)%5]);
         config_defaults(&c); c.fps = fps[i];
         assert(config_save(&c)); config_load(&loaded);
-        assert(loaded.fps == fps[i] && loaded.bitrate_kbps == 30000);
+        assert(loaded.fps == fps[i] && loaded.bitrate_kbps == 12000);
         assert(!loaded.stats_overlay && !loaded.diagnostic_log);
     }
-    ini = "fps=0\n"; config_load(&c); assert(c.fps == 30);
-    ini = "fps=90\n"; config_load(&c); assert(c.fps == 30);
-    assert(!config_fps_supported(25) && config_cycle_fps(25,1) == 30);
+    for(const char *bad:{"fps=0\n","fps=90\n","fps=invalid\n"}) {
+        ini=bad;int before=writes;config_load(&c);assert(c.fps==60 && writes==before);
+        assert(config_save(&c));config_load(&loaded);assert(loaded.fps==60);
+    }
+    assert(!config_fps_supported(25) && config_cycle_fps(25,1) == 60 && config_cycle_fps(25,-1)==60);
+    ini="host=old-pc\n";config_load(&c);assert(c.fps==60 && config_video_preset(&c)==CONFIG_PROFILE_SMOOTH);
+    assert(config_save(&c));config_load(&loaded);assert(loaded.fps==60 && loaded.stream_profile==CONFIG_PROFILE_SMOOTH);
     ini.clear(); config_load(&c);
-    assert(config_video_preset(&c) == 0);
+    assert(config_video_preset(&c) == CONFIG_PROFILE_SMOOTH);
     assert(c.fast_decode && c.renderer == 0 && c.vsync && c.slice_count == 0);
-    static const int modes[6][4]={{0,0,0,0},{1280,720,60,18000},{854,480,60,25000},{1280,720,60,35000},{1280,720,30,12000},{1920,1080,60,20000}};
+    static const int modes[6][4]={{0,0,0,0},{1280,720,60,12000},{854,480,60,25000},{1280,720,60,35000},{1280,720,30,12000},{1920,1080,24,8000}};
     for (int preset=1;preset<CONFIG_PROFILE_COUNT;preset++) {
         c.fast_decode=false;c.renderer=2;c.vsync=false;c.image_quality=2;c.slice_count=16;
         config expected=c;
@@ -164,7 +168,7 @@ int main(void)
         assert(config_step_bitrate(rate,1)>=1000 && config_step_bitrate(rate,1)<=70000);
         assert(config_step_bitrate(rate,-1)>=1000 && config_step_bitrate(rate,-1)<=70000);
     }
-    config_defaults(&c);assert(!c.stats_overlay && c.fps==60 && c.bitrate_kbps==30000);
+    config_defaults(&c);assert(!c.stats_overlay && c.fps==60 && c.bitrate_kbps==12000);
     static const int hd_rates[]={10000,15000,18000,25000},max_rates[]={12000,16000,20000,25000};
     for(int family=0;family<2;family++) {
         config_apply_preset(&c,1);if(family){c.width=1920;c.height=1080;}
@@ -185,7 +189,7 @@ int main(void)
     ini="overlay_mode=99\nimage_quality=99\n";config_load(&loaded);
     assert(!loaded.stats_overlay && loaded.image_quality==0 && loaded.history_enabled);
     config_defaults(&c);assert(c.history_enabled && config_overlay_mode(&c)==0 && c.image_quality==0);
-    c.image_quality=1;assert(config_video_preset(&c)==0);config_apply_preset(&c,CONFIG_PRESET_720_60);
+    c.image_quality=1;assert(config_video_preset(&c)==CONFIG_PROFILE_SMOOTH);config_apply_preset(&c,CONFIG_PRESET_720_60);
     assert(c.image_quality==1 && config_video_preset(&c)==CONFIG_PRESET_720_60);
     assert(c.mdns_discovery && !strcmp(config_profile_key(c.stream_profile),"smooth"));
     ini="width=1280\nheight=720\nfps=30\nbitrate=30000\nfast_decode=0\n";config_load(&c);
@@ -220,5 +224,13 @@ int main(void)
     ini="language=2\n";config_load(&c);assert(c.language==CONFIG_LANGUAGE_PT_BR);
     ini="language=-1\n";config_load(&c);assert(c.language==CONFIG_LANGUAGE_ENGLISH);
     ini="language=3\n";config_load(&c);assert(c.language==CONFIG_LANGUAGE_ENGLISH);
+    ini="stream_profile=1080_smooth\nwidth=1920\nheight=1080\nfps=60\nbitrate=20000\nfast_decode=0\nimage_quality=2\n";
+    config_load(&c);assert(c.fps==60 && c.bitrate_kbps==20000 && !c.fast_decode && c.image_quality==2 && config_video_preset(&c)==0);
+    config_apply_preset(&c,CONFIG_PROFILE_1080_SMOOTH);assert(c.fps==24 && c.bitrate_kbps==8000);
+    assert(!strcmp(config_profile_key(CONFIG_PROFILE_1080_SMOOTH),"1080_smooth"));
+    assert(!strcmp(config_preset_name(CONFIG_PROFILE_1080_SMOOTH),"1080p (Experimental)"));
+    assert(config_save(&c));config_load(&loaded);assert(config_video_preset(&loaded)==CONFIG_PROFILE_1080_SMOOTH);
+    ini="stream_profile=smooth\nwidth=1280\nheight=720\nfps=60\nbitrate=18000\n";config_load(&c);assert(c.bitrate_kbps==18000 && config_video_preset(&c)==0);
+    config_apply_preset(&c,CONFIG_PROFILE_SMOOTH);assert(c.bitrate_kbps==12000 && c.fps==60);
     puts("PASS: old INI preservation, new defaults, save/load, bounds, preset isolation and custom values.");
 }

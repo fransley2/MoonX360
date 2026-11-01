@@ -1,3 +1,4 @@
+#include <windows.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,6 +6,7 @@
 #include <errno.h>
 #include "../../../src/config.h"
 #include "../../../src/safe_storage.h"
+static void plat_log(const char*){}
 static bool storage_ok;static char storage_root[128]=".";
 /* ACTUAL_STORAGE */
 int main(){
@@ -16,6 +18,11 @@ int main(){
     assert(remove("hosts.tsv")==0);text=storage_read("hosts.tsv",&bytes);assert(text && bytes==5 && !strcmp(text,"first"));free(text);
     FILE *f=fopen("client.pem.bak","wb");assert(f);fputs("not-a-real-certificate",f);fclose(f);
     errno=0;assert(!storage_read("client.pem",NULL) && errno==ENOENT);
+    assert(storage_write("launch-settings.tsv","0/inherit",9));
+    text=storage_read("launch-settings.tsv",&bytes);assert(text && bytes==9 && !memcmp(text,"0/inherit",9));free(text);
+    strcpy(storage_root,"does-not-exist-coverfix");errno=0;
+    assert(!storage_write("launch-settings.tsv","new",3) && !strcmp(storage_write_diagnostic.stage,"storage-directory") && storage_write_diagnostic.expected==3);
+    strcpy(storage_root,".");remove("launch-settings.tsv");remove("launch-settings.tsv.bak");remove("launch-settings.tsv.new");
     for(unsigned i=0;i<sizeof(names)/sizeof(*names);i++)remove(names[i]);
     puts("PASS: actual XDK storage read/write, verified replacement, missing-primary backup recovery, unavailable storage and no certificate backup substitution");
 }

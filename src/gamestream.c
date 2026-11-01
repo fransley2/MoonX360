@@ -6,6 +6,8 @@
 #include "gamestream.h"
 #include "http.h"
 #include "wake.h"
+#include "performance.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +36,11 @@
 static const struct client_identity *ident;
 static char cert_hex[8192];
 static char last_error[256];
+static enum gs_error_code last_error_kind;
+static volatile int *request_cancel;
+void gs_set_request_cancel(volatile int *cancel){request_cancel=cancel;}
+enum gs_error_code gs_error_kind(void){return last_error_kind;}
+
 
 static void set_error(const char *fmt, const char *arg)
 {
@@ -144,6 +151,13 @@ static bool xml_span_copy(const char *from,const char *end,const char *open,cons
     memcpy(out,begin,length);out[length]=0;return true;
 }
 
+static bool xml_span_identity(const char *begin,const char *end,char out[80])
+{
+    const char *s=xml_span_text(begin,end,"<UUID>","</UUID>");if(!s)return false;
+    const char *finish=xml_span_find(s,end,"</UUID>");size_t n=(size_t)(finish-s);
+    if(!n || n>=80)return false;memcpy(out,s,n);out[n]=0;return wake_identity_valid(out);
+}
+
 /* Checks <root status_code="200" ...>; records status_message otherwise. */
 static bool xml_status_ok(const char *doc)
 {
@@ -156,6 +170,7 @@ static bool xml_status_ok(const char *doc)
     }
     code = atoi(p + 13);
     if (code != 200) {
+        last_error_kind=code==403?GS_ERROR_PERMISSION:code==401?GS_ERROR_PAIRING:code==404?GS_ERROR_APP_MISSING:GS_ERROR_PROTOCOL;
         const char *m = strstr(doc, "status_message=\"");
         char msg[160] = "unknown error";
 
@@ -174,7 +189,7 @@ static bool xml_status_ok(const char *doc)
             if (strstr(msg, "certificate") || strstr(msg, "TLS client identity") || strstr(msg, "revoked"))
                 set_error("The host no longer authorizes this device. Check its pairing and permissions on the PC.", NULL);
             else
-                set_error("The host did not allow this action. On the PC, open Vibepollo or Sunshine and check this device's app and streaming permissions in Client Management.", NULL);
+                set_error("Permission required. Open Sunshine, Apollo or Vibepollo on the PC and enable the required permission for this client (Launch Apps for Play, List Apps for the library, Controller Input for gamepads).", NULL);
         } else
             set_error("Host returned an error: %s", msg);
         return false;
@@ -185,14 +200,21 @@ static bool xml_status_ok(const char *doc)
 static bool request(struct gs_server *srv, bool https, const char *path_and_query, int timeout_ms,
                     struct http_response *resp)
 {
-    if (!http_get(srv->address, https ? srv->https_port : srv->http_port, https, path_and_query,
-                  ident, timeout_ms, resp)) {
-        set_error("Could not reach %s (is Vibepollo/Sunshine running and the IP correct?)", srv->address);
+    volatile int *cancel=srv->cancel?srv->cancel:request_cancel;
+    last_error_kind=GS_ERROR_NONE;last_error[0]=0;
+    char request_log[256];size_t endpoint=strcspn(path_and_query,"?");if(endpoint>40)endpoint=40;
+    snprintf(request_log,sizeof(request_log),"[HOST] request endpoint=%.*s host=%s app=%d cancel=%d\n",(int)endpoint,path_and_query,srv->uuid,srv->current_game,cancel?plat_atomic_load(cancel):0);plat_log(request_log);
+    if (!http_get_cancel(srv->address, https ? srv->https_port : srv->http_port, https, path_and_query,
+                  ident, timeout_ms, cancel, resp)) {
+        last_error_kind=cancel && plat_atomic_load(cancel)?GS_ERROR_CANCELLED:GS_ERROR_UNREACHABLE;
+        set_error(last_error_kind==GS_ERROR_CANCELLED?"Connection cancelled":"Could not reach this PC on the local network.", NULL);
         return false;
     }
+    snprintf(request_log,sizeof(request_log),"[HOST] response endpoint=%.*s host=%s status=%d\n",(int)endpoint,path_and_query,srv->uuid,resp->status);plat_log(request_log);
     if (resp->status != 200) {
+        last_error_kind=resp->status==403?GS_ERROR_PERMISSION:resp->status==401?GS_ERROR_PAIRING:resp->status==404?GS_ERROR_APP_MISSING:GS_ERROR_PROTOCOL;
         if (resp->status == 403) {
-            set_error("The host did not allow this action. On the PC, open Vibepollo or Sunshine and check this device's app and streaming permissions in Client Management.", NULL);
+            set_error("Permission required. Open Sunshine, Apollo or Vibepollo on the PC and enable the required permission for this client (Launch Apps for Play, List Apps for the library, Controller Input for gamepads).", NULL);
             http_response_free(resp);
             return false;
         }
@@ -237,6 +259,9 @@ static bool load_serverinfo(struct gs_server *srv, bool https)
         return false;
     }
 
+    gs_host_parse(&srv->metadata,r.body,https);
+    /* Clear identity before parsing: omitted UUID is never the previous UUID. */
+    srv->uuid[0]=0;srv->hostname[0]=0;srv->mac[0]=0;
     paired = xml_get(r.body, "PairStatus");
     current = xml_get(r.body, "currentgame");
     appver = xml_get(r.body, "appversion");
@@ -264,8 +289,9 @@ static bool load_serverinfo(struct gs_server *srv, bool https)
         srv->is_nvidia = strstr(state, "MJOLNIR") != NULL;
         srv->codec_mode_support = codec ? atoi(codec) : SCM_H264;
         srv->current_game = strstr(state, "_SERVER_BUSY") ? atoi(current) : 0;
-        if (https_port && atoi(https_port))
-            srv->https_port = (unsigned short)atoi(https_port);
+        uint32_t secure_port=0;
+        if(https_port && gs_u32_text(https_port,&secure_port) && secure_port>0 && secure_port<=65535)
+            srv->https_port=(unsigned short)secure_port;
         ok = true;
     } else {
         set_error("Host sent incomplete server info", NULL);
@@ -289,7 +315,7 @@ bool gs_server_info(struct gs_server *srv, const char *address)
 bool gs_server_info_port(struct gs_server *srv,const char *address,unsigned short port,int timeout_ms)
 {
     srv->wake_cancel=NULL;
-    srv->info_timeout_ms=timeout_ms;
+    srv->info_timeout_ms=timeout_ms>0?timeout_ms:4800;
     snprintf(srv->address, sizeof(srv->address), "%s", address);
     srv->http_port = port?port:47989;
     if (!srv->https_port)
@@ -301,12 +327,26 @@ bool gs_server_info_port(struct gs_server *srv,const char *address,unsigned shor
      * try HTTPS first and fall back to HTTP when the host refuses us there,
      * which is what happens before pairing.
      */
+    uint32_t info_deadline=plat_now_ms()+(uint32_t)(timeout_ms>0?timeout_ms:4800);
+    unsigned short attempted_https_port=srv->https_port;
     if (load_serverinfo(srv, true)) {
         srv->paired = true;
     } else {
+        if((srv->cancel && plat_atomic_load(srv->cancel)) || (request_cancel && plat_atomic_load(request_cancel)))return false;
+        int32_t remaining=(int32_t)(info_deadline-plat_now_ms());if(remaining<=0)return false;
+        srv->info_timeout_ms=remaining;
         if (!load_serverinfo(srv, false))
             return false;
         srv->paired = false;
+        /* A compatible host may advertise a TLS port unrelated to HTTP-5.
+         * Retry only that newly advertised port, within the original budget. */
+        remaining=(int32_t)(info_deadline-plat_now_ms());
+        if(srv->https_port!=attempted_https_port && remaining>0 &&
+           (!srv->cancel || !plat_atomic_load(srv->cancel)) && (!request_cancel || !plat_atomic_load(request_cancel))) {
+            struct gs_server plain=*srv;srv->info_timeout_ms=remaining;
+            if(load_serverinfo(srv,true))srv->paired=true;
+            else *srv=plain;
+        }
     }
 
     LiInitializeServerInformation(&srv->info);
@@ -594,6 +634,9 @@ int gs_applist(struct gs_server *srv, struct gs_app *apps, int max_apps)
     const char *p;
     int n = 0;
 
+    if(srv->metadata.caps.permissions && !srv->metadata.caps.app_list) {
+        last_error_kind=GS_ERROR_PERMISSION;set_error("Permission required. Enable List Apps for this client on the PC.",NULL);return -1;
+    }
     make_uuid(uuid);
     snprintf(path, sizeof(path), "/applist?uniqueid=%s&uuid=%s", UNIQUE_ID, uuid);
     if (!request(srv, true, path, TIMEOUT_MS, &r))
@@ -611,10 +654,30 @@ int gs_applist(struct gs_server *srv, struct gs_app *apps, int max_apps)
         const char *id=xml_span_text(begin,end,"<ID>","</ID>");
         if(xml_span_copy(begin,end,"<AppTitle>","</AppTitle>",title,sizeof(title)) &&
            id) {
-            apps[n].id=atoi(id);memcpy(apps[n].name,title,strlen(title)+1);n++;
+            const char *id_end=xml_span_find(id,end,"</ID>");char numeric[16];uint32_t number=0;
+            size_t digits=id_end?(size_t)(id_end-id):0;
+            if(!digits || digits>=sizeof(numeric)){p=end+6;continue;}
+            memcpy(numeric,id,digits);numeric[digits]=0;
+            if(!gs_u32_text(numeric,&number) || !number || number>2147483647u){p=end+6;continue;}
+            int appid=(int)number;bool duplicate=false;
+            for(int i=0;i<n;i++)if(apps[i].id==appid)duplicate=true;
+            if(duplicate){p=end+6;continue;}
+            memset(apps+n,0,sizeof(apps[n]));apps[n].id=appid;memcpy(apps[n].name,title,strlen(title)+1);
+            char stable[80];if(xml_span_identity(begin,end,stable)) {
+                snprintf(apps[n].uuid,sizeof(apps[n].uuid),"%s",stable);srv->metadata.caps.stable_app_uuid=true;
+            }
+            n++;
         }
         p=end+6;
     }
+    /* An ambiguous extension must fall back to numeric IDs, never merge two
+     * distinct apps into one cover/history identity. */
+    for(int i=0;i<n;i++)if(apps[i].uuid[0]) {
+        bool duplicate=false;for(int j=i+1;j<n;j++)if(apps[j].uuid[0] && wake_identity(apps[i].uuid,apps[j].uuid))duplicate=true;
+        if(duplicate){char uuid[80];strcpy(uuid,apps[i].uuid);for(int j=i;j<n;j++)if(apps[j].uuid[0] && wake_identity(uuid,apps[j].uuid))apps[j].uuid[0]=0;}
+    }
+    srv->metadata.caps.stable_app_uuid=false;
+    for(int i=0;i<n;i++)if(apps[i].uuid[0])srv->metadata.caps.stable_app_uuid=true;
     http_response_free(&r);
     return n;
 }
@@ -633,12 +696,13 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
      * Never resume another app and relabel it as the requested one. */
     if (!load_serverinfo(srv,true))
         return false;
-    if(!wake_identity(expected_host,srv->uuid)){set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
+    if(expected_host[0] && !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
     if (srv->current_game && srv->current_game != app_id) {
         set_error("Another app is running on the PC. Return to the app list to select or close it.",NULL);
         return false;
     }
     resume = srv->current_game != 0;
+    srv->launch_resumed=resume;
 
     crypto_random(cfg->remoteInputAesKey, sizeof(cfg->remoteInputAesKey));
     memset(cfg->remoteInputAesIv, 0, sizeof(cfg->remoteInputAesIv));
@@ -649,6 +713,10 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
     /* GFE misbehaves with fps > 60 when SOPS is on. */
     fps = (srv->is_nvidia && cfg->fps > 60) ? 0 : cfg->fps;
 
+    char negotiation[240];snprintf(negotiation,sizeof(negotiation),
+        "[HOST] launch mode=%dx%dx%d refresh_x100=%d permissions=%d virtual_display_capable=%d (host software: %s)\n",
+        cfg->width,cfg->height,fps,cfg->clientRefreshRateX100,srv->metadata.caps.permissions,
+        srv->metadata.caps.virtual_display,gs_host_type_name(srv->metadata.type));plat_log(negotiation);
     make_uuid(uuid);
     snprintf(path, sizeof(path),
              "/%s?uniqueid=%s&uuid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%s&rikeyid=%d"
@@ -658,8 +726,8 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
              SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(cfg->audioConfiguration), 0xF, 0xF,
              LiGetLaunchUrlQueryParameters());
 
-    /* Launching a game can take a while on the host side. */
-    if (!request(srv, true, path, 60000, &r))
+    /* One bounded launch request. Do not retry permission/protocol failures. */
+    if (!request(srv, true, path, 15000, &r))
         return false;
     if (!xml_status_ok(r.body)) {
         http_response_free(&r);
@@ -694,6 +762,12 @@ bool gs_quit(struct gs_server *srv)
     char *result;
     bool ok;
 
+    int requested_app=srv->current_game;char expected_host[80];snprintf(expected_host,sizeof(expected_host),"%s",srv->uuid);
+    /* Refresh the authenticated control state, independently from video RTSP. */
+    if(!load_serverinfo(srv,true))return false;
+    if(expected_host[0] && !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
+    if(!srv->current_game)return true;
+    if(requested_app && srv->current_game!=requested_app){last_error_kind=GS_ERROR_APP_MISSING;set_error("The running app changed. Refresh the library before stopping it.",NULL);return false;}
     make_uuid(uuid);
     snprintf(path, sizeof(path), "/cancel?uniqueid=%s&uuid=%s", UNIQUE_ID, uuid);
     if (!request(srv, true, path, 30000, &r))
@@ -718,9 +792,13 @@ bool gs_app_art(struct gs_server *srv, int app_id, unsigned char **data, size_t 
     make_uuid(uuid);
     snprintf(path, sizeof(path), "/appasset?uniqueid=%s&uuid=%s&appid=%d&AssetType=2&AssetIdx=0",
              UNIQUE_ID, uuid, app_id);
-    if (!request(srv, true, path, TIMEOUT_MS, &r))
+    /* Independent response/error storage: never overwrite a simultaneous launch error. */
+    if (!http_get_cancel(srv->address,srv->https_port,true,path,ident,2000,srv->cancel,&r)) {
+        if(perf_enabled()){char line[128];snprintf(line,sizeof(line),"[ART] app=%d HTTPS request failed port=%d\n",app_id,srv->https_port);plat_log(line);}
         return false;
-    if (r.len == 0) {
+    }
+    if(perf_enabled()){char line[128];snprintf(line,sizeof(line),"[ART] app=%d HTTP status=%d bytes=%u\n",app_id,r.status,(unsigned)r.len);plat_log(line);}
+    if (r.status!=200 || r.len == 0) {
         http_response_free(&r);
         return false;
     }
@@ -734,4 +812,10 @@ void gs_server_free(struct gs_server *srv)
     free(srv->rtsp_session_url);
     srv->rtsp_session_url = NULL;
     srv->info.rtspSessionUrl = NULL;
+}
+
+void gs_stream_reset(struct gs_server *srv)
+{
+    free(srv->rtsp_session_url);srv->rtsp_session_url=NULL;srv->info.rtspSessionUrl=NULL;
+    srv->launch_resumed=false;srv->cancel=NULL;srv->wake_cancel=NULL;srv->info_timeout_ms=0;
 }

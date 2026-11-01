@@ -12,8 +12,8 @@ void config_defaults(struct config *c)
     c->ui_motion = false;
     c->width = 1280;
     c->height = 720;
-    c->fps = 60;
-    c->bitrate_kbps = 30000;
+    c->fps = CONFIG_FPS_DEFAULT;
+    c->bitrate_kbps = 12000;
     c->packet_size = 1024;
     c->fast_decode = true;
     c->renderer = 0;
@@ -23,7 +23,9 @@ void config_defaults(struct config *c)
     c->local_audio = false;
     c->audio_mode = 0;
     c->mouse_speed=100;c->mouse_acceleration=0;c->mouse_scroll_ms=100;
-    c->stream_profile = 0; /* New installs only; saved settings and named presets retain their values. */
+    c->stream_profile = CONFIG_PROFILE_SMOOTH;
+    c->launch_cover_ms = 5000;
+    c->launch_animation = true;
     c->mdns_discovery = true;
     c->thread_layout = 1;
     c->decode_workers = 4;
@@ -65,6 +67,9 @@ void config_load(struct config *c)
         else if (!strcmp(line,"host_uuid")){if(wake_identity_valid(eq+1))snprintf(c->host_uuid,sizeof(c->host_uuid),"%s",eq+1);else c->host_uuid[0]=0;}
         else if (!strcmp(line, "mdns_discovery"))
             c->mdns_discovery = !strcmp(eq+1,"true") || atoi(eq+1)!=0;
+        else if (!strcmp(line,"user_profile")) {if(config_profile_name_valid(eq+1))snprintf(c->user_profile,sizeof(c->user_profile),"%s",eq+1);}
+        else if (!strcmp(line,"launch_animation"))c->launch_animation=!strcmp(eq+1,"1") || !strcmp(eq+1,"true");
+        else if (!strcmp(line,"launch_cover_ms")) {int v=atoi(eq+1);c->launch_cover_ms=v<0?0:v>10000?10000:v;}
         else if (!strcmp(line, "stream_profile")) {
             c->stream_profile=0;have_profile=true;
             for(int i=0;i<CONFIG_PROFILE_COUNT;i++)
@@ -160,9 +165,9 @@ void config_load(struct config *c)
     c->right_max=c->right_max<50?50:c->right_max>100?100:c->right_max;
     if(!have_overlay_mode)c->overlay_mode=c->stats_overlay?3:0;
     c->stats_overlay=c->overlay_mode!=0;
-    if (!config_fps_supported(c->fps)) c->fps = 30;
+    if (!config_fps_supported(c->fps)) c->fps = CONFIG_FPS_DEFAULT;
     if (!config_slices_supported(c->slice_count)) c->slice_count = 0;
-    if(!have_profile) {
+    if(!have_profile && !c->user_profile[0]) {
         c->stream_profile=0;
         for(int i=1;i<CONFIG_PROFILE_COUNT;i++) {
             struct config test=*c;config_apply_preset(&test,i);
@@ -173,10 +178,9 @@ void config_load(struct config *c)
     c->stream_profile=config_video_preset(c);
 }
 
-bool config_save(const struct config *c)
+size_t config_serialize(const struct config *c,char *buf,size_t capacity)
 {
-    char buf[2048];
-    int n = snprintf(buf, sizeof(buf),
+    int n = snprintf(buf, capacity,
         "# Moonlight for Xbox 360\n"
         "host=%s\nhost_uuid=%s\n"
         "width=%d\n"
@@ -201,18 +205,23 @@ bool config_save(const struct config *c)
         "stats_overlay=%d\n"
         "diagnostic_log=%d\n"
         "overlay_mode=%d\nimage_quality=%d\nhistory_enabled=%d\n"
-        "stream_profile=%s\nmdns_discovery=%s\nperformance_overlay=%s\n"
+        "user_profile=%s\nlaunch_cover_ms=%d\nlaunch_animation=%d\nstream_profile=%s\nmdns_discovery=%s\nperformance_overlay=%s\n"
         "adaptive_quality=%d\ndisplay_mode=%d\nlanguage=%d\nthread_layout=%d\ndecode_workers=%d\n"
         "left_min=%d\nleft_max=%d\nright_min=%d\nright_max=%d\nui_background=%d\nui_accent=%d\nui_motion=%d\nmouse_hud=%d\nstream_menu_style=%d\n",
         c->host,c->host_uuid, c->width, c->height, c->fps, c->bitrate_kbps, c->packet_size, c->slice_count,
         c->fast_decode, c->renderer == 1 ? "cpu" : c->renderer == 2 ? "cpu_hwcolor" : "gpu",
         c->vsync, c->sops, c->local_audio, c->audio_mode,c->mouse_speed,c->mouse_acceleration,c->mouse_scroll_ms, c->quit_combo, c->stick_deadzone, c->session_report,
         config_overlay_mode(c)!=0, c->diagnostic_log,config_overlay_mode(c),c->image_quality,c->history_enabled,
-        config_profile_key(config_video_preset(c)),c->mdns_discovery?"true":"false",
+        c->user_profile,c->launch_cover_ms,c->launch_animation,config_profile_key(config_video_preset(c)),c->mdns_discovery?"true":"false",
         config_overlay_mode(c)==0?"off":config_overlay_mode(c)==1?"basic":config_overlay_mode(c)==2?"detailed":"developer",
         c->adaptive_quality,c->display_mode,c->language,c->thread_layout,c->decode_workers,
         c->left_min,c->left_max,c->right_min,c->right_max,c->ui_background,c->ui_accent,c->ui_motion,c->mouse_hud,c->stream_menu_style);
-    return n >= 0 && (size_t)n < sizeof(buf) && storage_write("moonlight.ini", buf, (size_t)n);
+    return n >= 0 && (size_t)n < capacity ? (size_t)n : 0;
+}
+bool config_save(const struct config *c)
+{
+    char buf[2048];size_t n=config_serialize(c,buf,sizeof(buf));
+    return n && storage_write("moonlight.ini",buf,n);
 }
 
 bool config_reset_preferences(struct config *c)
@@ -227,13 +236,13 @@ bool config_reset_preferences(struct config *c)
 void config_apply_preset(struct config *c, int preset)
 {
     static const int modes[CONFIG_PROFILE_COUNT][4]={
-        {0,0,0,0},{1280,720,60,18000},{854,480,60,25000},
-        {1280,720,60,35000},{1280,720,30,12000},{1920,1080,60,20000}
+        {0,0,0,0},{1280,720,60,12000},{854,480,60,25000},
+        {1280,720,60,35000},{1280,720,30,12000},{1920,1080,24,8000}
     };
     if(preset<0 || preset>=CONFIG_PROFILE_COUNT)return;
     if(!preset){config_customize_stream(c);return;}
     struct config next=*c;
-    next.stream_profile=preset;
+    next.stream_profile=preset;next.user_profile[0]=0;
     if(preset) {
         next.width=modes[preset][0];next.height=modes[preset][1];
         next.fps=modes[preset][2];next.bitrate_kbps=modes[preset][3];
@@ -242,14 +251,14 @@ void config_apply_preset(struct config *c, int preset)
 }
 int config_video_preset(const struct config *c)
 {
-    if(c->stream_profile<=0 || c->stream_profile>=CONFIG_PROFILE_COUNT)return 0;
+    if(c->user_profile[0] || c->stream_profile<=0 || c->stream_profile>=CONFIG_PROFILE_COUNT)return 0;
     struct config test=*c;config_apply_preset(&test,c->stream_profile);
     return c->width==test.width && c->height==test.height && c->fps==test.fps &&
         c->bitrate_kbps==test.bitrate_kbps?c->stream_profile:0;
 }
 const char *config_preset_name(int preset)
 {
-    static const char *names[]={"Custom","Smooth","Performance","Maximum Quality","Standard","1080p Smooth"};
+    static const char *names[]={"Custom","Smooth","Performance","Maximum Quality","Standard","1080p (Experimental)"};
     return names[preset>=0 && preset<CONFIG_PROFILE_COUNT?preset:0];
 }
 const char *config_profile_key(int preset)
@@ -296,7 +305,7 @@ int config_cycle_fps(int fps, int direction)
     for (i = 0; i < 5; i++)
         if (frame_rates[i] == fps)
             return frame_rates[(i + (direction < 0 ? -1 : 1) + 5) % 5];
-    return 30;
+    return CONFIG_FPS_DEFAULT;
 }
 
 int config_test_bitrate(const struct config *c,int direction)
@@ -362,7 +371,7 @@ void config_customize_stream(struct config *c)
     config_profile_capture(&effective,c);
     c->fast_decode=effective.fast_decode!=0;
     c->image_quality=effective.image_quality;
-    c->stream_profile=0;
+    c->stream_profile=0;c->user_profile[0]=0;
 }
 static unsigned profiles_checksum(const char *p,size_t n)
 {
@@ -376,7 +385,7 @@ static bool profiles_valid(const struct user_profiles *p)
         for(int j=0;j<i;j++)if(!strcmp(p->items[i].name,p->items[j].name))return false;
     }return true;
 }
-static size_t profiles_encode(const struct user_profiles *p,char *text,size_t cap)
+size_t config_profiles_serialize(const struct user_profiles *p,char *text,size_t cap)
 {
     if(!profiles_valid(p))return 0;
     int n=snprintf(text,cap,"XENON_PROFILES 2 %u %d\n",p->generation,p->count);
@@ -438,7 +447,7 @@ bool config_profiles_save(struct user_profiles *current,const struct user_profil
 {
     if(current->read_only || current->generation==0xffffffffu)return false;
     struct user_profiles copy=*next;copy.generation=current->generation+1;copy.slot=current->slot==0?1:0;copy.read_only=false;
-    char text[CONFIG_PROFILES_BYTES];size_t n=profiles_encode(&copy,text,sizeof(text));if(!n)return false;
+    char text[CONFIG_PROFILES_BYTES];size_t n=config_profiles_serialize(&copy,text,sizeof(text));if(!n)return false;
     const char *name=copy.slot?"profiles-b.tsv":"profiles-a.tsv";
     if(!storage_write(name,text,n))return false;
     size_t read_n=0;char *check=storage_read(name,&read_n);
@@ -462,13 +471,63 @@ bool config_profiles_delete(struct user_profiles *p,int index)
     memmove(next.items+index,next.items+index+1,(next.count-index-1)*sizeof(next.items[0]));next.count--;
     return config_profiles_save(p,&next);
 }
+static bool profile_entry_valid(const struct user_profiles *p,int index)
+{
+    return p && p->count>=0 && p->count<=CONFIG_USER_PROFILE_MAX && index>=0 && index<p->count &&
+        memchr(p->items[index].name,0,CONFIG_PROFILE_NAME_BYTES) &&
+        config_profile_name_valid(p->items[index].name) && profile_options_valid(&p->items[index].options);
+}
 bool config_profiles_apply(const struct user_profiles *p,int index,struct config *c)
 {
-    if(index<0 || index>=p->count || p->count>CONFIG_USER_PROFILE_MAX || !profile_options_valid(&p->items[index].options))return false;
+    if(!profile_entry_valid(p,index))return false;
     const struct stream_options *o=&p->items[index].options;
     c->width=o->width;c->height=o->height;c->fps=o->fps;c->bitrate_kbps=o->bitrate_kbps;
     c->packet_size=o->packet_size;c->slice_count=o->slice_count;c->fast_decode=o->fast_decode!=0;
     c->renderer=o->renderer;c->vsync=o->vsync!=0;c->sops=o->sops!=0;c->local_audio=o->local_audio!=0;
     c->image_quality=o->image_quality;c->adaptive_quality=o->adaptive_quality;
-    c->thread_layout=o->thread_layout;c->decode_workers=o->decode_workers;c->audio_mode=o->audio_mode;c->stream_profile=0;return true;
+    c->thread_layout=o->thread_layout;c->decode_workers=o->decode_workers;c->audio_mode=o->audio_mode;c->stream_profile=0;strcpy(c->user_profile,p->items[index].name);return true;
+}
+
+int config_profiles_selected(const struct user_profiles *p,const struct config *c)
+{
+    if(!p || p->count<0 || p->count>CONFIG_USER_PROFILE_MAX)return -1;
+    struct stream_options effective;config_profile_capture(&effective,c);
+    for(int i=0;i<p->count;i++)if(profile_entry_valid(p,i) && !strcmp(c->user_profile,p->items[i].name) &&
+        !memcmp(&effective,&p->items[i].options,sizeof(effective)))return i;
+    for(int i=0;i<p->count;i++)if(profile_entry_valid(p,i) &&
+        !memcmp(&effective,&p->items[i].options,sizeof(effective)))return i;
+    return -1;
+}
+
+int config_match_factory(const struct config *c)
+{
+    struct stream_options active;config_profile_capture(&active,c);
+    for(int i=1;i<CONFIG_PROFILE_COUNT;i++) {
+        struct config factory;struct stream_options known;config_defaults(&factory);
+        config_apply_preset(&factory,i);config_profile_capture(&known,&factory);
+        if(!memcmp(&active,&known,sizeof(active)))return i;
+    }
+    return 0;
+}
+void config_select_factory(struct config *c,int preset)
+{
+    if(preset<=0 || preset>=CONFIG_PROFILE_COUNT)return;
+    struct config factory;config_defaults(&factory);config_apply_preset(&factory,preset);
+    struct user_profiles p;memset(&p,0,sizeof(p));p.count=1;strcpy(p.items[0].name,"Factory");
+    config_profile_capture(&p.items[0].options,&factory);
+    config_profiles_apply(&p,0,c);c->user_profile[0]=0;c->stream_profile=preset;
+}
+
+bool config_cycle_profile(const struct user_profiles *p,struct config *c,int direction)
+{
+    int choices[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX],count=0;
+    for(int i=1;i<CONFIG_PROFILE_COUNT;i++)choices[count++]=i;
+    if(p && !p->read_only && p->count>=0 && p->count<=CONFIG_USER_PROFILE_MAX)
+        for(int i=0;i<p->count;i++)if(profile_entry_valid(p,i))choices[count++]=CONFIG_PROFILE_COUNT+i;
+    int personal=config_profiles_selected(p,c);
+    int current=personal>=0?CONFIG_PROFILE_COUNT+personal:config_match_factory(c),position=direction<0?0:count-1;
+    for(int i=0;i<count;i++)if(choices[i]==current){position=i;break;}
+    int choice=choices[(position+(direction<0?count-1:1))%count];
+    if(choice<CONFIG_PROFILE_COUNT){config_select_factory(c,choice);return true;}
+    return config_profiles_apply(p,choice-CONFIG_PROFILE_COUNT,c);
 }

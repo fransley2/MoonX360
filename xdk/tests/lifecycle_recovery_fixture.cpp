@@ -1,4 +1,5 @@
 #include "../src/wake.h"
+#include "../src/host_compat.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,11 +65,13 @@ static void xdk_audit_thread(const char*){}
 static void video_yuv_coefficients(int,float*){}
 static bool gfx_system_ui_active(){return guide;}
 static void gfx_present_system_ui(){assert(guide&&!owned);heartbeats++;}
-static void WaitForSingleObject(int,unsigned timeout){
+enum {WAIT_TIMEOUT=258};
+static DWORD WaitForSingleObject(int,unsigned timeout){
     assert(!owned&&timeout<=32);waits++;tick+=timeout;
     if(waits==1)guide=true; // Guide arrives during a timeout with no frames.
     if(waits==5)guide=false;
     if(waits==7)running=false;
+    return WAIT_TIMEOUT;
 }
 static int current_pipeline(){return PIPE_CACHED;}
 static void activate_legacy_fallback(){assert(false);}
@@ -79,10 +82,13 @@ static void EnterCriticalSection(int*){}
 static void LeaveCriticalSection(int*){}
 static unsigned InterlockedIncrement(volatile unsigned *p){return ++*p;}
 static unsigned stream_smooth(unsigned,unsigned n){return n;}
+static bool gfx_launch_pending(){return true;}
+static int cover_heartbeats;
+static void gfx_launch_idle(D3DDevice*){assert(owned && !guide);cover_heartbeats++;}
 /* RENDER_PUMP */
 static void test(){
     running=true;render_main(NULL);
-    assert(!owned&&waits==7&&heartbeats==4&&draws==2&&stats.rendered==2);
+    assert(!owned&&waits==7&&heartbeats==4&&draws==2&&stats.rendered==2 && cover_heartbeats==0);
 }
 }
 
@@ -123,7 +129,8 @@ static void test(){
 namespace launch_test {
 #define UNIQUE_ID "test-client"
 struct http_response {char *body;};
-struct gs_server {char uuid[80];int current_game;bool is_nvidia;char *rtsp_session_url;SERVER_INFORMATION info;};
+static gs_error_code last_error_kind;static void plat_log(const char*){}
+struct gs_server {gs_host_metadata metadata;char uuid[80];int current_game;bool launch_resumed,is_nvidia;char *rtsp_session_url;SERVER_INFORMATION info;};
 static char last_error[256],endpoint[1024];
 static int actual_game,requests;
 static bool info_ok=true,reject;
@@ -134,7 +141,7 @@ static void bytes_to_hex(const unsigned char*,char *out,size_t n){memset(out,'1'
 static void make_uuid(char out[37]){memset(out,'a',36);out[36]=0;}
 static const char *LiGetLaunchUrlQueryParameters(){return "";}
 static bool request(gs_server*,bool secure,const char *path,int timeout,http_response *r){
-    assert(secure&&timeout==60000);requests++;snprintf(endpoint,sizeof(endpoint),"%s",path);
+    assert(secure&&timeout==15000);requests++;snprintf(endpoint,sizeof(endpoint),"%s",path);
     r->body=_strdup(reject?"<root status_code=\"500\"></root>":"<root status_code=\"200\"><gamesession>1</gamesession><sessionUrl0>rtsp://new</sessionUrl0></root>");return true;
 }
 static bool xml_status_ok(const char *s){return strstr(s,"status_code=\"200\"")!=NULL;}
