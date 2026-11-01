@@ -19,6 +19,18 @@ MoonX360 streams PC games to an Xbox 360 through a controller-first interface wi
 
 Keep the `moonlight` data folder beside `default.xex` when updating; it stores settings, saved hosts, and pairing identity.
 
+## What MoonX360 does
+
+The game runs on your PC. The host streams its video and audio to MoonX360, and MoonX360 sends your controller input back to the PC. It turns the Xbox 360 into a streaming client; it does not enhance graphics or frame rate for games installed on the Xbox 360.
+
+MoonX360 works with games and apps exposed by a compatible GameStream host, not just Steam. Add a game or Steam Big Picture to the host's app list, or launch the host's Desktop entry. MoonX360 does not include a Steam catalog.
+
+The PC does the game's rendering, but the Xbox 360 decodes H.264 video on its CPU. Performance depends on the PC and encoder, game, network, and the console's decoding limits.
+
+Version 0.2.2 is a dashboard `default.xex` launched through Aurora/DashLaunch; it does not include a XeLL/ELF build. During a stream, hold the default **LB + RB + L3 + R3** shortcut for about two seconds to disconnect and return to MoonX360, where you can choose another app.
+
+MoonX360 includes GameStream compatibility handling for Sunshine, Apollo, and Vibepollo, including optional host capability and permission responses. This release was not validated against live instances of each host.
+
 ## Recommended settings
 
 **Smooth** is the default profile: 1280×720, 60 FPS requested, and 12 Mbps. The Xbox 360 decodes H.264 on its CPU, so actual frame rate depends on the game, PC encoder, network, and console. Lower resolution or frame rate if playback stutters.
