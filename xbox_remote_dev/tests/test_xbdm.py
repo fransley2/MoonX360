@@ -75,6 +75,7 @@ class ProtocolTests(unittest.TestCase):
         server.finish()
         self.assertEqual((caught.exception.reason, caught.exception.expected,
                           caught.exception.received), ("eof", 64, 12))
+        self.assertEqual(caught.exception.metadata["framebuffersize"], 64)
         self.assertEqual(len(output.getvalue()), 12)
         with self.assertRaises(ValueError):
             convert(output.getvalue(), {"width": 4, "height": 4,

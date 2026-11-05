@@ -19,6 +19,10 @@ def record_error(error):
     if isinstance(error, XbdmError):
         value.update({"reason": error.reason, "expected_bytes": error.expected,
                       "received_bytes": error.received})
+        if error.metadata is not None:
+            value["metadata"] = error.metadata
+        if error.header is not None:
+            value["header"] = error.header
     return value
 
 

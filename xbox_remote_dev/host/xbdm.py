@@ -21,11 +21,14 @@ MAX_BINARY = 32 * 1024 * 1024
 
 class XbdmError(OSError):
     def __init__(self, message: str, *, expected: int = 0, received: int = 0,
-                 reason: str = "protocol"):
+                 reason: str = "protocol", metadata: dict | None = None,
+                 header: str | None = None):
         super().__init__(message)
         self.expected = expected
         self.received = received
         self.reason = reason
+        self.metadata = metadata
+        self.header = header
 
 
 @dataclass(frozen=True)
@@ -158,5 +161,10 @@ class Client:
         if not (0 < width <= 4096 and 0 < height <= 2160 and
                 width * 4 <= pitch <= 32768 and pitch * height <= size <= MAX_BINARY):
             raise XbdmError(f"invalid screenshot dimensions: {header}")
-        transfer = self.receive(output, size)
+        try:
+            transfer = self.receive(output, size)
+        except XbdmError as error:
+            error.metadata = fields
+            error.header = header
+            raise
         return {"metadata": fields, "header": header, **transfer}
