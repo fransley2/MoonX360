@@ -12,7 +12,7 @@ separate existing console service.
 
 ## Remote input proof of concept
 
-`host/input_poc.py` is a **local state model only**. It accepts versioned
+`host/input_poc.py` is a **local state model only**. It accepts a unique
 session context supplied by a future transport, strictly increasing sequence
 numbers, sender and receiver timestamps, heartbeat, full state, individual
 press/release, and release-all. It models buttons including Guide, keyboard

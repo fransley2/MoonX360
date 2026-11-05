@@ -43,10 +43,15 @@ class Client:
 
     def __enter__(self):
         self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        self.sock.settimeout(self.timeout)
-        greeting = self.status()
-        if greeting.code != 201:
-            raise XbdmError(f"XBDM greeting: {greeting.code} {greeting.message}")
+        try:
+            self.sock.settimeout(self.timeout)
+            greeting = self.status()
+            if greeting.code != 201:
+                raise XbdmError(f"XBDM greeting: {greeting.code} {greeting.message}")
+        except BaseException:
+            self.sock.close()
+            self.sock = None
+            raise
         return self
 
     def __exit__(self, *_):

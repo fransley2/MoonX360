@@ -1,5 +1,6 @@
 import io
 import socket
+import struct
 import threading
 import unittest
 from pathlib import Path
@@ -53,6 +54,15 @@ class ProtocolTests(unittest.TestCase):
                 client.getfile("Hdd1:\\Apps\\MoonX360\\default.xex", io.BytesIO())
         server.finish()
         self.assertEqual(caught.exception.reason, "status-414")
+
+    def test_getfile_exact_length(self):
+        server = Server([b"203- binary\r\n" + struct.pack("<I", 5) + b"hello"])
+        output = io.BytesIO()
+        with Client("127.0.0.1", server.port) as client:
+            transfer = client.getfile("HDD:\\Apps\\MoonX360\\note.txt", output)
+        server.finish()
+        self.assertEqual(transfer["received_bytes"], 5)
+        self.assertEqual(output.getvalue(), b"hello")
 
     def test_short_screenshot_keeps_byte_count_and_refuses_png(self):
         header = (b"pitch=0x10 width=0x4 height=0x4 format=0x100 "
