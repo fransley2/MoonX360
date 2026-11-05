@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<xex>
+  <format><compressed/></format>
+  <mediatypes><flash/></mediatypes>
+  <baseaddr addr="0x81C00000"/>
+  <sysdll/>
+</xex>
