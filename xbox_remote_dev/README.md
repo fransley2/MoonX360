@@ -9,11 +9,17 @@ experimental build.
 ## Current stage
 
 Phase 1 provides a bounded read-only XBDM client and screenshot receiver.
+The XDK build also produces an experimental startup test and heartbeat-only
+plugin. The Windows desktop project currently exposes read-only XBDM status,
+modules, directory listing and an allowlisted terminal. The remote input
+proof of concept is a local state model with a disconnect watchdog.
 
 ```powershell
 py -B -m unittest discover -s xbox_remote_dev/tests -v
 py -B xbox_remote_dev/host/diagnose.py 192.168.15.10 evidence/new-run
 py -B xbox_remote_dev/host/diagnose.py 192.168.15.10 evidence/new-screen-run --screenshot
+powershell -NoProfile -ExecutionPolicy Bypass -File xbox_remote_dev/windows/build.ps1
+py -B xbox_remote_dev/xdk/build.py
 ```
 
 Use a **new** evidence directory for each run. Screenshot capture is explicit
@@ -41,6 +47,14 @@ remove only the new plugin entry, and restore the saved `launch.ini`. The
 exact bypass sequence and launch.ini device are not yet verified on this unit.
 
 No plugin installation or `launch.ini` edit is automated by this project.
+The `RemoteAgent.xex` build currently reports an XDK system-module export
+warning; see [STARTUP_REPORT.md](STARTUP_REPORT.md). Do not install it yet.
+
+`RemoteDev.exe` has no privileged mode or pairing yet. Its UI disables launch,
+file writes, terminal mutation and controller input until a verified agent and
+authentication path exist. `PROTOCOL.md` describes the current protocol
+boundary. The separate build manifests include source commit, artifact
+SHA-256 and a `hardware_tested: false` field.
 
 ## Reference audit
 
