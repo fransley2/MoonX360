@@ -4,7 +4,7 @@ import sys
 root=Path(__file__).resolve().parents[2]
 s=(root/'src/app.c').read_text()
 a=s.index('    launch_begin(cover_delay,cfg.launch_animation)')
-b=s.index('    art_launch_begin(app_id);art_launch_tick();',a)+len('    art_launch_begin(app_id);art_launch_tick();')
+b=s.index('    if(!aurora_direct_active){art_launch_begin(app_id);art_launch_tick();}',a)+len('    if(!aurora_direct_active){art_launch_begin(app_id);art_launch_tick();}')
 fixture=r'''
 #include <assert.h>
 #include <stdint.h>
@@ -13,7 +13,7 @@ fixture=r'''
 #include <stdio.h>
 #include "../src/ui/ui.h"
 static ui_app launch_app;
-static bool launch_connecting,commands,frozen,prepared,had_art;
+static bool launch_connecting,commands,frozen,prepared,had_art,aurora_direct_active;
 static volatile int launch_handoff;
 static uint32_t launch_ui_started,*app_art[1],art_generation[1],*offered;
 static struct {int id;} apps[1]={{42}};

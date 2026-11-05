@@ -8,6 +8,7 @@
 #include <Limelight.h>
 #define MAX_APPS 64
 #include "../../../src/config.h"
+#include "../../../src/aurora_launch.h"
 #include "../../../src/product_features.h"
 #include "../../../src/session_history.h"
 #include "../../../src/library_state.h"
@@ -16,6 +17,8 @@
 #include "../../../src/input.h"
 #include "../../../src/ui/ui.h"
 static struct config cfg;
+static bool aurora_direct_active;
+static struct moonx_launch_data aurora_direct_data;
 static struct host_cache hosts;
 static struct game_bindings game_bindings;
 static struct session_history session_history;
@@ -24,7 +27,7 @@ static char library_query[64];
 static struct {int id;char name[64];} apps[64];static int app_count;
 static struct {bool paired;int current_game;} server;
 static bool server_ok,host_cache_save_failed,accept_edit=true;static char server_error[128];
-static unsigned next_discovery,adaptive_reconnects;
+static unsigned next_discovery,adaptive_reconnects,video_reconnects;
 static std::deque<int> keys;
 static std::map<std::string,std::string> files;
 static int messages,writes,stream_calls,used_width,used_audio,wakes;
@@ -36,6 +39,7 @@ static void message(int,const char*,const char*){messages++;}
 void ui_draw_settings_page(const char*,const ui_setting *rows,int n,int sel){assert(n>0 && sel>=0 && sel<n);for(int i=0;i<n;i++)assert(rows[i].label && rows[i].value);}
 void ui_draw_settings_options(const char *title,const ui_setting *rows,const int *kinds,int n,int sel){for(int i=0;i<n;i++)assert(kinds[i]);ui_draw_settings_page(title,rows,n,sel);}
 void ui_present(){}
+const char *ui_translate(const char *text){return text;}
 int ui_location_enter(const char*){return 0;}void ui_location_restore(int){}
 static bool edit_profile_name(char *text){if(accept_edit)strcpy(text,"My PC");return accept_edit;}
 static void clear_apps(){app_count=0;}
@@ -44,6 +48,7 @@ static void edit_host_mac(){}
 static const char *gs_error(){return "Permission denied";}
 static void host_options_menu(){}
 static bool stream_once(int,const char*){stream_calls++;used_width=cfg.width;used_audio=cfg.audio_mode;return false;}
+static bool stream_session(int id,const char *title){return stream_once(id,title);}
 static void refresh_server(){}
 static void remember_played_art(int){}
 /* ACTUAL_FUNCTIONS */

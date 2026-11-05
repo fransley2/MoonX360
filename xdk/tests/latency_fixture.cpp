@@ -24,9 +24,14 @@ static int vid_w=1920, vid_h=1080, chroma_w=960, chroma_h=540;
 struct staging { unsigned char *plane[3]; };
 static unsigned char values[3][3];
 static staging slots[3];
+static uint64_t legacy_ready_us[3];
+static uint32_t legacy_ready_ms[3];
+static DWORD GetTickCount(){return 100;}
+static uint32_t legacy_serial[3],publish_serial;
 struct D3DTexture {};
 static D3DTexture objects[2][3], *tex[2][3];
 static DWORD tex_fence[2];
+static uint32_t legacy_fence_submitted_ms[2];
 static void inject(int s) {
     if(s<0) return;
     assert(!locked && s != slot_rendering);
@@ -67,7 +72,7 @@ struct gfx_copy_cost { DWORD lock_us,copy_us; };
 enum {TIME_FENCE_WAIT,TIME_TEXTURE_LOCK,TIME_TEXTURE_COPY};
 static void pipeline_sample(int,uint64_t) {}
 static bool gfx_upload_timed(D3DTexture *t,const void *s,int p,int w,int h,gfx_copy_cost*) { return gfx_upload(t,s,p,w,h); }
-static DWORD present_video(D3DDevice *d,D3DTexture**,int,const char*,bool) {
+static DWORD present_video(D3DDevice *d,D3DTexture**,int,const char*,bool,uint64_t,uint32_t) {
     last_present_shown=true;gfx_draw_rect(d,0,0,0,0,0);DWORD f=d->InsertFence();d->Present(NULL,NULL,NULL,NULL);return f;
 }
 static bool gfx_system_ui_active(){return guide;}
@@ -89,6 +94,7 @@ static void reset() {
     uploads=presents=clock_calls=0; uploaded_slot=uploaded_texture=-1; fail_upload=false;
     memset(pending_fences,0,sizeof(pending_fences));
     tex_fence[0]=3; tex_fence[1]=4;
+    memset(legacy_fence_submitted_ms,0,sizeof(legacy_fence_submitted_ms));
     for(int i=0;i<3;i++) for(int k=0;k<3;k++) slots[i].plane[k]=&values[i][k];
     for(int i=0;i<2;i++) for(int k=0;k<3;k++) tex[i][k]=&objects[i][k];
 }
@@ -118,6 +124,7 @@ static void test() {
         else {
             assert(uploads==3 && presents==1 && uploaded_texture==expected);
             assert(tex_next==(expected^1) && tex_fence[expected]==7);
+            assert(legacy_fence_submitted_ms[expected]==100);
             assert(tex_fence[expected^1]==(DWORD)(3+(expected^1)));
         }
     }
@@ -134,7 +141,12 @@ namespace input_test {
 #define SEND_INTERVAL_MS 4
 struct pad {bool present;int buttons;unsigned char lt,rt;short lx,ly,rx,ry;};
 struct input_session {};
-static volatile LONG stream_active,quit_requested;
+static volatile LONG stream_active,quit_requested,close_app_requested;
+static uint64_t stream_detected_us;
+struct input_shortcut { int unused; };
+static bool input_shortcut_step(input_shortcut*,const pad*,int,DWORD,bool consumed[MAX_PADS])
+    { memset(consumed,0,MAX_PADS*sizeof(bool)); return false; }
+static void plat_log(const char*) {}
 static struct {int quit_combo;} stream_settings;
 static int steps, releases, slept[5], polls;
 static bool test_cover;static int cover_commands,remote_forwards;
@@ -150,10 +162,11 @@ static int XInputGetKeyboardState(DWORD,XINPUT_KEYBOARDSTATE *state){memset(stat
 struct remote_input {bool mouse[4],suppress[4];int speed,acceleration,scroll_ms;};
 struct quick_menu {bool open,neutral,latch,muted,stats;int volume;};
 static int pointer_speed=100,pointer_acceleration,pointer_scroll_ms=100;
+static DWORD stream_interval_ms=4;
 static bool initial_stats,physical_connected[4]={true,true,true,true};
 static volatile LONG quick_available=1,mouse_available=1,mouse_mode,quick_snapshot;
 static int input_exit_mask(int){return 0;}
-static bool quick_step(quick_menu*,pad*,bool,int,bool*,int*,DWORD){return false;}
+static bool quick_step(quick_menu*,pad*,bool,int,bool*,bool*,int*,DWORD){return false;}
 static unsigned quick_pack(quick_menu*){return 0;}
 static void remote_mouse_release(remote_input*,int){}
 static void remote_release(remote_input*){}
@@ -182,7 +195,7 @@ static void test() {
         stream_active=true; quit_requested=false;
         input_stream_main(NULL);
         const int expected[]={4,3,1,1,1};
-        assert(polls==5 && steps==5 && releases==1 && quit_requested);
+        assert(polls==5 && steps==5 && releases==1 && !quit_requested);
         for(int i=0;i<5;i++) assert(slept[i]==expected[i]);
     }
     test_cover=true;tick=0;polls=steps=releases=cover_commands=remote_forwards=0;stream_active=true;quit_requested=false;

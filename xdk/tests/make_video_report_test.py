@@ -32,6 +32,11 @@ static unsigned cap_frames,gpu_slot_starvation,cached_failovers,ff_xbox_vmx_flag
 static unsigned network_rtt,network_variance;
 static int network_video_queue,network_video_queue_peak;
 static bool network_valid,shader_diagnostic_override;
+static RTP_VIDEO_STATS last_rtp_stats;
+static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_late_packets,last_lost_frames;
+static uint32_t last_data_packets,last_fec_packets;
+static uint32_t last_present_serial,present_duplicates;
+static uint64_t last_present_start_us,last_present_return_us;
 static unsigned writes;
 static char saved[8192];
 static const char *storage_dir(){return "test";}

@@ -45,13 +45,16 @@ typedef int HRESULT;typedef unsigned XAUDIOSPEAKERCONFIG;
 #define XAUDIOSPEAKERCONFIG_ANALOG_SURROUND 1
 #define XAUDIOSPEAKERCONFIG_DIGITAL_DOLBYDIGITAL 0x10000
 #define XAUDIOSPEAKERCONFIG_DIGITAL_WMAPRO 0x20000
+#define XAUDIO2_END_OF_STREAM 0x0040
 struct WAVEFORMATEX {WORD wFormatTag,nChannels;DWORD nSamplesPerSec,nAvgBytesPerSec;WORD nBlockAlign,wBitsPerSample,cbSize;};
 struct WAVEFORMATEXTENSIBLE {WAVEFORMATEX Format;union {WORD wValidBitsPerSample;} Samples;DWORD dwChannelMask;int SubFormat;};
 struct XAUDIO2_VOICE_DETAILS {int InputChannels;};
 struct XAUDIO2_VOICE_STATE {unsigned BuffersQueued;};
-struct XAUDIO2_BUFFER {unsigned AudioBytes;const BYTE *pAudioData;};
+struct XAUDIO2_BUFFER {unsigned Flags,AudioBytes;const BYTE *pAudioData;};
 struct XAUDIO2_PERFORMANCE_DATA {unsigned GlitchesSinceEngineStarted;};
 static unsigned speaker_config=1,queued,last_bytes,submissions,source_channels,decoded_channels;
+static unsigned fake_now,engine_creations,flushes;static float last_volume;
+static DWORD GetTickCount(){return fake_now;}
 static bool fail_query,fail_six,fail_all_sources,fail_engine,fail_master,fail_start,fail_decoder;
 static int master_channels=6,decoded_samples=960,decode_count,destroyed,engine_releases;
 static unsigned char last_mapping[8];
@@ -61,10 +64,12 @@ struct IXAudio2MasteringVoice {
     void DestroyVoice(){destroyed++;}
 };
 struct IXAudio2SourceVoice {
-    int SetVolume(float value){assert(value>=0 && value<=1);return 0;}
+    int SetVolume(float value){assert(value>=0 && value<=1);last_volume=value;return 0;}
     int Start(int){return fail_start?-1:0;}void Stop(int){}void DestroyVoice(){destroyed++;}
+    void FlushSourceBuffers(){flushes++;}
     void GetState(XAUDIO2_VOICE_STATE *out){out->BuffersQueued=queued;}
-    int SubmitSourceBuffer(XAUDIO2_BUFFER *buf){last_bytes=buf->AudioBytes;submissions++;assert(last_bytes<=11520);return 0;}
+    int SubmitSourceBuffer(XAUDIO2_BUFFER *buf){last_bytes=buf->AudioBytes;submissions++;assert(last_bytes<=11520);
+        if(buf->AudioBytes==9600)assert(buf->Flags==XAUDIO2_END_OF_STREAM);return 0;}
 };
 static IXAudio2SourceVoice fake_voice;static IXAudio2MasteringVoice fake_master;
 struct IXAudio2 {
@@ -80,7 +85,7 @@ struct IXAudio2 {
     void Release(){engine_releases++;}
 };
 static IXAudio2 fake_engine;
-static int XAudio2Create(IXAudio2 **out,int,int){if(fail_engine)return -1;*out=&fake_engine;return 0;}
+static int XAudio2Create(IXAudio2 **out,int,int){engine_creations++;if(fail_engine)return -1;*out=&fake_engine;return 0;}
 struct OpusMSDecoder{};static OpusMSDecoder fake_decoder;
 static OpusMSDecoder *opus_multistream_decoder_create(int rate,int channels,int,int,const unsigned char *map,int *error){assert(rate==48000);decoded_channels=channels;memcpy(last_mapping,map,channels);*error=0;return fail_decoder?NULL:&fake_decoder;}
 static void opus_multistream_decoder_destroy(OpusMSDecoder*){destroyed++;}
@@ -88,6 +93,7 @@ static int opus_multistream_decode(OpusMSDecoder*,const unsigned char*,int,int16
 static int xdk_aux_processor(){return 0;}static void *GetCurrentThread(){return NULL;}
 static void XSetThreadProcessor(void*,int){}static void xdk_audit_thread(const char*){}
 static void plat_shutdown_stage(const char*){}static void plat_log(const char*){}
+static void plat_diagnostics_checkpoint(const char*){}
 void LiInitializeAudioCallbacks(PAUDIO_RENDERER_CALLBACKS cb){memset(cb,0,sizeof(*cb));}
 /* ACTUAL_AUDIO */
 struct connect_job {int ret;};
@@ -106,6 +112,19 @@ static void run_retry(int result,int config){
     else assert(!retries);
 }
 int main(){
+    audio_menu_configure(true,18);assert(menu_voice && engine_creations==1 && last_volume>0.17f && last_volume<0.19f);
+    fake_now=100;audio_menu_play(0);assert(submissions==1 && last_bytes==sizeof(menu_pcm[0]));
+    fake_now=130;audio_menu_play(0);assert(submissions==1);
+    queued=1;fake_now=220;audio_menu_play(0);assert(submissions==1);
+    queued=0;audio_menu_play(0);assert(submissions==2 && engine_creations==1);
+    audio_menu_configure(false,18);assert(flushes==1);audio_menu_play(1);assert(submissions==2);
+    audio_menu_configure(true,40);assert(last_volume>0.39f && last_volume<0.41f);
+    audio_menu_play(1);assert(submissions==3);audio_menu_shutdown();assert(!menu_voice && !menu_engine);
+    fail_engine=true;audio_menu_configure(true,18);assert(!menu_voice && !menu_engine);fail_engine=false;
+    fail_master=true;audio_menu_configure(true,18);assert(!menu_voice && !menu_engine);fail_master=false;
+    fail_all_sources=true;audio_menu_configure(true,18);assert(!menu_voice && !menu_engine);fail_all_sources=false;
+    fail_start=true;audio_menu_configure(true,18);assert(!menu_voice && !menu_engine);fail_start=false;
+    submissions=0;
     run_retry(-1,AUDIO_CONFIGURATION_51_SURROUND);retry_result=-1;run_retry(-1,AUDIO_CONFIGURATION_51_SURROUND);
     run_retry(-1,AUDIO_CONFIGURATION_STEREO);run_retry(0,AUDIO_CONFIGURATION_51_SURROUND);
     assert(audio_select_configuration(false)==AUDIO_CONFIGURATION_STEREO && !audio_fallback_reason());
@@ -129,5 +148,7 @@ int main(){
     o.channelCount=2;o.streams=o.coupledStreams=1;o.mapping[0]=0;o.mapping[1]=1;audio_select_configuration(false);
     assert(audio_init(AUDIO_CONFIGURATION_STEREO,&o,NULL,0)==0);audio_decode_and_play(NULL,0);assert(last_bytes==3840);audio_cleanup();
     o.channelCount=8;assert(audio_init(0,&o,NULL,0)<0);o.channelCount=6;o.samplesPerFrame=961;assert(audio_init(0,&o,NULL,0)<0);
-    puts("PASS: actual XDK audio init/decode/cleanup with mocks, speaker negotiation, WAVE mask/block/rate, Opus map, 6/2-channel bytes, queue decoding, stereo downmix fallback and failure cleanup");
+    unsigned before_menu_return=submissions;audio_menu_configure(true,18);fake_now=1000;queued=0;audio_menu_play(2);
+    assert(menu_voice && submissions==before_menu_return+1 && !voice);audio_menu_shutdown();
+    puts("PASS: menu PCM setup/toggle/volume/throttle/queue/shutdown and stream XAudio2 init/decode/cleanup with mocks, stereo/5.1 fallback and failure cleanup");
 }

@@ -13,6 +13,7 @@
  * that replays that recording with and without the VMX code.
  */
 #include "xdk.h"
+#include "../../src/video_viewport.h"
 #include "../../src/performance.h"
 
 #include <malloc.h>
@@ -34,6 +35,7 @@
 #include "../stream_checks.h"
 #include "../../src/stream_metrics.h"
 #include "../../src/decode_deadline.h"
+#include "../../src/timing.h"
 #include "build_identity.h"
 
 extern "C" {
@@ -67,6 +69,7 @@ struct staging {
 
 static struct video_options options = { true, RENDERER_GPU, true, false, 60, 30000, 1280, 720, 0, COLORSPACE_REC_709 };
 static bool first_present_logged,last_present_shown,launch_decode_notified;
+static bool freeze_first_present;
 static int session_slices = 8;
 /* MCC passes StreamConfig.fps to setup, not an observed/negotiated rate. */
 static int setup_fps_argument;
@@ -80,6 +83,9 @@ static bool overlay_has_text, overlay_failed;
 static uint32_t network_rtt, network_variance;
 static int network_video_queue, network_video_queue_peak, network_audio_ms;
 static bool network_valid;
+static RTP_VIDEO_STATS last_rtp_stats;
+static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_late_packets,last_lost_frames;
+static uint32_t last_data_packets,last_fec_packets;
 static volatile bool telemetry_ready;
 
 static AVCodecContext *codec_ctx;
@@ -89,17 +95,30 @@ static int pkt_cap;
 
 static int vid_w, vid_h, chroma_w, chroma_h;
 static struct staging slots[FRAME_SLOTS];
+static uint64_t legacy_ready_us[FRAME_SLOTS];
+static uint32_t legacy_ready_ms[FRAME_SLOTS];
+static uint32_t legacy_serial[FRAME_SLOTS],publish_serial,last_present_serial,present_duplicates;
+static bool last_present_cached;
+static uint64_t previous_present_start_us,last_present_start_us,last_present_return_us;
+static uint64_t last_decoded_us,last_presented_us;
+static uint32_t present_age_sample_ordinal;
+static uint32_t last_packet_age_stop_ms,last_decode_age_stop_ms,last_present_age_stop_ms;
+struct present_trace_entry {uint64_t start_us,return_us;uint32_t serial;uint8_t cached;};
+static present_trace_entry present_trace[64];
+static uint32_t present_trace_next,present_trace_count;
 static CRITICAL_SECTION mailbox_lock;
 static int slot_pending = -1, slot_rendering = -1;
 static HANDLE frame_event, render_thread;
 static volatile bool running;
 static bool need_idr;
+static volatile LONG decoder_reset_requested;
 static volatile LONG stream_error;
 int video_get_stream_error(void) { return InterlockedCompareExchange(&stream_error,0,0); }
 
 /* Two texture sets: the GPU reads one while the next frame fills the other. */
 static D3DTexture *tex[2][3];
 static DWORD tex_fence[2];
+static uint32_t legacy_fence_submitted_ms[2];
 static int tex_next;
 
 enum { PIPE_AUTO, PIPE_CACHED, PIPE_LEGACY, PIPE_SWITCHING, PIPE_DISABLED };
@@ -127,6 +146,34 @@ static uint64_t streaming_start_us,streaming_end_us;
 static uint64_t submit_last_end_us;
 static unsigned gpu_slot_starvation, cached_failovers;
 static LONG current_pipeline(void) { return InterlockedCompareExchange(&active_pipeline,0,0); }
+void video_get_progress(struct video_progress_snapshot *out)
+{
+    LONG mode=current_pipeline();
+    if(mode==PIPE_LEGACY) {
+        EnterCriticalSection(&mailbox_lock);
+        if(slot_pending>=0)video_progress_queue_age(GetTickCount()-legacy_ready_ms[slot_pending]);
+        LeaveCriticalSection(&mailbox_lock);
+    }
+    unsigned ready=0,in_flight=0;
+    if(mode==PIPE_CACHED)cached_video_snapshot(&ready,&in_flight);
+    else if(mode==PIPE_LEGACY)for(int i=0;i<2;i++)if(gfx_fence_pending(tex_fence[i])) {
+        in_flight++;
+        if(legacy_fence_submitted_ms[i])
+            video_progress_gpu_wait(GetTickCount()-legacy_fence_submitted_ms[i]);
+    }
+    video_progress_snapshot_get(out);
+    out->cached_ready=ready;out->cached_in_flight=in_flight;
+    out->gpu_slot_capacity=mode==PIPE_CACHED?3u:mode==PIPE_LEGACY?2u:0u;
+}
+unsigned video_recover_frame_queue(void)
+{
+    /* READY slots only. IN_FLIGHT and WRITING remain under their owners. */
+    unsigned dropped=current_pipeline()==PIPE_CACHED?cached_video_prune_ready():0;
+    if(dropped)InterlockedExchangeAdd((volatile LONG*)&stats.dropped,dropped);
+    if(frame_event)SetEvent(frame_event);
+    return dropped;
+}
+void video_request_decoder_reset(void){InterlockedExchange(&decoder_reset_requested,1);}
 static void pipeline_sample(int metric,uint64_t us) {
     if (!options.stats_overlay) return;
     uint32_t value=us>UINT_MAX?UINT_MAX:(uint32_t)us;
@@ -173,7 +220,7 @@ static uint64_t now_us(void)
     LARGE_INTEGER t;
 
     QueryPerformanceCounter(&t);
-    return (uint64_t)(t.QuadPart * 1000000 / qpc_freq.QuadPart);
+    return moonx_ticks_to_us((uint64_t)t.QuadPart,(uint64_t)qpc_freq.QuadPart);
 }
 
 /* Overlay-only wall times. Gap includes MCC cleanup/waiting, scheduling and
@@ -184,17 +231,20 @@ class submit_timing_scope {
     uint64_t start;
 public:
     submit_timing_scope() : enabled(options.stats_overlay), start(0) {
+        video_progress_note(VP_CALLBACK_ENTERED);
         if (!enabled) return;
         start=now_us();
         if (submit_last_end_us && start>=submit_last_end_us)
             pipeline_sample(TIME_CALLBACK_GAP,start-submit_last_end_us);
     }
     ~submit_timing_scope() {
-        if (!enabled) return;
-        uint64_t end=now_us();
-        if (end>=start) pipeline_sample(TIME_CALLBACK_TOTAL,end-start);
-        /* Exclude our trailing aggregation cost from the NEXT callback gap. */
-        submit_last_end_us=now_us();
+        if (enabled) {
+            uint64_t end=now_us();
+            if (end>=start) pipeline_sample(TIME_CALLBACK_TOTAL,end-start);
+            /* Exclude our trailing aggregation cost from the NEXT callback gap. */
+            submit_last_end_us=now_us();
+        }
+        video_progress_note(VP_CALLBACK_RETURNED);
     }
 };
 
@@ -409,7 +459,7 @@ static bool overlay_text(char *out,size_t capacity)
         overlay_line(out,capacity,"Workers: %d | Slices: %d | Recovery: %u",stats.decode_threads,session_slices,d.recoveries);
         overlay_line(out,capacity,"Full / reduced frames: %u / %u",d.full_frames,d.fast_frames);
         overlay_line(out,capacity,"Pipeline %s | Copy: %.2f ms",pipeline_name(current_pipeline()),ema[TIME_FRAME_COPY]/1000.0);
-        overlay_line(out,capacity,"GPU submit / fence / Present: %.2f / %.2f / %.2f ms",ema[TIME_GPU_SUBMIT]/1000.0,ema[TIME_FENCE_WAIT]/1000.0,ema[TIME_PRESENT_WAIT]/1000.0);
+        overlay_line(out,capacity,"CPU submit / fence check / Present call: %.2f / %.2f / %.2f ms",ema[TIME_GPU_SUBMIT]/1000.0,ema[TIME_FENCE_WAIT]/1000.0,ema[TIME_PRESENT_WAIT]/1000.0);
         overlay_line(out,capacity,"Display: %dx%d / %.2f Hz",bb_w,bb_h,gfx_display_hz());
         overlay_line(out,capacity,"Video backlog: %d frames | GPU busy: %u",video_queue,gpu_slot_starvation);
     }
@@ -439,12 +489,12 @@ static void activate_legacy_fallback(void)
 }
 
 static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
-                           const char *text,bool update)
+                           const char *text,bool update,uint64_t ready_us,uint32_t serial)
 {
     last_present_shown=false;
     bool available=gfx_quality_available();
     bool control=requested_shader==0 && available && !quality_policy.tested;
-    bool measure=options.stats_overlay || control;
+    bool measure=options.stats_overlay || control || perf_enabled();
     uint64_t t=measure?now_us():0;
     int i;
     bool fast=gpu_shader_fast(requested_shader,available,&quality_policy);
@@ -453,11 +503,19 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
     float coefficients[4],texel[4]={1.0f/vid_w,1.0f/vid_h,0,0};
     video_yuv_coefficients(options.color_space,coefficients);
     d->SetPixelShaderConstantF(0,coefficients,1);d->SetPixelShaderConstantF(1,texel,1);
-    gfx_draw_rect(d,fast?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY,0,0,GFX_WIDTH,GFX_HEIGHT);
+    int bw,bh,left,top,right,bottom;
+    gfx_backbuffer_size(&bw,&bh);
+    video_fit_rect(vid_w,vid_h,bw,bh,&left,&top,&right,&bottom);
+    if(left || top || right!=bw || bottom!=bh)
+        d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
+    gfx_draw_rect(d,fast?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY,
+                  (float)left*GFX_WIDTH/bw,(float)top*GFX_HEIGHT/bh,
+                  (float)right*GFX_WIDTH/bw,(float)bottom*GFX_HEIGHT/bh);
     for (i=0;i<3;i++) d->SetTexture(i,NULL);
     if (measure) {
         uint64_t submit=now_us()-t;
         pipeline_sample(TIME_GPU_SUBMIT,submit);
+        perf_record(PERF_CPU_SUBMIT,submit);
         if (control) gpu_quality_sample(&quality_policy,(uint32_t)submit);
     }
     if (options.stats_overlay && input_stats_visible() && telemetry_ready && !overlay_failed) {
@@ -468,12 +526,46 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
     gfx_stream_menu_draw(d,stats.decoded,stats.rendered,stats.dropped,stats.avg_decode_us,options.stats_overlay);
     if(gfx_launch_pending())gfx_launch_draw(d,true);
     DWORD fence=d->InsertFence();
+    video_progress_note(VP_GPU_SUBMITTED);
     gfx_stream_menu_submitted(fence); /* AFTER all three textures have been unbound */
     if (cached_slot>=0) cached_video_submitted(cached_slot,fence);
     if (options.stats_overlay) gfx_overlay_mark_used(fence);
     t=options.stats_overlay?now_us():0;
     if(!gfx_system_ui_active()) {
+        uint64_t present_started=perf_enabled()?perf_clock():0;
+        if(present_started) {
+            if(previous_present_start_us && present_started>=previous_present_start_us)
+                perf_record(PERF_PRESENT_INTERVAL,present_started-previous_present_start_us);
+            if(ready_us && present_started>=ready_us)
+                perf_record(PERF_FRAME_READY_PRESENT,present_started-ready_us);
+            previous_present_start_us=last_present_start_us=present_started;
+        }
+        if(last_present_serial==serial && serial && last_present_cached==(cached_slot>=0))present_duplicates++;
+        last_present_serial=serial;
+        last_present_cached=cached_slot>=0;
+        if(!freeze_first_present)
+            plat_diagnostics_checkpoint("[FREEZE] first video Present entered\n");
+        video_progress_note(VP_PRESENT_CALLED);
         d->Present(NULL,NULL,NULL,NULL);
+        /* Every call consumed a newly selected slot, even when a resize or
+         * cached-to-legacy switch restarted that slot's local serial. */
+        video_progress_new_present();
+        video_progress_note(VP_PRESENT_COMPLETED);
+        if(perf_video_tracking_enabled() && (!last_presented_us || (++present_age_sample_ordinal&63)==0))
+            last_presented_us=now_us();
+        if(!freeze_first_present) {
+            freeze_first_present=true;
+            plat_diagnostics_checkpoint("[FREEZE] first video Present returned\n");
+        }
+        if(present_started){
+            last_present_return_us=perf_clock();
+            perf_record(PERF_PRESENT_CALL,last_present_return_us-present_started);
+            present_trace_entry *entry=&present_trace[present_trace_next];
+            entry->start_us=present_started;entry->return_us=last_present_return_us;
+            entry->serial=serial;entry->cached=cached_slot>=0;
+            present_trace_next=(present_trace_next+1)%64;
+            if(present_trace_count<64)present_trace_count++;
+        }
         last_present_shown=true;
         if(!first_present_logged && !launch_active()){first_present_logged=true;perf_mark(PERF_FIRST_PRESENTED);vlog("[NET] total start-to-video: %u ms\n",GetTickCount()-options.connection_started_ms);}
     }
@@ -490,7 +582,8 @@ static int draw_cached_frame(void)
     int slot=cached_video_take(planes,&discarded);
     if (discarded) { InterlockedExchangeAdd((volatile LONG*)&stats.dropped,discarded);stats.render_superseded+=discarded; }
     if (slot<0) { gfx_end();return 0; }
-    present_video(d,planes,slot,text,update);gfx_end();return last_present_shown?1:0;
+    video_progress_note(VP_SELECTED);
+    present_video(d,planes,slot,text,update,cached_video_ready_time(slot),cached_video_frame_serial(slot));gfx_end();return last_present_shown?1:0;
 }
 
 static bool draw_frame(int slot)
@@ -530,10 +623,14 @@ static bool draw_frame(int slot)
     }
     LeaveCriticalSection(&mailbox_lock);
     s = &slots[slot];
+    video_progress_queue_age(GetTickCount()-legacy_ready_ms[slot]);
     struct gfx_copy_cost cost={0,0};
+    uint64_t upload_started=perf_enabled()?perf_clock():0;
+    video_progress_note(VP_UPLOAD_STARTED);
     uploaded = gfx_upload_timed(tex[k][0], s->plane[0], vid_w, vid_w, vid_h, options.stats_overlay?&cost:NULL) &&
                gfx_upload_timed(tex[k][1], s->plane[1], chroma_w, chroma_w, chroma_h, options.stats_overlay?&cost:NULL) &&
                gfx_upload_timed(tex[k][2], s->plane[2], chroma_w, chroma_w, chroma_h, options.stats_overlay?&cost:NULL);
+    if(upload_started)perf_record(PERF_LEGACY_TEXTURE_UPLOAD,perf_clock()-upload_started);
     pipeline_sample(TIME_TEXTURE_LOCK,cost.lock_us);pipeline_sample(TIME_TEXTURE_COPY,cost.copy_us);
 
     if (options.stats_overlay)
@@ -548,8 +645,10 @@ static bool draw_frame(int slot)
         gfx_end();
         return false;
     }
+    video_progress_note(VP_UPLOADED);
 
-    tex_fence[k]=present_video(d,tex[k],-1,text,update);
+    legacy_fence_submitted_ms[k]=GetTickCount();
+    tex_fence[k]=present_video(d,tex[k],-1,text,update,legacy_ready_us[slot],legacy_serial[slot]);
     gfx_end();
     return last_present_shown;
 }
@@ -558,6 +657,7 @@ static bool draw_frame(int slot)
  * can become READY after a timeout, including while the opening is drawing. */
 static void render_tick(DWORD wake)
 {
+    video_progress_note(VP_RENDER_ITERATION);
     if(gfx_system_ui_active()) {
         /* Guide heartbeat stays on the established D3D owner. */
         gfx_present_system_ui();return;
@@ -577,6 +677,7 @@ static void render_tick(DWORD wake)
         if(s>=0){slot_pending=-1;slot_rendering=s;}
         LeaveCriticalSection(&mailbox_lock);
         if(s>=0) {
+            video_progress_note(VP_SELECTED);
             uint64_t t0=now_us();
             presented=draw_frame(s);
             if(presented)stats.rendered++;
@@ -641,9 +742,13 @@ static void publish(const AVFrame *f)
             break;
     LeaveCriticalSection(&mailbox_lock);
 
+    uint64_t transfer_start=perf_enabled()?perf_clock():0,plane_start=transfer_start;
     copy_plane(slots[s].plane[0], vid_w, vid_h, f->data[0], f->linesize[0]);
+    if(plane_start){uint64_t end=perf_clock();perf_record(PERF_Y_TRANSFER,end-plane_start);plane_start=end;}
     copy_plane(slots[s].plane[1], chroma_w, chroma_h, f->data[1], f->linesize[1]);
+    if(plane_start){uint64_t end=perf_clock();perf_record(PERF_U_TRANSFER,end-plane_start);plane_start=end;}
     copy_plane(slots[s].plane[2], chroma_w, chroma_h, f->data[2], f->linesize[2]);
+    if(plane_start){uint64_t end=perf_clock();perf_record(PERF_V_TRANSFER,end-plane_start);perf_record(PERF_YUV_TRANSFER,end-transfer_start);}
 
     EnterCriticalSection(&mailbox_lock);
     /* Count only a picture actually replaced here. The renderer may have
@@ -653,6 +758,10 @@ static void publish(const AVFrame *f)
         stats.render_superseded++;
     }
     slot_pending = s;
+    video_progress_note(VP_QUEUED);
+    legacy_ready_us[s]=perf_enabled()?perf_clock():0;
+    legacy_ready_ms[s]=GetTickCount();
+    legacy_serial[s]=++publish_serial;
     LeaveCriticalSection(&mailbox_lock);
     SetEvent(frame_event);
     if (options.stats_overlay)
@@ -674,6 +783,7 @@ static void publish_frame(const AVFrame *f)
     uint64_t t=options.stats_overlay?now_us():0;
     int result=cached_video_publish(planes,pitches,options.stats_overlay?&cost:NULL);
     if (result>0) {
+        video_progress_note(VP_QUEUED);
         if (options.stats_overlay) {
             pipeline_sample(TIME_FRAME_COPY,now_us()-t);pipeline_sample(TIME_TEXTURE_LOCK,cost.lock_us);
             pipeline_sample(TIME_TEXTURE_COPY,cost.copy_us);
@@ -826,10 +936,28 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
 
     if (format != VIDEO_FORMAT_H264 || width <= 0 || height <= 0 || width > 1920 || height > 1080)
         return -1;
+    if (!frame_event || qpc_freq.QuadPart<=0) {
+        InterlockedExchange(&stream_error,VIDEO_STREAM_RESOURCE_ERROR);
+        return -1;
+    }
+
+    char freeze_stage[160];
+    snprintf(freeze_stage,sizeof(freeze_stage),
+             "[FREEZE] video setup %dx%d fps_argument=%d format=%d\n",width,height,fps,format);
+    plat_diagnostics_checkpoint(freeze_stage);
 
     memset(&stats, 0, sizeof(stats));
+    memset(&last_rtp_stats,0,sizeof(last_rtp_stats));
+    last_complete_frames=last_video_packets=last_video_bytes=last_late_packets=last_lost_frames=0;
+    last_data_packets=last_fec_packets=0;
+    memset(legacy_ready_us,0,sizeof(legacy_ready_us));memset(legacy_serial,0,sizeof(legacy_serial));
+    publish_serial=last_present_serial=present_duplicates=0;last_present_cached=false;
+    previous_present_start_us=last_present_start_us=last_present_return_us=0;
+    last_decoded_us=last_presented_us=0;present_age_sample_ordinal=0;
+    last_packet_age_stop_ms=last_decode_age_stop_ms=last_present_age_stop_ms=UINT32_MAX;
+    present_trace_next=present_trace_count=0;
     InterlockedExchange(&stream_error,VIDEO_STREAM_OK);
-    first_present_logged=false;launch_decode_notified=false;
+    first_present_logged=false;launch_decode_notified=false;freeze_first_present=false;
     memset(&deadline, 0, sizeof(deadline));
     memset(&deadline_overlay, 0, sizeof(deadline_overlay));
     EnterCriticalSection(&telemetry_lock);
@@ -855,6 +983,7 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
 
     vlog("video: setup %dx%d, format 0x%x, vmx flags %d, loopfilter selection %02x\n",
          width, height, format, ff_xbox_vmx_flags, ff_xbox_loopfilter_mask);
+    plat_diagnostics_checkpoint("[FREEZE] H264 decoder initialization entered\n");
     codec_ctx = open_h264(width, height, options.decode_workers==3?3:4, options.fast_decode);
     dec_frame = avcodec_alloc_frame();
     if (codec_ctx == NULL || dec_frame == NULL) {
@@ -879,6 +1008,7 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     if (gpu_config) {
         free(gpu_config);
     }
+    plat_diagnostics_checkpoint("[FREEZE] texture creation entered\n");
     bool use_cached=requested_pipeline!=PIPE_LEGACY && cached_video_init(width,height);
     if (!use_cached) {
         if (requested_pipeline!=PIPE_LEGACY) cached_failovers++;
@@ -896,16 +1026,22 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     }
     vlog("video: ready, %d decode threads, %d requested slices, Rec.%s limited\n",
          stats.decode_threads, session_slices, options.color_space == COLORSPACE_REC_709 ? "709" : "601");
+    snprintf(freeze_stage,sizeof(freeze_stage),
+             "[FREEZE] video ready %dx%d pipeline=%d display=%dx%d\n",
+             vid_w,vid_h,(int)current_pipeline(),stats.display_w,stats.display_h);
+    plat_diagnostics_checkpoint(freeze_stage);
 
     slot_pending = slot_rendering = -1;
     tex_next = 0;
     need_idr = false;
+    InterlockedExchange(&decoder_reset_requested,0);
     capture_start();
     return 0;
 }
 
 static void video_start(void)
 {
+    plat_diagnostics_checkpoint("[FREEZE] video renderer start entered\n");
     streaming_start_us=now_us();streaming_end_us=0;
     running = true;
     render_thread = CreateThread(NULL, 512 * 1024, render_main, NULL, CREATE_SUSPENDED, NULL);
@@ -935,6 +1071,9 @@ static bool resize_video(int width,int height)
         return false;
     }
     vlog("video: stream size changed %dx%d -> %dx%d\n",vid_w,vid_h,width,height);
+    char freeze_stage[128];
+    snprintf(freeze_stage,sizeof(freeze_stage),"[FREEZE] video resize %dx%d -> %dx%d entered\n",vid_w,vid_h,width,height);
+    plat_diagnostics_checkpoint(freeze_stage);
     /* MLC1 benchmark files have a single geometry header. The current packet
      * was captured before decode revealed the change; discard this mixed-size
      * recording rather than save it with misleading dimensions. */
@@ -956,14 +1095,47 @@ static bool resize_video(int width,int height)
     }
     video_start();
     streaming_start_us=session_start;
+    plat_diagnostics_checkpoint("[FREEZE] video resize resources ready\n");
     return video_get_stream_error()==VIDEO_STREAM_OK;
 }
 
+static uint32_t video_stage_age_ms(uint64_t now,uint64_t last)
+{
+    if(!last || now<last)return UINT32_MAX;
+    uint64_t age=(now-last)/1000;
+    return age<UINT32_MAX?(uint32_t)age:UINT32_MAX;
+}
 static void video_cleanup(void)
 {
+    uint64_t stopped_at=now_us();
+    last_packet_age_stop_ms=perf_last_video_packet_age_ms();
+    last_decode_age_stop_ms=video_stage_age_ms(stopped_at,last_decoded_us);
+    last_present_age_stop_ms=video_stage_age_ms(stopped_at,last_presented_us);
     vlog("video: stream ended: %u received, %u decoded, %u shown, %u dropped, %u errors\n",
          stats.received, stats.decoded, stats.rendered, stats.dropped, stats.decode_errors);
     capture_finish();
+    const RTP_VIDEO_STATS *rtp=LiGetRTPVideoStats();
+    if(rtp)last_rtp_stats=*rtp;
+    last_complete_frames=(uint32_t)perf_counter_read(PERF_C_VIDEO_FRAMES_COMPLETE);
+    last_video_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_PACKETS);
+    last_video_bytes=(uint32_t)perf_counter_read(PERF_C_VIDEO_BYTES);
+    last_late_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_LATE);
+    last_lost_frames=(uint32_t)perf_counter_read(PERF_C_VIDEO_FRAMES_LOST);
+    last_data_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_DATA_ACCEPTED);
+    last_fec_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_FEC_ACCEPTED);
+    if(present_trace_count && storage_dir()) {
+        char trace[8192];size_t used=0;
+        int n=snprintf(trace,sizeof(trace),"local_present_trace_last=%u\nclock=qpc_us_local_only\ncolumns=serial,cached,start_us,return_us\n",present_trace_count);
+        if(n>0 && (size_t)n<sizeof(trace))used=(size_t)n;
+        for(uint32_t i=0;i<present_trace_count && used<sizeof(trace);i++) {
+            const present_trace_entry *e=&present_trace[(present_trace_next+64-present_trace_count+i)%64];
+            n=snprintf(trace+used,sizeof(trace)-used,"%u,%u,%I64u,%I64u\n",e->serial,(unsigned)e->cached,
+                       (unsigned long long)e->start_us,(unsigned long long)e->return_us);
+            if(n<0 || (size_t)n>=sizeof(trace)-used)break;
+            used+=(size_t)n;
+        }
+        if(used)storage_write("present-trace.txt",trace,used);
+    }
     if (options.stats_overlay && storage_dir()) {
         char report[8192];
         int n = snprintf(report, sizeof(report),
@@ -1012,6 +1184,14 @@ static void video_cleanup(void)
                 "slice_dispatch=legacy\nslice_dispatch_version=0\n"
 #endif
                 "received_counter=backend_decode_callbacks_not_network_arrivals\n"
+                "rtp_completed_frames=%u\nvideo_udp_packets=%u\nvideo_udp_bytes=%u\n"
+                "rtp_expected_video_data_packets=%u\nrtp_expected_fec_packets=%u\n"
+                "rtp_accepted_video_data_packets=%u\nrtp_accepted_fec_packets=%u\n"
+                "rtp_oos_packets=%u\nrtp_late_packets=%u\nrtp_invalid_packets=%u\n"
+                "fec_recovered_packets=%u\nfec_failed_data_deficit=%u\nframe_loss_notifications=%u\n"
+                "present_last_local_sequence=%u\npresent_duplicate_local_sequence=%u\n"
+                "last_present_start_qpc_us=%I64u\nlast_present_return_qpc_us=%I64u\n"
+                "rtp_queue_delay_define_ms=10_unused_in_this_checkout\n"
                 "callback_gap=outside_backend_includes_MCC_wait_cleanup_and_scheduling\n"
                 "packet_prepare=validation_realloc_fragment_copy_padding_and_optional_capture\n"
                 "capture_frames=%u\nframe_gaps_observed=%u\nlast_frame_number=%u\n"
@@ -1019,10 +1199,16 @@ static void video_cleanup(void)
                 "packet_assembly_ema_us=%u\ndu_queue_ema_us=%u\n"
                 "network_queue_last_sample=%d\nnetwork_queue_peak_sampled_1Hz=%d\n"
                 "network_rtt_valid=%d\nnetwork_rtt_last_ms=%u\nnetwork_variance_last_ms=%u\n",
+                last_complete_frames,last_video_packets,last_video_bytes,
+                last_rtp_stats.packetCountVideo,last_rtp_stats.packetCountFec,last_data_packets,last_fec_packets,
+                last_rtp_stats.packetCountOOS,last_late_packets,last_rtp_stats.packetCountInvalid,
+                last_rtp_stats.packetCountFecRecovered,last_rtp_stats.packetCountFecFailed,last_lost_frames,
+                last_present_serial,present_duplicates,
+                (unsigned long long)last_present_start_us,(unsigned long long)last_present_return_us,
                 cap_frames,observations.frame_gaps,observations.last_frame,observations.payload_bytes,
                 observations.host_us,observations.assembly_us,observations.queue_us,
                 network_video_queue,network_video_queue_peak,network_valid,network_rtt,network_variance);
-            static const char *names[TIME_COUNT]={"decode","frame_copy","texture_lock","texture_copy","gpu_submit","fence_wait","present_wait",
+            static const char *names[TIME_COUNT]={"decode","frame_copy","texture_lock","texture_copy","cpu_gpu_submit","fence_check_cpu","present_call_cpu",
                 "packet_prepare","callback_total","callback_gap"};
             uint64_t duration=streaming_end_us>streaming_start_us?streaming_end_us-streaming_start_us:0;
             n+=snprintf(report+n,sizeof(report)-n,
@@ -1031,8 +1217,8 @@ static void video_cleanup(void)
                 "vsync_enabled=%d\npresented_counter=video_Present_calls_not_scanout_or_visible_frames\n"
                 "callback_fps=%.3f\npresented_fps=%.3f\n"
                 "stream_duration_us=%I64u\nshown_fps=%.3f\nreceived_callback_fps=%.3f\ndecoded_fps=%.3f\n"
-                "network_received_fps=unavailable\nidr_received=unavailable\nidr_requests=unavailable\n"
-                "packet_loss=unavailable\nfec_recovered=unavailable\nfec_unrecoverable=unavailable\n"
+                "rtp_complete_fps=see_latency-capture_for_bounded_window\nidr_received=unavailable\nidr_requests=unavailable\n"
+                "packet_loss_exact=unavailable\n"
                 "audio_input_latency_ms=unavailable\ndecode_average_scope=all_timed_decode_calls_in_session\n",
                 options.target_fps,setup_fps_argument,options.vsync,
                 stream_rate_per_second(stats.received,duration),stream_rate_per_second(stats.rendered,duration),
@@ -1066,8 +1252,33 @@ static int video_submit(PDECODE_UNIT du)
 
     if(video_get_stream_error()!=VIDEO_STREAM_OK)return DR_OK;
 
-    if (!stats.received) xdk_audit_thread("VideoDec/dispatch");
+    if(InterlockedExchange(&decoder_reset_requested,0)) {
+        /* Only this callback owns FFmpeg; slice workers have completed the
+         * previous synchronous decode. Do not touch the renderer or audio. */
+        close_h264(&codec_ctx);
+        codec_ctx=open_h264(vid_w,vid_h,options.decode_workers==3?3:4,options.fast_decode);
+        if(!codec_ctx) {
+            InterlockedExchange(&stream_error,VIDEO_STREAM_RESOURCE_ERROR);
+            return DR_OK;
+        }
+        avcodec_free_frame(&dec_frame);
+        dec_frame=avcodec_alloc_frame();
+        if(!dec_frame) {
+            InterlockedExchange(&stream_error,VIDEO_STREAM_RESOURCE_ERROR);
+            return DR_OK;
+        }
+        need_idr=true;
+        video_progress_note(VP_DECODER_RESET);
+        plat_log("[VIDEO] FFmpeg decoder reset on callback thread; requesting IDR\n");
+        return DR_NEED_IDR;
+    }
+
+    if (!stats.received) {
+        xdk_audit_thread("VideoDec/dispatch");
+        plat_diagnostics_checkpoint("[FREEZE] first decoder callback\n");
+    }
     stats.received++;
+    if(du->frameHostProcessingLatency)perf_record(PERF_HOST_PROCESSING,(uint32_t)du->frameHostProcessingLatency*100);
     if (options.stats_overlay) {
         uint64_t submitted = LiGetMicroseconds();
         EnterCriticalSection(&telemetry_lock);
@@ -1126,6 +1337,7 @@ static int video_submit(PDECODE_UNIT du)
     pkt.data = pkt_buf;
     pkt.size = off;
     pkt.flags = du->frameType == FRAME_TYPE_IDR ? AV_PKT_FLAG_KEY : 0;
+    video_progress_note(VP_SUBMITTED);
     if (options.stats_overlay) {
         uint64_t prepared=now_us();
         if (prepared>=prepare_start) pipeline_sample(TIME_PACKET_PREPARE,prepared-prepare_start);
@@ -1140,6 +1352,8 @@ static int video_submit(PDECODE_UNIT du)
     t0 = now_us();
     ret = avcodec_decode_video2(codec_ctx, dec_frame, &got, &pkt);
     dt = now_us() - t0;
+    perf_record(PERF_H264_DECODE,dt);
+    uint64_t post_decode_start=perf_enabled()?perf_clock():0;
     pipeline_sample(TIME_DECODE,dt);
     decode_deadline_after(&deadline, skipped, ret >= 0 && got, dt > UINT_MAX ? UINT_MAX : (uint32_t)dt);
     stats.avg_decode_us = deadline.decode_samples == 1 ? deadline.decode_us :
@@ -1168,20 +1382,28 @@ static int video_submit(PDECODE_UNIT du)
         if(dec_frame->linesize[0]<vid_w || dec_frame->linesize[1]<chroma_w || dec_frame->linesize[2]<chroma_w) {
             stats.decode_errors++;need_idr=true;return DR_NEED_IDR;
         }
+        if (dec_frame->format != AV_PIX_FMT_YUV420P && dec_frame->format != AV_PIX_FMT_YUVJ420P) {
+            stats.decode_errors++;need_idr=true;return DR_NEED_IDR;
+        }
         stats.decoded++;
-        if(stats.decoded==1)perf_mark(PERF_FIRST_DECODED);
+        video_progress_note(VP_DECODED);
+        last_decoded_us=t0+dt;
+        if(stats.decoded==1) {
+            perf_mark(PERF_FIRST_DECODED);
+            char freeze_frame[160];
+            snprintf(freeze_frame,sizeof(freeze_frame),
+                     "[FREEZE] first decoded %dx%d format=%d pitch=%d,%d,%d\n",
+                     dec_frame->width,dec_frame->height,dec_frame->format,
+                     dec_frame->linesize[0],dec_frame->linesize[1],dec_frame->linesize[2]);
+            plat_diagnostics_checkpoint(freeze_frame);
+        }
         decode_us_sum += dt;
-        if (dec_frame->format == AV_PIX_FMT_YUV420P || dec_frame->format == AV_PIX_FMT_YUVJ420P)
-        {
-            if(!launch_decode_notified){launch_decoded();launch_decode_notified=true;}
-            publish_frame(dec_frame);
-        }
-        else {
-            stats.decode_errors++;
-            need_idr = true;
-            return DR_NEED_IDR;
-        }
+        if(!launch_decode_notified){launch_decoded();launch_decode_notified=true;}
+        if(stats.decoded==1)plat_diagnostics_checkpoint("[FREEZE] first frame upload entered\n");
+        publish_frame(dec_frame);
+        if(stats.decoded==1)plat_diagnostics_checkpoint("[FREEZE] first frame upload returned\n");
     }
+    if(post_decode_start)perf_record(PERF_POST_DECODE,perf_clock()-post_decode_start);
     log_stats();
     if (decode_deadline_needs_refresh(&deadline)) {
         need_idr = true;
@@ -1515,6 +1737,9 @@ void video_get_session_performance(struct performance_sample *out)
 {
     /* Called after LiStopConnection joined the producer and renderer. */
     memset(out,0,sizeof(*out));out->frames=stats.decoded;out->drops=stats.dropped;
+    out->last_video_packet_age_ms=last_packet_age_stop_ms;
+    out->last_decoded_age_ms=last_decode_age_stop_ms;
+    out->last_presented_age_ms=last_present_age_stop_ms;
     out->requested_fps=options.target_fps;out->setup_fps_argument=setup_fps_argument;
     /* No host-confirmed FPS exists in this MCC callback contract. */
     out->negotiated_fps_known=false;
@@ -1540,6 +1765,17 @@ void video_get_session_performance(struct performance_sample *out)
     out->callback_fps=stream_rate_per_second(stats.received,duration);
     out->decoded_fps=stream_rate_per_second(stats.decoded,duration);
     out->presented_fps=stream_rate_per_second(stats.rendered,duration);
+    out->complete_frames=last_complete_frames;
+    out->complete_frame_fps=stream_rate_per_second(last_complete_frames,duration);
+    out->video_packets=last_video_packets;out->video_bytes=last_video_bytes;
+    out->expected_video_data_packets=last_rtp_stats.packetCountVideo;
+    out->expected_fec_packets=last_rtp_stats.packetCountFec;
+    out->accepted_data_packets=last_data_packets;out->accepted_fec_packets=last_fec_packets;
+    out->present_duplicate_local_sequence=present_duplicates;
+    out->fec_recovered=last_rtp_stats.packetCountFecRecovered;
+    out->fec_failed=last_rtp_stats.packetCountFecFailed;
+    out->oos=last_rtp_stats.packetCountOOS;out->invalid_packets=last_rtp_stats.packetCountInvalid;
+    out->late_packets=last_late_packets;out->lost_frames=last_lost_frames;
     if(duration) {out->shown_fps=stats.rendered*1000000.0/duration;
         if(options.stats_overlay)out->payload_mbps=observations.payload_bytes*8.0/duration;}
 }

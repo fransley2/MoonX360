@@ -104,6 +104,7 @@ static uint64_t streaming_start_us=123,streaming_end_us;
 static unsigned char *cap_buf;
 static unsigned cap_len,cap_frames;
 static void vlog(const char*,...){}
+static void plat_diagnostics_checkpoint(const char*){}
 static LONG InterlockedExchange(volatile LONG *p,LONG n){LONG old=*p;*p=n;return old;}
 static int video_get_stream_error(){return stream_error;}
 static void video_stop(){joined=true;stops++;streaming_end_us=900;}

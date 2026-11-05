@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <Limelight.h>
 #include "performance_advisor.h"
+struct video_progress_snapshot;
 
 enum video_renderer {
     RENDERER_GPU,          /* Xenos shader does YUV->RGB and scaling (default) */
@@ -52,6 +53,9 @@ void video_get_stats(struct video_stats *out);
 enum video_stream_error { VIDEO_STREAM_OK, VIDEO_STREAM_UNSUPPORTED_SIZE, VIDEO_STREAM_RESOURCE_ERROR };
 /* Polled by the app; decoder callbacks must never stop their own transport. */
 int video_get_stream_error(void);
+void video_get_progress(struct video_progress_snapshot *out);
+unsigned video_recover_frame_queue(void);
+void video_request_decoder_reset(void);
 /* Sampled by app.c only while LiStartConnection has completed and before stop. */
 void video_set_network_stats(uint32_t rtt, uint32_t variance, bool valid,
                              int video_queue, int audio_queue_ms);

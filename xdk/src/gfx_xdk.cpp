@@ -9,6 +9,7 @@
  */
 #include "xdk.h"
 #include "../../src/performance.h"
+#include "../../src/timing.h"
 
 #include <d3dx9shader.h>
 #include <xgraphics.h>
@@ -21,6 +22,7 @@
 #include "../../src/ui/font.h"
 #include "../../src/system_ui.h"
 #include "../../src/display_policy.h"
+#include "../../src/ui_layout_geometry.h"
 #include "../../src/platform.h"
 #include "../../src/input.h"
 
@@ -73,6 +75,8 @@ static D3DVertexDeclaration *decl;
 static D3DVertexShader *vs;
 static D3DPixelShader *ps[4];
 static int backbuffer_width=1280, backbuffer_height=720;
+static int layout_width=1280;
+static int layout_height=720;
 static int display_width=1280, display_height=720;
 static float display_refresh;
 static bool display_is_interlaced;
@@ -136,7 +140,7 @@ static const char ps_yuv_quality_src[] =
 uint64_t gfx_now_us(void)
 {
     LARGE_INTEGER t;QueryPerformanceCounter(&t);
-    return (uint64_t)(t.QuadPart*1000000/gfx_frequency.QuadPart);
+    return moonx_ticks_to_us((uint64_t)t.QuadPart,(uint64_t)gfx_frequency.QuadPart);
 }
 void gfx_backbuffer_size(int *w,int *h) { *w=backbuffer_width;*h=backbuffer_height; }
 void gfx_display_size(int *w,int *h) { *w=display_width;*h=display_height; }
@@ -180,6 +184,7 @@ bool gfx_init(void)
         display_refresh=mode.RefreshRate;display_is_interlaced=mode.fIsInterlaced!=FALSE;
     }
     struct config initial;config_load(&initial);
+    ui_layout_canvas_size(initial.ui_layout,&layout_width,&layout_height);
     display_render_size(initial.display_mode,display_width,display_height,&backbuffer_width,&backbuffer_height);
     ZeroMemory(&pp, sizeof(pp));
     pp.BackBufferWidth = backbuffer_width;
@@ -266,6 +271,19 @@ void gfx_draw_rect(D3DDevice *d, int shader, float x0, float y0, float x1, float
     d->SetPixelShader(ps[shader]);
     d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(q[0]));
 }
+int gfx_layout_width(void){return layout_width;}
+void gfx_draw_layout_rect(D3DDevice *d,int shader,float x0,float y0,float x1,float y1)
+{
+    int left,top,right,bottom;
+    ui_layout_viewport(layout_width,layout_height,backbuffer_width,backbuffer_height,
+                       &left,&top,&right,&bottom);
+    float sx=(right-left)/(float)layout_width,sy=(bottom-top)/(float)layout_height;
+    gfx_draw_rect(d,shader,
+                  (left+x0*sx)*GFX_WIDTH/backbuffer_width,
+                  (top+y0*sy)*GFX_HEIGHT/backbuffer_height,
+                  (left+x1*sx)*GFX_WIDTH/backbuffer_width,
+                  (top+y1*sy)*GFX_HEIGHT/backbuffer_height);
+}
 
 bool gfx_upload(D3DTexture *tex, const void *src, int src_pitch, int row_bytes, int rows)
 {
@@ -315,21 +333,23 @@ bool gfx_upload_timed(D3DTexture *tex,const void *src,int src_pitch,int row_byte
 /* XDK 21256.3 D3DLOCK documentation: keep CPU flush AND GPU invalidation
  * on UnlockRect. NOOVERWRITE avoids resource waits only because our slot
  * owner proves its previous unbound + InsertFence has completed. */
-bool gfx_cached_upload(D3DTexture *texture,const BYTE *src,int src_pitch,
-                       int width,int height,struct gfx_copy_cost *cost)
+static bool gfx_cached_upload_impl(D3DTexture *texture,const BYTE *src,int src_pitch,
+                                   int width,int height,struct gfx_copy_cost *cost,bool prevalidated)
 {
     D3DLOCKED_RECT lr;
-    D3DSURFACE_DESC desc;
     uint64_t t=cost?gfx_now_us():0, copied;
     int y;
     if (!texture || !src || width<=0 || height<=0 || src_pitch<width ||
         !(texture->Common & D3DCOMMON_CPU_CACHED_MEMORY)) return false;
-    texture->GetLevelDesc(0,&desc);
-    if (desc.Format!=D3DFMT_LIN_L8 || desc.Width!=(UINT)width || desc.Height!=(UINT)height) return false;
+    if (!prevalidated) {
+        D3DSURFACE_DESC desc;
+        texture->GetLevelDesc(0,&desc);
+        if (desc.Format!=D3DFMT_LIN_L8 || desc.Width!=(UINT)width || desc.Height!=(UINT)height) return false;
+    }
     ZeroMemory(&lr,sizeof(lr));
     if (FAILED(texture->LockRect(0,&lr,NULL,D3DLOCK_NOOVERWRITE))) return false;
     if (!lr.pBits || lr.Pitch<width ||
-        (uint64_t)(unsigned)lr.Pitch*desc.Height>0x7fffffffU ||
+        (uint64_t)(unsigned)lr.Pitch*height>0x7fffffffU ||
         (uint64_t)(unsigned)src_pitch*height>0x7fffffffU) {
         texture->UnlockRect(0);return false;
     }
@@ -345,6 +365,14 @@ bool gfx_cached_upload(D3DTexture *texture,const BYTE *src,int src_pitch,
     if (cost) cost->lock_us+=(DWORD)(gfx_now_us()-t); /* includes coherency work */
     return ok;
 }
+
+bool gfx_cached_upload(D3DTexture *texture,const BYTE *src,int src_pitch,
+                       int width,int height,struct gfx_copy_cost *cost)
+{ return gfx_cached_upload_impl(texture,src,src_pitch,width,height,cost,false); }
+
+bool gfx_cached_upload_prevalidated(D3DTexture *texture,const BYTE *src,int src_pitch,
+                                    int width,int height,struct gfx_copy_cost *cost)
+{ return gfx_cached_upload_impl(texture,src,src_pitch,width,height,cost,true); }
 
 bool gfx_cached_selftest(D3DDevice *d)
 {
@@ -412,7 +440,7 @@ void gfx_draw_hud_rect(D3DDevice *d,float x0,float y0,float x1,float y1)
     const DWORD values[]={TRUE,D3DBLEND_SRCALPHA,D3DBLEND_INVSRCALPHA,D3DBLENDOP_ADD,FALSE};
     DWORD previous[5];
     for(int i=0;i<5;i++){d->GetRenderState((D3DRENDERSTATETYPE)keys[i],previous+i);d->SetRenderState((D3DRENDERSTATETYPE)keys[i],values[i]);}
-    gfx_draw_rect(d,GFX_SHADER_RGBA,x0,y0,x1,y1);
+    gfx_draw_layout_rect(d,GFX_SHADER_RGBA,x0,y0,x1,y1);
     for(int i=0;i<5;i++)d->SetRenderState((D3DRENDERSTATETYPE)keys[i],previous[i]);
 }
 void gfx_mouse_draw(D3DDevice *d)
@@ -438,7 +466,8 @@ void gfx_mouse_draw(D3DDevice *d)
         cv_free(&label);
     }
     if(mouse_indicator) {
-        d->SetTexture(0,mouse_indicator);gfx_draw_hud_rect(d,(float)(1264-mouse_indicator_width),(float)(704-mouse_indicator_height),1264,704);d->SetTexture(0,NULL);
+        int right=layout_width-16;
+        d->SetTexture(0,mouse_indicator);gfx_draw_hud_rect(d,(float)(right-mouse_indicator_width),(float)(704-mouse_indicator_height),(float)right,704);d->SetTexture(0,NULL);
     }
 }
 
@@ -483,10 +512,10 @@ bool gfx_overlay_set(const char *text)
         if(*q=='\n')q++;line[n]=0;
         int measured=font_text_width(FONT_REGULAR,(float)font_size,line);if(measured>widest)widest=measured;
     }
-    /* Logical 1280x720 coordinates scale with the backbuffer (480/720/1080).
+    /* Selected interface coordinates fit the backbuffer at either aspect.
      * Tiny fixed margins; no full-screen surface or layout work in draw(). */
     int width=((widest+24+31)/32)*32,height=16+font_size+(lines-1)*step;
-    if(width<64)width=64;if(width>1248)width=1248;if(height>688)height=688;
+    if(width<64)width=64;if(width>layout_width-32)width=layout_width-32;if(height>688)height=688;
     int y=8+(int)font_ascent(FONT_REGULAR,(float)font_size);
     if(overlay_canvas.px && (overlay_canvas.w!=width || overlay_canvas.h!=height))gfx_overlay_clear(d);
     if (!overlay_canvas.px && !cv_init(&overlay_canvas, width, height)) return false;
@@ -559,6 +588,7 @@ void ui_present(void)
 {
     perf_ui_end();
     if(gfx_system_ui_active() || !gfx_ui_ready())return;
+    ui_transition_tick(GetTickCount());
     canvas_t *c = ui_canvas();
     D3DDevice *d = gfx_begin();
     int command_count;
@@ -591,7 +621,11 @@ void ui_present(void)
     }
 
     d->SetTexture(0, ui_tex[k]);
-    gfx_draw_rect(d, GFX_SHADER_RGB, 0, 0, GFX_WIDTH, GFX_HEIGHT);
+    int left,top,right,bottom;
+    ui_layout_viewport(c->w,c->h,backbuffer_width,backbuffer_height,&left,&top,&right,&bottom);
+    if(left || top || right!=backbuffer_width || bottom!=backbuffer_height)
+        d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
+    gfx_draw_layout_rect(d,GFX_SHADER_RGB,0,0,(float)layout_width,(float)layout_height);
     d->SetTexture(0, NULL);
     ui_fence[k] = d->InsertFence();
     if(!gfx_system_ui_active()){d->Present(NULL, NULL, NULL, NULL);ui_focus_presented();}

@@ -9,7 +9,7 @@ once=function('static bool stream_once(')
 # Exercise the ACTUAL connected-session loop/teardown; transport setup is stubbed.
 once=once[once.index('    input_configure('):]
 once='static bool stream_once(int app_id,const char *app_title) {\n'+r"""
-    bool local_exit,allow_adapt=false;int adapt_reason=0,video_error=VIDEO_STREAM_OK;
+    bool local_exit,allow_adapt=false,watchdog_reconnect=false;int adapt_reason=0,video_error=VIDEO_STREAM_OK;
     uint32_t started,elapsed,last_network_ms;
     adaptive_stream adaptation={};config adapted=cfg;video_options vo={};
     assert(sessions<4);heights[sessions]=cfg.height;bitrates[sessions]=cfg.bitrate_kbps;
@@ -25,9 +25,12 @@ fixture=r"""
 #include "../src/product_features.h"
 #include "../src/video.h"
 #include "../src/adaptive_stream.h"
+#include "../src/aurora_launch.h"
 #include "../src/ui/ui.h"
 static config cfg;static game_bindings game_bindings;static const char *host_key(){return cfg.host;}
+static bool aurora_direct_active;static moonx_launch_data aurora_direct_data;
 static unsigned adaptive_reconnects;
+static unsigned video_reconnects;
 static int connection_poor,scenario,sessions,stops,reports;
 static int heights[4],bitrates[4];static uint32_t durations[4];
 static uint32_t tick,session_start;static bool connection_terminated,ui_suspended,stream_return_home,live;
@@ -37,6 +40,7 @@ static void plat_sleep_ms(unsigned ms){tick+=ms;}
 static int plat_atomic_load(volatile int *v){return *v;}
 static bool plat_system_ui_active(){return scenario==2;}
 static void plat_shutdown_stage(const char*){}
+static void plat_log(const char*){}
 static void plat_diagnostics_flush(){}
 static void plat_connection_trace_flush(){}
 static void plat_diagnostics_checkpoint(const char*){}
@@ -56,6 +60,7 @@ bool LiGetEstimatedRttInfo(uint32_t *r,uint32_t *v){*r=10;*v=0;return true;}
 int LiGetPendingVideoFrames(){return scenario==3?4:0;}
 int LiGetPendingAudioDuration(){return 0;}
 static void save_session_report(uint32_t){assert(!live);reports++;}
+static void save_video_stall_report(int,const char*){assert(!live);}
 static void record_session(int,const char*,uint32_t){assert(!live);}
 static void message(int,const char*,const char*){assert(false);}
 static bool show_stream_stats(uint32_t){return false;}

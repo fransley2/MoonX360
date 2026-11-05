@@ -35,7 +35,7 @@ static void menu_row(stream_panel *p,int y,const char *label,const char *value,b
         cv_fill(&p->canvas,16,y-21,3,32,ui_theme_accent());
     }
     uint32_t ink=danger?0xFFF1B172:0xFFF2F5F3;
-    font_draw_fit(&p->canvas,selected?FONT_BOLD:FONT_REGULAR,21,30,y,264,ink,label);
+    font_draw_fit(&p->canvas,selected?FONT_BOLD:FONT_REGULAR,21,30,y,value && value[0]?264:390,ink,label);
     font_draw_fit(&p->canvas,FONT_REGULAR,18,306,y,108,selected?0xFFF2F5F3:0xFFC0C9C5,value);
 }
 static void compact_menu(stream_panel *p,unsigned state,bool statistics,const char *audio)
@@ -43,16 +43,17 @@ static void compact_menu(stream_panel *p,unsigned state,bool statistics,const ch
     cv_fill(&p->canvas,1,1,510,52,0xFF202B26);cv_fill(&p->canvas,1,1,510,3,ui_theme_accent());
     font_draw_fit(&p->canvas,FONT_BOLD,24,20,35,330,0xFFF2F5F3,ui_translate("Quick menu"));
     font_draw_fit(&p->canvas,FONT_REGULAR,15,374,34,114,0xFFC0C9C5,"Back + L3");
-    const char *labels[]={"Resume stream","Volume","Mouse mode","Statistics","Audio output","Disconnect stream"};
+    const char *labels[]={"Resume stream","Volume","Mouse mode","Statistics","Audio output","Close the app and Return to MoonX360","Return to MoonX360"};
     unsigned selected=(state>>1)&7,volume=(state>>4)&127;char text[64];
-    for(int i=0;i<6;i++) {
-        bool on=(unsigned)i==selected;int y=80+i*32;
+    int first=selected>=6?(int)selected-5:0;
+    for(int slot=0;slot<6;slot++) {
+        int i=first+slot;bool on=(unsigned)i==selected;int y=80+slot*32;
         if(on)cv_fill(&p->canvas,12,y-23,488,30,ui_theme_accent());
-        uint32_t ink=on?0xFF132316:i==5?0xFFF1B172:0xFFF2F5F3;
+        uint32_t ink=on?0xFF132316:i>=5?0xFFF1B172:0xFFF2F5F3;
         const char *value=i==2?(input_mouse_active()?"On":"Off"):i==3?(statistics?"On":"Off"):i==4?audio:"";
         if(i==1){snprintf(text,sizeof(text),"%u%%",volume);value=(state&2048)?ui_translate("Muted"):text;}
         else value=ui_translate(value);
-        font_draw_fit(&p->canvas,on?FONT_BOLD:FONT_REGULAR,20,24,y,264,ink,ui_translate(labels[i]));
+        font_draw_fit(&p->canvas,on?FONT_BOLD:FONT_REGULAR,20,24,y,i>=5?460:264,ink,ui_translate(labels[i]));
         font_draw_fit(&p->canvas,FONT_REGULAR,18,304,y,184,ink,value);
     }
     const char *reason=audio_fallback_reason();if(reason)line(p,275,ui_translate(reason),false);
@@ -69,8 +70,8 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
     }
     for(int i=0;i<2;i++)panels[i].used=false;
     if(gfx_system_ui_active() || (!open && (!statistics || detailed)))return;
-    /* One retained sidebar plus the existing compact stats panel. Geometry is
-     * in the renderer's 1280x720 logical space; no per-frame animation/upload. */
+    /* One retained sidebar plus the existing compact stats panel. Geometry
+     * follows the selected interface layout; no per-frame raster resize. */
     bool sidebar=open && ui_stream_menu_style()==1;
     int which=open?0:1,width=sidebar?448:512,height=open?(sidebar?640:320):128;stream_panel *p=panels+which;
     if(open && !p->was_open){p->was_open=true;p->updates=p->raster_total=p->raster_max=0;}
@@ -105,14 +106,16 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
             font_draw_fit(&p->canvas,FONT_BOLD,28,24,80,400,0xFFF2F5F3,ui_translate("Quick menu"));
             cv_rrect(&p->canvas,298,19,126,28,4,0xFF121619);
             font_draw_fit(&p->canvas,FONT_REGULAR,15,310,39,102,0xFFC0C9C5,"Back + L3");
-            const char *labels[]={"Resume stream","Volume","Mouse mode","Statistics","Audio output","Disconnect stream"};
+            const char *labels[]={"Resume stream","Volume","Mouse mode","Statistics","Audio output","Close the app and Return to MoonX360","Return to MoonX360"};
             unsigned selected=(state>>1)&7,volume=(state>>4)&127;
-            for(int i=0;i<6;i++) {
+            int first=selected>=6?(int)selected-5:0;
+            for(int slot=0;slot<6;slot++) {
+                int i=first+slot;
                 const char *value=i==2?(input_mouse_active()?"On":"Off"):i==3?(statistics?"On":"Off"):i==4?audio:"";
                 if(i==1){snprintf(text,sizeof(text),"%u%%",volume);value=(state&2048)?ui_translate("Muted"):text;}
                 else value=ui_translate(value);
-                int y=146+i*64;
-                menu_row(p,y,ui_translate(labels[i]),value,(unsigned)i==selected,i==5);
+                int y=146+slot*64;
+                menu_row(p,y,ui_translate(labels[i]),value,(unsigned)i==selected,i>=5);
                 if(i==1) {
                     cv_fill(&p->canvas,30,y+12,384,3,0xFF414A4D);
                     cv_fill(&p->canvas,30,y+12,(int)(384*volume/100),3,(state&2048)?0xFF99A6A0:ui_theme_accent());
@@ -121,7 +124,7 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
             const char *help=selected==1?"Left / Right: volume. A: mute / unmute.":
                 selected==2?"A toggles controller mouse mode and resumes streaming.":
                 selected==3?"A toggles the streaming statistics overlay.":
-                selected==4?"Read only":selected==5?"A disconnects this session and returns to MoonX360.":"Resume stream";
+                selected==4?"Read only":selected==5?"A closes the app on the PC and returns to MoonX360.":selected==6?"A disconnects this session and returns to MoonX360.":"Resume stream";
             const char *reason=audio_fallback_reason();
             /* The effective audio reason takes precedence while inspecting
              * Audio output. Other actions keep their own control hints. */
@@ -158,7 +161,8 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
     }
     if(!p->ready)return;
     d->SetTexture(0,p->texture);
-    if(open){if(sidebar)gfx_draw_rect(d,GFX_SHADER_RGB,40,40,488,680);else gfx_draw_rect(d,GFX_SHADER_RGB,384,190,896,510);}
+    if(open){if(sidebar)gfx_draw_layout_rect(d,GFX_SHADER_RGB,40,40,488,680);
+        else {float x=(gfx_layout_width()-512)*0.5f;gfx_draw_layout_rect(d,GFX_SHADER_RGB,x,190,x+512,510);}}
     else gfx_draw_hud_rect(d,16,16,528,144);
     d->SetTexture(0,NULL);p->used=true;
 }

@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
 
 static int stage = STAGE_NONE;
 static ConnListenerConnectionTerminated originalTerminationCallback;
@@ -309,6 +310,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     memset(&LocalAddr, 0, sizeof(LocalAddr));
     NegotiatedVideoFormat = 0;
     memcpy(&StreamConfig, streamConfig, sizeof(StreamConfig));
+    perf_request_fps(PERF_FPS_MOONLIGHT_COPY,StreamConfig.fps,StreamConfig.clientRefreshRateX100);
     RemoteAddrString = strdup(serverInfo->address);
 
     // The values in RTSP SETUP will be used to populate these.

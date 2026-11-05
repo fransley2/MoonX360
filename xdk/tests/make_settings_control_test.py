@@ -23,7 +23,7 @@ fixture=r'''
 static config cfg;
 static int settings_initial_group=-1,navigation_pending=-1,settings_navigation_page=-1;
 static struct {int count;} session_history;
-static const int resolutions[][2]={{854,480},{1280,720},{1920,1080}};
+static const int resolutions[][2]={{640,480},{854,480},{1280,720},{1920,1080}};
 static std::deque<int> keys;
 static std::set<std::string> pages,options;
 static bool allow_write=true;static unsigned messages,restarts;
@@ -72,6 +72,7 @@ static void pointer_settings_menu(){}
 static void launch_defaults_menu(){while(!(wait_button()&B_FLAG)){};}
 static void ui_memory_menu(){}
 static void network_diagnostics_menu(){}
+static void latency_diagnostics_menu(){}
 static void log_viewer(){}
 static void history_menu(){}
 static void advisor_menu(){}
@@ -109,7 +110,7 @@ int main(){
     assert(cfg.fps==config_cycle_fps(original.fps,1) && cfg.stream_profile==0);
     begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(cfg.bitrate_kbps==original.bitrate_kbps+1000);
     cfg=original;begin(true);keys={RIGHT_FLAG,B_FLAG};finish();assert(cfg.fps==24 && cfg.width==1920);
-    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_STREAM:UI_HOME));}
+    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_PAGE_COUNT:UI_HOME));}
     cfg=original;begin();down(2);keys.push_back(A_FLAG);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);down(1);keys.push_back(RIGHT_FLAG);back(3);finish();assert(cfg.ui_background==1 && cfg.ui_accent==1);
     unsigned prior=hosts_calls;begin();keys.push_back(A_FLAG);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);back(2);finish();assert(hosts_calls==prior+3);
     bool mdns=cfg.mdns_discovery;begin();keys.push_back(A_FLAG);down(3);keys.push_back(RIGHT_FLAG);back(2);finish();assert(cfg.mdns_discovery!=mdns);

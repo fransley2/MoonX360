@@ -1,0 +1,26 @@
+MoonX360 v0.2.3 - Xbox 360 (RGH/JTAG)
+
+INSTALACAO
+1. Extraia o ZIP. Copie a pasta MoonX360 inteira para HDD ou pen drive
+   acessivel pelo Aurora, por exemplo Hdd1:\Apps\MoonX360\.
+2. Atualize a lista do Aurora e abra MoonX360/default.xex.
+3. Ao atualizar uma instalacao existente, preserve a pasta MoonX360/moonlight
+   do console. Ela contem configuracoes, hosts, perfis e dados de pareamento.
+   O ZIP nao contem essa pasta e nao deve apagar a existente.
+4. O arquivo MoonX360Shortcut/default.xex e o modelo opcional usado pelo
+   recurso de atalhos locais do app. Mantenha-o na posicao do ZIP.
+
+TELA 4:3 E TRANSMISSAO
+Em Settings > Interface > App display, escolha App resolution 640x480 (4:3)
+e Interface layout 4:3 para ocupar a tela VGA. 16:9 e o padrao. Reinicie o
+aplicativo apos mudar essas opcoes. A resolucao do video e independente:
+escolha Custom 640x480 e a taxa desejada para pedir transmissao 4:3 ao PC.
+O modo fisico de saida VGA e configurado no dashboard do Xbox.
+
+REQUISITOS
+PC com Sunshine ou host GameStream compativel, H.264 e rede local alcancavel.
+1080p continua experimental devido aos limites de decodificacao do Xbox 360.
+
+CODIGO E LICENCAS
+https://github.com/fransley2/MoonX360
+Consulte a pasta licenses e o codigo-fonte no tag v0.2.3.

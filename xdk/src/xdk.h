@@ -47,6 +47,8 @@ void gfx_end(void);
 enum gfx_shader { GFX_SHADER_RGB, GFX_SHADER_YUV_FAST, GFX_SHADER_YUV_QUALITY, GFX_SHADER_RGBA };
 #define GFX_SHADER_YUV GFX_SHADER_YUV_FAST
 void gfx_draw_rect(D3DDevice *dev, int shader, float x0, float y0, float x1, float y1);
+void gfx_draw_layout_rect(D3DDevice *dev,int shader,float x0,float y0,float x1,float y1);
+int gfx_layout_width(void);
 /* Straight-alpha HUD draw restores all blend states; white-mask conversion is local to HUDs. */
 void gfx_draw_hud_rect(D3DDevice *dev,float x0,float y0,float x1,float y1);
 void gfx_hud_pixels(uint32_t *pixels,int width,int height);
@@ -85,13 +87,20 @@ bool gfx_quality_available(void);
 bool gfx_fence_pending(DWORD fence);
 bool gfx_cached_upload(D3DTexture *texture, const BYTE *src, int src_pitch,
                        int width, int height, struct gfx_copy_cost *cost);
+/* Only for textures whose immutable format/dimensions were checked at creation. */
+bool gfx_cached_upload_prevalidated(D3DTexture *texture, const BYTE *src, int src_pitch,
+                                    int width, int height, struct gfx_copy_cost *cost);
 bool gfx_cached_selftest(D3DDevice *d);
 bool cached_video_init(int width, int height);
 int cached_video_publish(const BYTE *const planes[3], const int pitches[3], struct gfx_copy_cost *cost);
+uint64_t cached_video_ready_time(int slot);
+uint32_t cached_video_frame_serial(int slot);
 int cached_video_take(D3DTexture **planes, unsigned *discarded);
 void cached_video_submitted(int slot, DWORD fence);
 void cached_video_cleanup(D3DDevice *d);
 uint64_t cached_video_memory(void);
+void cached_video_snapshot(unsigned *ready,unsigned *in_flight);
+unsigned cached_video_prune_ready(void);
 
 bool gfx_upload_timed(D3DTexture *tex,const void *src,int src_pitch,int row_bytes,int rows,struct gfx_copy_cost *cost);
 

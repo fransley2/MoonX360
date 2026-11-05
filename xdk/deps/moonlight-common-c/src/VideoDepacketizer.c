@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
 
 // Uncomment to test 3 byte Annex B start sequences with GFE
 //#define FORCE_3_BYTE_START_SEQUENCES
@@ -240,6 +241,13 @@ bool LiWaitForNextVideoFrame(VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* deco
     int err = LbqWaitForQueueElement(&decodeUnitQueue, (void**)&qdu);
     if (err != LBQ_SUCCESS) {
         return false;
+    }
+    if(perf_enabled()) {
+        uint64_t now=PltGetMicroseconds();
+        perf_record(PERF_VIDEO_DU_DEPTH,(uint32_t)LbqGetItemCount(&decodeUnitQueue)+1);
+        if(qdu->decodeUnit.enqueueTimeUs && now>=qdu->decodeUnit.enqueueTimeUs &&
+           now-qdu->decodeUnit.enqueueTimeUs<=10000000)
+            perf_record(PERF_VIDEO_DU_AGE,now-qdu->decodeUnit.enqueueTimeUs);
     }
 
     validateDecodeUnitForPlayback(&qdu->decodeUnit);
@@ -1131,6 +1139,7 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 // avoid having to wait until the next received frame to determine
 // that we lost a frame and submit an RFI request.
 void notifyFrameLost(unsigned int frameNumber, bool speculative) {
+    if(!speculative)perf_count(PERF_C_VIDEO_FRAMES_LOST,1);
     // We may not invalidate frames that we've already received
     LC_ASSERT(frameNumber >= startFrameNumber);
 
@@ -1158,6 +1167,9 @@ void notifyFrameLost(unsigned int frameNumber, bool speculative) {
 
 // Add an RTP Packet to the queue
 void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
+    static uint32_t perfOrdinal;
+    bool perfSample=perf_enabled() && ((++perfOrdinal&63)==0);
+    uint64_t perfStarted=perfSample?perf_clock():0;
     int dataOffset;
     RTPV_QUEUE_ENTRY queueEntry = *queueEntryPtr;
 
@@ -1190,6 +1202,7 @@ void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
         // processRtpPayload didn't want this packet, so just free it
         free(existingEntry->allocPtr);
     }
+    if(perfStarted)perf_record(PERF_VIDEO_DEPACKETIZE,perf_clock()-perfStarted);
 }
 
 int LiGetPendingVideoFrames(void) {

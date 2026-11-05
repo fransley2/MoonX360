@@ -17,6 +17,9 @@ int input_poll(struct pad pads[MAX_PADS]);
 
 /* Edge-detected button presses on any controller, for menus. */
 int input_menu_pressed(void);
+#ifdef _XBOX
+int input_connected_count(void);
+#endif
 
 /* Starts/stops the coroutine that forwards controller state to the host. */
 void input_stream_start(void);
@@ -25,9 +28,14 @@ void input_stream_stop(void);
 /* Configure before starting a stream; zero deadzone preserves raw input. */
 void input_configure(int quit_combo, int deadzone);
 void input_calibrate(int left_min,int left_max,int right_min,int right_max);
+#ifdef _XBOX
+/* Developer-only Custom stream experiment; Smooth always retains 4 ms. */
+void input_configure_low_latency(bool enabled);
+#endif
 
 /* True after holding the configured exit shortcut for two seconds. */
 bool input_quit_requested(void);
+bool input_close_app_requested(void);
 
 void input_rumble(unsigned short controller, unsigned short low, unsigned short high);
 

@@ -7,6 +7,7 @@
 #include "../src/video.h"
 #include "../src/video_session.h"
 #include "../src/video_gpu_policy.h"
+#include "../src/video_viewport.h"
 typedef unsigned char BYTE;
 typedef uint32_t DWORD;
 typedef unsigned UINT;
@@ -18,18 +19,20 @@ typedef int32_t LONG;
 #define D3DCOMMON_CPU_CACHED_MEMORY 0x200000
 #define D3DFMT_LIN_L8 1
 #define D3DLOCK_NOOVERWRITE 0x1000
+#define D3DCLEAR_TARGET 1
 struct D3DLOCKED_RECT { int Pitch;void *pBits; };
 struct D3DSURFACE_DESC { UINT Width,Height;int Format; };
 struct gfx_copy_cost { DWORD lock_us,copy_us; };
 static uint64_t clock_us;
 static uint64_t gfx_now_us() { return clock_us+=10; }
-static unsigned creates,releases,waits,ownerships,xmem_calls;
+static unsigned creates,releases,waits,ownerships,xmem_calls,desc_calls;
 static int fail_create,fail_probe,fail_flags;
 static bool native_test_pass=true,owned;
 static bool pending[1024];
 static DWORD next_fence;
 static void on_present();
-static bool system_ui,first_present_logged,last_present_shown;
+static bool system_ui,first_present_logged,last_present_shown,freeze_first_present;
+static void plat_diagnostics_checkpoint(const char *){}
 static bool gfx_system_ui_active(){return system_ui;}
 static DWORD GetTickCount(){return 100;}
 struct D3DTexture;
@@ -42,7 +45,7 @@ struct D3DTexture {
     D3DTexture(UINT w,UINT h,bool cached) : Common(cached?(D3DCOMMON_CPU_CACHED_MEMORY|1):1),fence(0),
         pitch((w+63)&~63),locks(0),unlocks(0),width(w),height(h),bound(false),fail_lock(false),
         null_bits(false),bad_pitch(false),locked(false),bytes((size_t)pitch*h+256,0xcc) { live.push_back(this); }
-    void GetLevelDesc(int,D3DSURFACE_DESC *d) { d->Width=width;d->Height=height;d->Format=D3DFMT_LIN_L8; }
+    void GetLevelDesc(int,D3DSURFACE_DESC *d) { desc_calls++;d->Width=width;d->Height=height;d->Format=D3DFMT_LIN_L8; }
     int LockRect(int,D3DLOCKED_RECT *r,void*,DWORD flags) {
         assert(!bound && (!fence || !pending[fence]) && !locked);
         if (Common & D3DCOMMON_CPU_CACHED_MEMORY) assert(flags==D3DLOCK_NOOVERWRITE); else assert(flags==0);
@@ -76,6 +79,7 @@ struct D3DDevice {
     void BlockOnFence(DWORD f) { assert(owned);waits++;pending[f]=false; }
     void BlockUntilIdle() { assert(owned);memset(pending,0,sizeof(pending)); }
     void SetPixelShaderConstantF(int,const float*,int) {}
+    void Clear(int,void*,int,DWORD,float,int) { assert(owned); }
     void Present(void*,void*,void*,void*) { on_present(); }
 };
 static D3DDevice device;
@@ -110,6 +114,13 @@ static bool telemetry_ready,overlay_failed,quality_available=true,produce_during
 static int requested_shader,vid_w=65,vid_h=33,last_shader,expected_slot=-1;
 static gpu_quality_policy quality_policy;
 static uint64_t measured[5];
+static uint64_t previous_present_start_us,last_present_start_us,last_present_return_us,last_presented_us;
+static uint32_t present_age_sample_ordinal;
+static uint32_t last_present_serial,present_duplicates;
+static bool last_present_cached;
+struct present_trace_entry {uint64_t start_us,return_us;uint32_t serial;uint8_t cached;};
+static present_trace_entry present_trace[64];
+static uint32_t present_trace_next,present_trace_count;
 struct AVFrame { BYTE *data[3];int linesize[3]; };
 static int frame_event;
 static LONG current_pipeline() { return active_pipeline; }
@@ -122,7 +133,8 @@ static void publish(const AVFrame*) { legacy_publishes++; }
 static bool create_legacy_video() { assert(!owned && live.empty());legacy_creates++;return legacy_ok; }
 static void vlog(const char*,...) {}
 static bool gfx_quality_available() { return quality_available; }
-static void gfx_draw_rect(D3DDevice *d,int shader,int,int,int,int) { last_shader=shader;d->Draw(); }
+static void gfx_backbuffer_size(int *w,int *h) { *w=1280;*h=720; }
+static void gfx_draw_rect(D3DDevice *d,int shader,float,float,float,float) { last_shader=shader;d->Draw(); }
 static bool gfx_overlay_set(const char*) { return true; }
 static void gfx_overlay_clear(D3DDevice*) {}
 static void gfx_overlay_draw(D3DDevice*) {}
@@ -171,8 +183,9 @@ int main() {
     for(size_t i=0;i<sizeof(y);i++)y[i]=(BYTE)i;
     for(size_t i=0;i<sizeof(u);i++) { u[i]=(BYTE)(i*3);v[i]=(BYTE)(i*7); }
     AVFrame f={{y,u,v},{80,48,48}};
-    unsigned before_wait=waits,before_owner=ownerships;
+    unsigned before_wait=waits,before_owner=ownerships,before_desc=desc_calls;
     publish_frame(&f);publish_frame(&f);publish_frame(&f);publish_frame(&f);
+    assert(desc_calls-before_desc==(OPTIMIZED_YUV_COPY?0u:9u));
     assert(gpu_slot_starvation==1 && stats.dropped==1 && waits==before_wait && ownerships==before_owner);
     unsigned discarded=0;D3DTexture *planes[3];int slot=cached_video_take(planes,&discarded);
     assert(slot==2 && discarded==2);
@@ -183,6 +196,32 @@ int main() {
     publish_frame(&f);publish_frame(&f);publish_frame(&f);
     assert(gpu_slot_starvation==2 && cached_slots[2].state==GPU_IN_FLIGHT);
     pending[fence]=false;publish_frame(&f);assert(cached_slots[2].state==GPU_READY);
+    cleanup();
+    // Recovery prunes only READY frames. The selected first frame remains
+    // protected until its fence completes; reusing its slot changes serial.
+    reset();assert(cached_video_init(65,33));
+    publish_frame(&f);publish_frame(&f);publish_frame(&f);
+    unsigned ready_count=0,flight_count=0;
+    cached_video_snapshot(&ready_count,&flight_count);
+    assert(ready_count==3 && flight_count==0);
+    assert(cached_video_prune_ready()==2);
+    cached_video_snapshot(&ready_count,&flight_count);
+    assert(ready_count==1 && flight_count==0);
+    slot=cached_video_take(planes,&discarded);
+    assert(slot==2 && discarded==0 && cached_slots[slot].state==GPU_IN_FLIGHT);
+    uint32_t first_serial=cached_video_frame_serial(slot);
+    assert(cached_video_prune_ready()==0 && cached_slots[slot].state==GPU_IN_FLIGHT);
+    gfx_begin();for(int k=0;k<3;k++)device.SetTexture(k,planes[k]);device.Draw();
+    for(int k=0;k<3;k++)device.SetTexture(k,NULL);
+    fence=device.InsertFence();cached_video_submitted(slot,fence);gfx_end();
+    publish_frame(&f);publish_frame(&f);
+    cached_video_snapshot(&ready_count,&flight_count);
+    assert(ready_count==2 && flight_count==1 && cached_slots[slot].fence==fence);
+    assert(cached_video_prune_ready()==1 && cached_slots[slot].state==GPU_IN_FLIGHT);
+    publish_frame(&f); // refill the discarded READY slot, not the GPU-owned slot
+    pending[fence]=false;
+    publish_frame(&f);
+    assert(cached_slots[slot].state==GPU_READY && cached_video_frame_serial(slot)>first_serial);
     // Negative/short pitches, NULL buffers and locks fall back without waiting.
     cleanup();reset();assert(cached_video_init(65,33));
     cached_textures[0][0]->fail_lock=true;publish_frame(&f);

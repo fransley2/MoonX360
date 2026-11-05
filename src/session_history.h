@@ -72,8 +72,8 @@ static void history_decode(struct session_history *h,const char *text) {
 }
 
 
-/* Library indices, never unverified history titles/IDs. Continue owns its
- * cover/name/action; the recent strip excludes that same target. */
+/* Library indices, never unverified history titles/IDs. A running app is a
+ * resumable target only when the host reports it; history remains a full row. */
 struct history_home_targets { int resume,count,recent[8]; };
 static struct history_home_targets history_home_select(const struct session_history *h,const char *host,
     const int *library_ids,int library_count,int running_id)
@@ -84,8 +84,6 @@ static struct history_home_targets history_home_select(const struct session_hist
         const struct session_record *r=h->records+i;if(strcmp(r->host,host))continue;
         int index=-1;for(int j=0;j<library_count;j++)if(library_ids[j]==r->app_id){index=j;break;}
         if(index<0)continue;
-        if(out.resume<0){out.resume=index;continue;}
-        if(library_ids[out.resume]==r->app_id)continue;
         bool duplicate=false;for(int j=0;j<out.count;j++)if(library_ids[out.recent[j]]==r->app_id)duplicate=true;
         if(!duplicate && out.count<8)out.recent[out.count++]=index;
     }

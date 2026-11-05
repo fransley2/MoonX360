@@ -34,6 +34,7 @@ typedef int D3DRENDERSTATETYPE;
 #define D3DBLEND_INVSRCALPHA 5
 static bool fail_allocation, fail_texture, fail_upload, pending;
 static int allocations, releases, uploads, waits, quads;
+static int layout_width=1280;
 struct D3DTexture {
     std::vector<uint32_t> pixels;
     int w,h;
@@ -66,9 +67,12 @@ static void gfx_draw_rect(D3DDevice *d, int shader, float x0, float y0, float x1
 {
     assert(d->bound && shader == GFX_SHADER_RGBA);
     assert(d->state[1]==TRUE && d->state[2]==D3DBLEND_SRCALPHA && d->state[3]==D3DBLEND_INVSRCALPHA && d->state[4]==D3DBLENDOP_ADD && d->state[5]==FALSE);
-    assert((x0==16 && y0==16 && x1==d->bound->w+16 && y1==d->bound->h+16) || (x0==1264-d->bound->w && y0==704-d->bound->h && x1==1264 && y1==704));
+    assert((x0==16 && y0==16 && x1==d->bound->w+16 && y1==d->bound->h+16) ||
+           (x0==layout_width-16-d->bound->w && y0==704-d->bound->h && x1==layout_width-16 && y1==704));
     pending = true; quads++;
 }
+static void gfx_draw_layout_rect(D3DDevice *d,int shader,float x0,float y0,float x1,float y1)
+{gfx_draw_rect(d,shader,x0,y0,x1,y1);}
 static bool overlay_cv_init(canvas_t *c, int w, int h)
 {
     if (fail_allocation) return false;
@@ -212,6 +216,11 @@ int main(void) {
     ui_set_stream_hud(0,2);int count=quads;gfx_mouse_draw(dev);assert(!mouse_indicator && count==quads);
     ui_set_stream_hud(0,0);gfx_mouse_draw(dev);assert(mouse_indicator);pending=false;mouse_indicator->Release();mouse_indicator=NULL;
     mouse_enabled=false;count=quads;gfx_mouse_draw(dev);assert(count==quads && allocations==releases);
+    layout_width=960;mouse_enabled=true;ui_set_stream_hud(0,0);
+    assert(gfx_overlay_set(text) && overlay_canvas.w<=928);gfx_overlay_draw(dev);
+    pending=false;gfx_overlay_clear(dev);gfx_mouse_draw(dev);assert(mouse_indicator);
+    pending=false;mouse_indicator->Release();mouse_indicator=NULL;mouse_enabled=false;
+    assert(allocations==releases);
     puts("PASS: translated user-facing FPS/bitrate/filter/recovery; 1Hz/wrap/N/A; alpha shader and blend state isolation;");
     puts("bounded GPU lifetime/failure fallback; readable 480p/720p HUDs; text-only mouse transparency and no per-frame allocations.");
 }

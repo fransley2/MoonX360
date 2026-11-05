@@ -22,7 +22,8 @@ int LiSendMouseButtonEvent(char,int){return 0;}int LiSendScrollEvent(signed char
 int LiSendMultiControllerEvent(short,short,int,unsigned char,unsigned char,short,short,short,short){return 0;}
 int LiSendControllerArrivalEvent(uint8_t,uint16_t,uint8_t,uint32_t,uint16_t){return 0;}
 static std::string read_file(const char *name){FILE *f=fopen(name,"rb");assert(f);char data[128];size_t n=fread(data,1,sizeof(data),f);fclose(f);return std::string(data,n);}
-static bool press(quick_menu *q,pad *pads,int buttons,int exit,bool *quit,int *action,uint32_t clock){pads[0].buttons=0;quick_step(q,pads,false,exit,quit,action,clock);pads[0].buttons=buttons;return quick_step(q,pads,false,exit,quit,action,clock);}
+static bool exit_app=false;
+static bool press(quick_menu *q,pad *pads,int buttons,int exit,bool *quit,bool *exit_app,int *action,uint32_t clock){pads[0].buttons=0;quick_step(q,pads,false,exit,quit,exit_app,action,clock);pads[0].buttons=buttons;return quick_step(q,pads,false,exit,quit,exit_app,action,clock);}
 int main(){
     assert(wake_identity_valid("{ABC-123}") && !wake_identity_valid("pc\nhost_uuid=other") && !wake_identity_valid("pc\tother"));
     assert(feature_search("Grand Theft Auto","THEFT") && feature_search("Desktop","") && !feature_search("Desktop","Xbox"));
@@ -48,35 +49,51 @@ int main(){
     puts("PASS: host nickname/default/automatic wake persistence and stable UUID after address change");
 
     quick_menu q={};q.volume=100;pad pads[MAX_PADS]={};pads[0].present=true;bool quit=false;int action=-1;int exit=input_exit_mask(0);
-    assert(!press(&q,pads,BACK_FLAG|PLAY_FLAG,exit,&quit,&action,0) && !q.open); // screenshot chord belongs to the console
-    assert(!press(&q,pads,BACK_FLAG|RS_CLK_FLAG,exit,&quit,&action,0) && !q.open); // mouse shortcut
-    assert(press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&action,0) && q.open);
-    quick_step(&q,pads,false,exit,&quit,&action,0);assert(q.open); // held chord toggles once
-    press(&q,pads,DOWN_FLAG,exit,&quit,&action,0);assert(q.row==1);
-    press(&q,pads,LEFT_FLAG,exit,&quit,&action,0);assert(q.volume==95);
-    press(&q,pads,A_FLAG,exit,&quit,&action,0);assert(q.muted);quick_step(&q,pads,false,exit,&quit,&action,0);assert(q.muted);
-    press(&q,pads,B_FLAG,exit,&quit,&action,0);assert(!q.open && q.neutral);
-    pads[0].buttons=A_FLAG;assert(quick_step(&q,pads,false,exit,&quit,&action,0));pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&action,0);assert(!q.neutral);
-    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&action,0);assert(q.open);pads[0].buttons=exit;assert(!quick_step(&q,pads,false,exit,&quit,&action,0) && !q.open);
-    q={};q.volume=100;pads[0].buttons=A_FLAG;quick_step(&q,pads,true,exit,&quit,&action,0);assert(!q.neutral && !q.open);
-    assert(!quick_step(&q,pads,false,exit,&quit,&action,0));
-    for(int choice=0;choice<2;choice++){q={};pads[0].buttons=input_exit_mask(choice);assert(!quick_step(&q,pads,false,input_exit_mask(choice),&quit,&action,0));}
-    q={};q.volume=100;press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&action,0);pads[0].present=false;assert(quick_step(&q,pads,false,exit,&quit,&action,0) && !q.open);
+    assert(!press(&q,pads,BACK_FLAG|PLAY_FLAG,exit,&quit,&exit_app,&action,0) && !q.open); // screenshot chord belongs to the console
+    assert(!press(&q,pads,BACK_FLAG|RS_CLK_FLAG,exit,&quit,&exit_app,&action,0) && !q.open); // mouse shortcut
+    assert(press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,0) && q.open);
+    quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(q.open); // held chord toggles once
+    press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,0);assert(q.row==1);
+    press(&q,pads,LEFT_FLAG,exit,&quit,&exit_app,&action,0);assert(q.volume==95);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,0);assert(q.muted);quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(q.muted);
+    press(&q,pads,B_FLAG,exit,&quit,&exit_app,&action,0);assert(!q.open && q.neutral);
+    pads[0].buttons=A_FLAG;assert(quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0));pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(!q.neutral);
+    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,0);assert(q.open);pads[0].buttons=exit;assert(!quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0) && !q.open);
+    q={};q.volume=100;pads[0].buttons=A_FLAG;quick_step(&q,pads,true,exit,&quit,&exit_app,&action,0);assert(!q.neutral && !q.open);
+    assert(!quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0));
+    for(int choice=0;choice<2;choice++){q={};pads[0].buttons=input_exit_mask(choice);assert(!quick_step(&q,pads,false,input_exit_mask(choice),&quit,&exit_app,&action,0));}
+    q={};q.volume=100;pads[0].buttons=0;quit=exit_app=false;
+    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,100);
+    for(int row=0;row<5;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,104+row*8);
+    assert(q.row==5 && !quit && !exit_app);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,160);
+    assert(quit && exit_app); // closes the PC app after the local session stops
+    q={};q.volume=100;quit=exit_app=false;
+    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,200);
+    for(int row=0;row<6;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,204+row*8);
+    assert(q.row==6 && !quit && !exit_app);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,270);
+    assert(quit && !exit_app); // local return leaves the PC app running
+    q={};q.volume=100;quit=exit_app=false;
+    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,280);
+    for(int row=0;row<7;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,284+row*8);
+    assert(q.row==0 && !quit && !exit_app); // removed eighth option
+    q={};q.volume=100;press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,0);pads[0].present=false;assert(quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0) && !q.open);
     q={};q.volume=100;pads[0].present=true;pads[0].lx=pads[0].ly=0;
     for(unsigned cycle=0;cycle<100;cycle++) {
         uint32_t start=0xFFFFF000u+cycle*1000;
-        press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&action,start);assert(q.open && q.row==0);
-        pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&action,start+4);
-        pads[0].buttons=DOWN_FLAG;quick_step(&q,pads,false,exit,&quit,&action,start+8);assert(q.row==1);
-        quick_step(&q,pads,false,exit,&quit,&action,start+327);assert(q.row==1);
-        quick_step(&q,pads,false,exit,&quit,&action,start+328);assert(q.row==2);
-        quick_step(&q,pads,false,exit,&quit,&action,start+423);assert(q.row==3);
-        pads[0].buttons=B_FLAG;quick_step(&q,pads,false,exit,&quit,&action,start+424);assert(!q.open && !q.repeat);
-        pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&action,start+428);
+        press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,start);assert(q.open && q.row==0);
+        pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+4);
+        pads[0].buttons=DOWN_FLAG;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+8);assert(q.row==1);
+        quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+327);assert(q.row==1);
+        quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+328);assert(q.row==2);
+        quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+423);assert(q.row==3);
+        pads[0].buttons=B_FLAG;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+424);assert(!q.open && !q.repeat);
+        pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,start+428);
     }
-    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&action,200000);pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&action,200004);
-    pads[0].ly=-25000;quick_step(&q,pads,false,exit,&quit,&action,200008);assert(q.row==1);
-    quick_step(&q,pads,false,exit,&quit,&action,200328);assert(q.row==2);pads[0].ly=0;
+    press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,200000);pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,200004);
+    pads[0].ly=-25000;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,200008);assert(q.row==1);
+    quick_step(&q,pads,false,exit,&quit,&exit_app,&action,200328);assert(q.row==2);pads[0].ly=0;
     remote_input remote={};remote.mouse[0]=true;remote.speed=25;pad pointer={};pointer.present=true;
     for(unsigned i=0;i<32;i++){pointer.lx=10000;remote_pad(&remote,&pointer,0,i*4,false,exit);}assert(movement>0);
     puts("PASS: quick menu edges/volume/mute/neutral/Guide/unplug, both exit shortcuts, pointer fractional movement");
@@ -86,6 +103,8 @@ int main(){
     assert(read_file(path)=="second" && read_file("expansion-storage.txt.bak")=="first");
     fail_promote=true;assert(!storage_replace_file(path,"bad",3));fail_promote=false;assert(read_file(path)=="second");
     assert(!storage_replace_file("missing-folder/file","bad",3));assert(!storage_recoverable_name("client.pem") && storage_recoverable_name("hosts.tsv"));
+    assert(storage_recoverable_name("app-catalog-1234567890ABCDEF.bin"));
+    assert(!storage_recoverable_name("app-catalog-1234567890ABCDEF.bin.bak"));
     remove(path);remove("expansion-storage.txt.bak");remove("expansion-storage.txt.new");
     puts("PASS: verified file replacement, previous backup, injected promotion failure/rollback, missing-directory failure, certificates excluded");
 }

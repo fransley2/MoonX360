@@ -5,6 +5,7 @@
 #include <vector>
 #include "../src/config.h"
 #include "../src/display_policy.h"
+#include "../src/ui_layout_geometry.h"
 static int selected_mode;
 void config_load(config *c){memset(c,0,sizeof(*c));c->display_mode=selected_mode;}
 typedef uint32_t DWORD;
@@ -31,6 +32,7 @@ struct XVIDEO_MODE {DWORD dwDisplayWidth,dwDisplayHeight;int fIsInterlaced;float
 struct LARGE_INTEGER {int64_t QuadPart;};
 static LARGE_INTEGER gfx_frequency;
 static int backbuffer_width=1280,backbuffer_height=720,display_width=1280,display_height=720,dev_lock;
+static int layout_width=1280,layout_height=720;
 static XVIDEO_MODE video_mode={1920,1080,0,60.0f};
 static float display_refresh;
 static bool display_is_interlaced;

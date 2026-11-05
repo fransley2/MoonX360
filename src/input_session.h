@@ -14,8 +14,7 @@ struct input_settings {
 
 struct input_session {
     struct pad last[MAX_PADS];
-    bool announced[MAX_PADS], holding[MAX_PADS];
-    uint32_t held_since[MAX_PADS];
+    bool announced[MAX_PADS];
     int mask;
 };
 
@@ -38,13 +37,12 @@ static int16_t input_axis(int16_t value, int percent)
     return (int16_t)(value < 0 ? -magnitude : magnitude);
 }
 
-/* Returns true after one controller holds its complete combo for two seconds.
- * Disconnects, releases and mixed controllers never accumulate hold time. */
+/* Forwards an already-filtered controller snapshot. Local shortcuts are
+ * resolved against raw polling state before this function is called. */
 static bool input_session_step(struct input_session *s, struct pad pads[MAX_PADS],
                                int mask, uint32_t now, const struct input_settings *opts)
 {
-    bool quit = false;
-    int i, combo = input_exit_mask(opts->quit_combo);
+    int i;
     for (i = 0; i < MAX_PADS; i++) {
         struct pad *p = &pads[i];
         if (!p->present) {
@@ -53,8 +51,6 @@ static bool input_session_step(struct input_session *s, struct pad pads[MAX_PADS
                 s->announced[i] = false;
                 memset(&s->last[i], 0, sizeof(s->last[i]));
             }
-            s->holding[i] = false;
-            s->held_since[i] = 0;
             continue;
         }
         bool arrived = !s->announced[i];
@@ -65,23 +61,10 @@ static bool input_session_step(struct input_session *s, struct pad pads[MAX_PADS
                 LI_CCAP_ANALOG_TRIGGERS | LI_CCAP_RUMBLE);
             s->announced[i] = true;
         }
-        if ((p->buttons & combo) == combo) {
-            if (!s->holding[i]) {
-                s->held_since[i] = now;
-                s->holding[i] = true;
-            } else if ((uint32_t)(now - s->held_since[i]) >= 2000) {
-                quit = true;
-            }
-            /* Release anything previously sent; keep the full local combo off the PC. */
-            memset(p, 0, sizeof(*p));
-            p->present = true;
-        } else {
-            s->holding[i] = false;
-            p->lx = opts->calibrated ? stick_calibrate(p->lx,opts->left_min,opts->left_max) : input_axis(p->lx, opts->deadzone);
-            p->ly = opts->calibrated ? stick_calibrate(p->ly,opts->left_min,opts->left_max) : input_axis(p->ly, opts->deadzone);
-            p->rx = opts->calibrated ? stick_calibrate(p->rx,opts->right_min,opts->right_max) : input_axis(p->rx, opts->deadzone);
-            p->ry = opts->calibrated ? stick_calibrate(p->ry,opts->right_min,opts->right_max) : input_axis(p->ry, opts->deadzone);
-        }
+        p->lx = opts->calibrated ? stick_calibrate(p->lx,opts->left_min,opts->left_max) : input_axis(p->lx, opts->deadzone);
+        p->ly = opts->calibrated ? stick_calibrate(p->ly,opts->left_min,opts->left_max) : input_axis(p->ly, opts->deadzone);
+        p->rx = opts->calibrated ? stick_calibrate(p->rx,opts->right_min,opts->right_max) : input_axis(p->rx, opts->deadzone);
+        p->ry = opts->calibrated ? stick_calibrate(p->ry,opts->right_min,opts->right_max) : input_axis(p->ry, opts->deadzone);
         if (arrived || mask != s->mask || memcmp(p, &s->last[i], sizeof(*p)) != 0) {
             LiSendMultiControllerEvent((short)i, (short)mask, p->buttons, p->lt, p->rt,
                                       p->lx, p->ly, p->rx, p->ry);
@@ -89,7 +72,7 @@ static bool input_session_step(struct input_session *s, struct pad pads[MAX_PADS
         }
     }
     s->mask = mask;
-    return quit;
+    return false;
 }
 
 static void input_session_release(struct input_session *s)

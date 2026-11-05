@@ -4,6 +4,7 @@
  * tiny tag-extracting XML reader.
  */
 #include "gamestream.h"
+#include "performance.h"
 #include "http.h"
 #include "wake.h"
 #include "performance.h"
@@ -725,6 +726,7 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
              sops ? 1 : 0, rikey, (int)rikeyid, local_audio ? 1 : 0,
              SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(cfg->audioConfiguration), 0xF, 0xF,
              LiGetLaunchUrlQueryParameters());
+    perf_request_fps(PERF_FPS_LAUNCH_REQUEST,fps,cfg->clientRefreshRateX100);
 
     /* One bounded launch request. Do not retry permission/protocol failures. */
     if (!request(srv, true, path, 15000, &r))

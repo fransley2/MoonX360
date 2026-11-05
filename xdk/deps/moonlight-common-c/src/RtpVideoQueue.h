@@ -24,6 +24,8 @@ typedef struct _RTP_VIDEO_QUEUE {
     RTPV_QUEUE_LIST completedFecBlockList;
 
     uint64_t bufferFirstRecvTimeUs;
+    uint64_t perfGapStartUs; /* observed sequence gap; no queue policy change */
+    bool perfGapFilled;
     uint32_t bufferLowestSequenceNumber;
     uint32_t bufferHighestSequenceNumber;
     uint32_t bufferFirstParitySequenceNumber;

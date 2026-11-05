@@ -53,6 +53,7 @@ static void gfx_end() { assert(owned); owned = false; }
 static void cached_video_cleanup(D3DDevice*) { assert(owned && renderer_joined); }
 static void gfx_overlay_clear(D3DDevice *) { assert(owned && idle); }
 static void plat_shutdown_stage(const char *) {}
+static void plat_diagnostics_checkpoint(const char *) {}
 static void close_h264(int **p) { assert(renderer_joined); free(*p); *p = NULL; }
 static void avcodec_free_frame(int **p) { free(*p); *p = NULL; }
 static void EnterCriticalSection(int *) {}

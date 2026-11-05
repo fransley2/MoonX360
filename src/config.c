@@ -1,5 +1,7 @@
 #include "config.h"
 #include "wake.h"
+#include "aurora_launch.h"
+#include "aurora_paths.h"
 
 #include <stdio.h>
 #include <errno.h>
@@ -9,7 +11,8 @@
 void config_defaults(struct config *c)
 {
     memset(c, 0, sizeof(*c));
-    c->ui_motion = false;
+    c->ui_motion = true;
+    c->menu_sounds = true;c->menu_volume = 18;
     c->width = 1280;
     c->height = 720;
     c->fps = CONFIG_FPS_DEFAULT;
@@ -29,6 +32,10 @@ void config_defaults(struct config *c)
     c->mdns_discovery = true;
     c->thread_layout = 1;
     c->decode_workers = 4;
+    c->aurora_direct_enabled=true;
+    c->artwork_cache_enabled=true;c->artwork_cache_mb=128;
+    snprintf(c->aurora_shortcuts_folder,sizeof(c->aurora_shortcuts_folder),"Hdd1:\\Apps\\MoonX360\\Shortcuts\\");
+    snprintf(c->aurora_main_xex,sizeof(c->aurora_main_xex),"Hdd1:\\Apps\\MoonX360\\default.xex");
     c->left_max = c->right_max = 100;
 }
 
@@ -65,6 +72,15 @@ void config_load(struct config *c)
         if (!strcmp(line, "host"))
             snprintf(c->host, sizeof(c->host), "%s", eq + 1);
         else if (!strcmp(line,"host_uuid")){if(wake_identity_valid(eq+1))snprintf(c->host_uuid,sizeof(c->host_uuid),"%s",eq+1);else c->host_uuid[0]=0;}
+        else if(!strcmp(line,"aurora_enabled"))c->aurora_enabled=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"aurora_direct_enabled"))c->aurora_direct_enabled=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"artwork_cache_enabled"))c->artwork_cache_enabled=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"artwork_cache_mb")){int n=atoi(eq+1);if(n==32 || n==64 || n==128)c->artwork_cache_mb=n;}
+        else if(!strcmp(line,"aurora_cache_handling"))c->aurora_cache_handling=!strcmp(eq+1,"1")?1:0;
+        else if(!strcmp(line,"aurora_shortcuts_folder")){char path[160];if(aurora_path_normalize(path,sizeof(path),eq+1,0))snprintf(c->aurora_shortcuts_folder,sizeof(c->aurora_shortcuts_folder),"%s",path);}
+        else if(!strcmp(line,"aurora_main_xex")){char path[160];if(aurora_path_normalize(path,sizeof(path),eq+1,1))snprintf(c->aurora_main_xex,sizeof(c->aurora_main_xex),"%s",path);}
+        else if(!strcmp(line,"aurora_path")){char path[160];if(aurora_path_normalize(path,sizeof(path),eq+1,0))snprintf(c->aurora_path,sizeof(c->aurora_path),"%s",path);}
+        else if(!strcmp(line,"aurora_default_profile") && strlen(eq+1)<sizeof(c->aurora_default_profile) && moonx_launch_text(eq+1,sizeof(c->aurora_default_profile),0))snprintf(c->aurora_default_profile,sizeof(c->aurora_default_profile),"%s",eq+1);
         else if (!strcmp(line, "mdns_discovery"))
             c->mdns_discovery = !strcmp(eq+1,"true") || atoi(eq+1)!=0;
         else if (!strcmp(line,"user_profile")) {if(config_profile_name_valid(eq+1))snprintf(c->user_profile,sizeof(c->user_profile),"%s",eq+1);}
@@ -82,10 +98,13 @@ void config_load(struct config *c)
         }
         else if (!strcmp(line, "adaptive_quality")) c->adaptive_quality=atoi(eq+1)==1;
         else if (!strcmp(line, "display_mode")) c->display_mode=atoi(eq+1);
+        else if (!strcmp(line, "ui_layout")) c->ui_layout=atoi(eq+1);
         else if (!strcmp(line,"mouse_hud")) {int v=atoi(eq+1);c->mouse_hud=v>=0 && v<3?v:0;}
         else if (!strcmp(line,"stream_menu_style")) {int v=atoi(eq+1);c->stream_menu_style=v==1?1:0;}
         else if (!strcmp(line,"ui_motion"))c->ui_motion=!strcmp(eq+1,"1");
-        else if (!strcmp(line,"ui_background")) {int v=atoi(eq+1);c->ui_background=v>=0 && v<3?v:0;}
+        else if (!strcmp(line,"menu_sounds"))c->menu_sounds=!strcmp(eq+1,"1");
+        else if (!strcmp(line,"menu_volume")) {int v=atoi(eq+1);c->menu_volume=v>=0 && v<=100?v:18;}
+        else if (!strcmp(line,"ui_background")) {int v=atoi(eq+1);c->ui_background=v>=0 && v<5?v:0;}
         else if (!strcmp(line,"ui_accent")) {int v=atoi(eq+1);c->ui_accent=v>=0 && v<4?v:0;}
         else if (!strcmp(line, "language")) {
             int language=atoi(eq+1);
@@ -158,13 +177,22 @@ void config_load(struct config *c)
     free(text);
     if(!have_left_min)c->left_min=c->stick_deadzone;
     if(!have_right_min)c->right_min=c->stick_deadzone;
-    if(c->display_mode<0 || c->display_mode>3)c->display_mode=0;
+    if(c->display_mode<0 || c->display_mode>4)c->display_mode=0;
+    if(c->ui_layout<0 || c->ui_layout>1)c->ui_layout=0;
     c->left_min=c->left_min<0?0:c->left_min>30?30:c->left_min;
     c->right_min=c->right_min<0?0:c->right_min>30?30:c->right_min;
     c->left_max=c->left_max<50?50:c->left_max>100?100:c->left_max;
     c->right_max=c->right_max<50?50:c->right_max>100?100:c->right_max;
     if(!have_overlay_mode)c->overlay_mode=c->stats_overlay?3:0;
     c->stats_overlay=c->overlay_mode!=0;
+    if (!((c->width==640 && c->height==480) ||
+          (c->width==854 && c->height==480) ||
+          (c->width==1280 && c->height==720) ||
+          (c->width==1920 && c->height==1080))) {
+        c->width=1280;
+        c->height=720;
+    }
+    if(c->packet_size<512 || c->packet_size>1400)c->packet_size=1024;
     if (!config_fps_supported(c->fps)) c->fps = CONFIG_FPS_DEFAULT;
     if (!config_slices_supported(c->slice_count)) c->slice_count = 0;
     if(!have_profile && !c->user_profile[0]) {
@@ -206,21 +234,23 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "diagnostic_log=%d\n"
         "overlay_mode=%d\nimage_quality=%d\nhistory_enabled=%d\n"
         "user_profile=%s\nlaunch_cover_ms=%d\nlaunch_animation=%d\nstream_profile=%s\nmdns_discovery=%s\nperformance_overlay=%s\n"
-        "adaptive_quality=%d\ndisplay_mode=%d\nlanguage=%d\nthread_layout=%d\ndecode_workers=%d\n"
-        "left_min=%d\nleft_max=%d\nright_min=%d\nright_max=%d\nui_background=%d\nui_accent=%d\nui_motion=%d\nmouse_hud=%d\nstream_menu_style=%d\n",
+        "adaptive_quality=%d\ndisplay_mode=%d\nui_layout=%d\nlanguage=%d\nthread_layout=%d\ndecode_workers=%d\n"
+        "left_min=%d\nleft_max=%d\nright_min=%d\nright_max=%d\nui_background=%d\nui_accent=%d\nui_motion=%d\nmenu_sounds=%d\nmenu_volume=%d\nmouse_hud=%d\nstream_menu_style=%d\n"
+        "aurora_enabled=%d\naurora_direct_enabled=%d\nartwork_cache_enabled=%d\nartwork_cache_mb=%d\naurora_cache_handling=%d\naurora_shortcuts_folder=%s\naurora_main_xex=%s\naurora_path=%s\naurora_default_profile=%s\n",
         c->host,c->host_uuid, c->width, c->height, c->fps, c->bitrate_kbps, c->packet_size, c->slice_count,
         c->fast_decode, c->renderer == 1 ? "cpu" : c->renderer == 2 ? "cpu_hwcolor" : "gpu",
         c->vsync, c->sops, c->local_audio, c->audio_mode,c->mouse_speed,c->mouse_acceleration,c->mouse_scroll_ms, c->quit_combo, c->stick_deadzone, c->session_report,
         config_overlay_mode(c)!=0, c->diagnostic_log,config_overlay_mode(c),c->image_quality,c->history_enabled,
         c->user_profile,c->launch_cover_ms,c->launch_animation,config_profile_key(config_video_preset(c)),c->mdns_discovery?"true":"false",
         config_overlay_mode(c)==0?"off":config_overlay_mode(c)==1?"basic":config_overlay_mode(c)==2?"detailed":"developer",
-        c->adaptive_quality,c->display_mode,c->language,c->thread_layout,c->decode_workers,
-        c->left_min,c->left_max,c->right_min,c->right_max,c->ui_background,c->ui_accent,c->ui_motion,c->mouse_hud,c->stream_menu_style);
+        c->adaptive_quality,c->display_mode,c->ui_layout,c->language,c->thread_layout,c->decode_workers,
+        c->left_min,c->left_max,c->right_min,c->right_max,c->ui_background,c->ui_accent,c->ui_motion,c->menu_sounds,c->menu_volume,c->mouse_hud,c->stream_menu_style,
+        c->aurora_enabled,c->aurora_direct_enabled,c->artwork_cache_enabled,c->artwork_cache_mb,c->aurora_cache_handling,c->aurora_shortcuts_folder,c->aurora_main_xex,c->aurora_path,c->aurora_default_profile);
     return n >= 0 && (size_t)n < capacity ? (size_t)n : 0;
 }
 bool config_save(const struct config *c)
 {
-    char buf[2048];size_t n=config_serialize(c,buf,sizeof(buf));
+    char buf[3072];size_t n=config_serialize(c,buf,sizeof(buf));
     return n && storage_write("moonlight.ini",buf,n);
 }
 
@@ -310,9 +340,11 @@ int config_cycle_fps(int fps, int direction)
 
 int config_test_bitrate(const struct config *c,int direction)
 {
+    static const int sd[]={4000,6000,8000,10000};
     static const int hd[]={10000,15000,18000,25000};
     static const int fullhd[]={12000,16000,20000,25000};
-    const int *rates=c->width>=1920 && c->height>=1080?fullhd:hd;
+    const int *rates=c->width==640 && c->height==480?sd:
+        c->width>=1920 && c->height>=1080?fullhd:hd;
     int i;
     for(i=0;i<4;i++) if(rates[i]==c->bitrate_kbps) return rates[(i+(direction<0?3:1))%4];
     return rates[direction<0?3:0];
@@ -347,7 +379,7 @@ bool config_profile_name_valid(const char *name)
 }
 static bool profile_options_valid(const struct stream_options *o)
 {
-    return ((o->width==854 && o->height==480)||(o->width==1280 && o->height==720)||(o->width==1920 && o->height==1080)) &&
+    return ((o->width==640 && o->height==480)||(o->width==854 && o->height==480)||(o->width==1280 && o->height==720)||(o->width==1920 && o->height==1080)) &&
         config_fps_supported(o->fps) && o->bitrate_kbps>=CONFIG_BITRATE_MIN && o->bitrate_kbps<=CONFIG_BITRATE_MAX &&
         o->packet_size>=512 && o->packet_size<=1400 && config_slices_supported(o->slice_count) &&
         o->fast_decode>=0 && o->fast_decode<=1 && o->renderer>=0 && o->renderer<=2 &&

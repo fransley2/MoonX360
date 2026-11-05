@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
 
 #define FIRST_FRAME_MAX 1500
 #define FIRST_FRAME_TIMEOUT_SEC 10
@@ -83,6 +84,7 @@ static void VideoPingThreadProc(void* context) {
 
 // Receive thread proc
 static void VideoReceiveThreadProc(void* context) {
+    uint32_t perfRecvOrdinal=0;
     int err;
     int bufferSize, receiveSize, decryptedSize, minSize;
     char* buffer;
@@ -134,10 +136,13 @@ static void VideoReceiveThreadProc(void* context) {
             }
         }
 
+        bool perfSample=perf_enabled() && ((++perfRecvOrdinal & 63)==0);
+        uint64_t perfStarted=perfSample?perf_clock():0;
         err = recvUdpSocket(rtpSocket,
                             encrypted ? encryptedBuffer : buffer,
                             receiveSize,
                             useSelect);
+        if(perfStarted)perf_record(PERF_VIDEO_RECV_SAMPLED,perf_clock()-perfStarted);
         if (err < 0) {
             Limelog("Video Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
             ListenerCallbacks.connectionTerminated(LastSocketFail());
@@ -176,6 +181,7 @@ static void VideoReceiveThreadProc(void* context) {
         }
 #endif
 
+        perf_video_packet_seen((uint32_t)err);
         if (err < minSize) {
             // Runt packet
             continue;
@@ -184,6 +190,7 @@ static void VideoReceiveThreadProc(void* context) {
         // Decrypt the packet into the buffer if encryption is enabled
         if (encrypted) {
             PENC_VIDEO_HEADER encHeader = (PENC_VIDEO_HEADER)encryptedBuffer;
+            uint64_t decryptStarted=perfSample?perf_clock():0;
 
             // If this frame is below our current frame number, discard it before decryption
             // to save CPU cycles decrypting FEC shards for a frame we already reassembled.
@@ -219,6 +226,7 @@ static void VideoReceiveThreadProc(void* context) {
                 Limelog("Failed to decrypt video packet!\n");
                 continue;
             }
+            if(decryptStarted)perf_record(PERF_VIDEO_DECRYPT_SAMPLED,perf_clock()-decryptStarted);
         }
 
         // Convert fields to host byte-order
@@ -227,7 +235,9 @@ static void VideoReceiveThreadProc(void* context) {
         packet->timestamp = BE32(packet->timestamp);
         packet->ssrc = BE32(packet->ssrc);
 
+        perfStarted=perfSample?perf_clock():0;
         queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
+        if(perfStarted)perf_record(PERF_VIDEO_RTP_SAMPLED,perf_clock()-perfStarted);
 
         if (queueStatus == RTPF_RET_QUEUED) {
             // The queue owns the buffer

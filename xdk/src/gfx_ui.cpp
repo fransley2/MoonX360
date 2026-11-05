@@ -9,11 +9,12 @@
 #include "../../src/ui/draw.h"
 #include "../../src/platform.h"
 #include "../../src/launch_cover.h"
+#include "../../src/ui_layout_geometry.h"
 
 #define GLYPH_W 1024
 #define GLYPH_H 512
 #define GLYPH_MAX 2048
-#define IMAGE_MAX 14 /* twelve visible/prefetched covers, button atlas and brand icon */
+#define IMAGE_MAX 17 /* twelve covers, two transition backgrounds, custom image, button atlas and brand icon */
 struct ui_vertex {float x,y,u,v;DWORD color;};
 struct glyph_slot {const void *key;int x,y,w,h;};
 struct image_slot {const void *key;DWORD generation;int w,h;D3DTexture *texture;unsigned stamp;};
@@ -43,9 +44,9 @@ static const char ui_shader[]=
     "c.a*=saturate(.5-d);if(box.w>0)c.a*=saturate(d+box.w+.5);}return c;}"
     "sampler words:register(s1);sampler scene:register(s2);sampler previous:register(s3);"
     "float4 rect:register(c3);float4 phase:register(c4);float4 flags:register(c5);"
-    "float4 detail:register(c6);float4 text_layout:register(c7);"
+    "float4 detail:register(c6);float4 text_layout:register(c7);float4 layout:register(c8);"
     "float4 opening(S p):COLOR {"
-    " float2 xy=p.uv*float2(1280,720);float3 c=float3(8,11,14)/255;"
+    " float2 xy=p.uv*float2(layout.x,720);float3 c=float3(8,11,14)/255;"
     " if(flags.x>0)c=lerp(tex2D(scene,p.uv).rgb,c,phase.w);"
     " float2 q=(xy-rect.xy)/rect.zw;"
     " if(all(q>=0)&&all(q<=1)){"
@@ -55,16 +56,16 @@ static const char ui_shader[]=
     "  if(flags.w>0){float4 old=tex2D(previous,q);fallback=lerp(fallback,old.rgb,old.a);}"
     "  float4 art=tex2D(atlas,q);c=lerp(fallback,art.rgb,art.a*phase.z);"
     " }"
-    " float2 t=(xy-float2(384,470))/float2(512,48);"
+    " float2 t=(xy-float2(layout.y,470))/float2(512,48);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,t.y*48/512));c=lerp(c,g.rgb,g.a*phase.y);}"
-    " t=(xy-float2(384,520))/float2(512,48);"
+    " t=(xy-float2(layout.y,520))/float2(512,48);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(48+t.y*48)/512));c=lerp(c,g.rgb,g.a);}"
-    " t=(xy-float2(384,578))/float2(512,24);"
+    " t=(xy-float2(layout.y,578))/float2(512,24);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.x+flags.y*text_layout.y+t.y*text_layout.y)/512));c=lerp(c,g.rgb,g.a);}"
-    " t=(xy-float2(384,634))/float2(512,24);"
+    " t=(xy-float2(layout.y,634))/float2(512,24);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.z+detail.x*24+t.y*24)/512));c=lerp(c,g.rgb,g.a);}"
-    " float segment=floor((xy.x-514)/37);"
-    " if(xy.y>=614&&xy.y<617&&segment>=0&&segment<7&&xy.x-514-segment*37<30)"
+    " float segment=floor((xy.x-layout.z)/37);"
+    " if(xy.y>=614&&xy.y<617&&segment>=0&&segment<7&&xy.x-layout.z-segment*37<30)"
     "  c=segment<flags.z?detail.yzw:float3(65,74,77)/255;"
     " return float4(c,phase.x);"
     "}"
@@ -121,13 +122,24 @@ static image_slot *image(D3DDevice *d,const ui_draw_command *c) {
     s->key=c->pixels;s->generation=c->generation;s->w=c->iw;s->h=c->ih;s->stamp=frame_stamp;return s;
 }
 static void color_f(DWORD color,float out[4]) {out[0]=((color>>16)&255)/255.0f;out[1]=((color>>8)&255)/255.0f;out[2]=(color&255)/255.0f;out[3]=(color>>24)/255.0f;}
-static void quad(ui_vertex *v,float x,float y,float w,float h,float u,float top,float right,float bottom,DWORD color,float cw,float ch) {
+struct ui_projection {float sx,sy,ox,oy;int bw,bh,left,top,right,bottom;};
+static ui_projection projection(int cw,int ch)
+{
+    ui_projection p;gfx_backbuffer_size(&p.bw,&p.bh);
+    ui_layout_viewport(cw,ch,p.bw,p.bh,&p.left,&p.top,&p.right,&p.bottom);
+    p.sx=(p.right-p.left)/(float)cw;p.sy=(p.bottom-p.top)/(float)ch;
+    p.ox=(float)p.left;p.oy=(float)p.top;return p;
+}
+static void project(ui_vertex *v,float x,float y,const ui_projection &p)
+{v->x=(p.ox+x*p.sx)*2/p.bw-1;v->y=1-(p.oy+y*p.sy)*2/p.bh;}
+static void quad(ui_vertex *v,float x,float y,float w,float h,float u,float top,float right,float bottom,DWORD color,const ui_projection &p) {
     float xs[6]={x,x+w,x,x,x+w,x+w},ys[6]={y,y,y+h,y+h,y,y+h};
     float us[6]={u,right,u,u,right,right},vs[6]={top,top,bottom,bottom,top,bottom};
-    for(int i=0;i<6;i++){v[i].x=xs[i]*2/cw-1;v[i].y=1-ys[i]*2/ch;v[i].u=us[i];v[i].v=vs[i];v[i].color=color;}
+    for(int i=0;i<6;i++){project(v+i,xs[i],ys[i],p);v[i].u=us[i];v[i].v=vs[i];v[i].color=color;}
 }
-static void clip(D3DDevice *d,const ui_draw_command *c,float cw,float ch,int bw,int bh) {
-    RECT r={(LONG)(c->clip[0]*bw/cw),(LONG)(c->clip[1]*bh/ch),(LONG)(c->clip[2]*bw/cw),(LONG)(c->clip[3]*bh/ch)};
+static void clip(D3DDevice *d,const ui_draw_command *c,const ui_projection &p) {
+    RECT r={(LONG)(p.ox+c->clip[0]*p.sx),(LONG)(p.oy+c->clip[1]*p.sy),
+            (LONG)(p.ox+c->clip[2]*p.sx),(LONG)(p.oy+c->clip[3]*p.sy)};
     d->SetScissorRect(&r);
 }
 bool gfx_ui_draw(D3DDevice *d) {
@@ -147,37 +159,38 @@ bool gfx_ui_draw(D3DDevice *d) {
     for(int i=0;i<count;i++)if(list[i].kind==UI_IMAGE)
         for(int j=0;j<IMAGE_MAX;j++)if(images[j].key==list[i].pixels && images[j].generation==list[i].generation)images[j].stamp=frame_stamp;
     for(int i=0;i<count;i++)if(list[i].kind==UI_IMAGE && !image(d,list+i))return false;
-    canvas_t *canvas=ui_canvas();float cw=(float)canvas->w,ch=(float)canvas->h;int bw,bh;gfx_backbuffer_size(&bw,&bh);
+    canvas_t *canvas=ui_canvas();ui_projection p=projection(canvas->w,canvas->h);
+    if(p.left || p.top || p.right!=p.bw || p.bottom!=p.bh)d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
     d->SetVertexDeclaration(ui_decl);d->SetVertexShader(ui_vs);
     d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);
     d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);
     for(int i=0;i<count;i++) {
         const ui_draw_command *c=list+i;if(c->clip[0]>=c->clip[2]||c->clip[1]>=c->clip[3])continue;
-        clip(d,c,cw,ch,bw,bh);
+        clip(d,c,p);
         if(c->kind==UI_GLYPH) {
             unsigned n=0;int j=i;
             while(j<count && n<256 && list[j].kind==UI_GLYPH && !memcmp(list[j].clip,c->clip,sizeof(c->clip))) {
                 const ui_draw_command *t=list+j;glyph_slot *g=glyph(t);if(!g)break;
                 quad(batch+n*6,t->x,t->y,(float)g->w,(float)g->h,(float)g->x/GLYPH_W,(float)g->y/GLYPH_H,
-                    (float)(g->x+g->w)/GLYPH_W,(float)(g->y+g->h)/GLYPH_H,t->color,cw,ch);n++;j++;
+                    (float)(g->x+g->w)/GLYPH_W,(float)(g->y+g->h)/GLYPH_H,t->color,p);n++;j++;
             }
             d->SetTexture(0,glyph_texture);d->SetPixelShader(ui_texture_ps);d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,n*2,batch,sizeof(ui_vertex));i=j-1;
         } else if(c->kind==UI_IMAGE) {
             image_slot *s=image(d,c);quad(batch,c->x,c->y,c->w,c->h,(float)c->sx/c->iw,(float)c->sy/c->ih,
-                (float)(c->sx+c->sw)/c->iw,(float)(c->sy+c->sh)/c->ih,c->color,cw,ch);
+                (float)(c->sx+c->sw)/c->iw,(float)(c->sy+c->sh)/c->ih,c->color,p);
             d->SetTexture(0,s->texture);d->SetPixelShader(ui_texture_ps);d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
         } else {
             float width=c->w,height=c->h;unsigned primitives=2;
-            quad(batch,c->x,c->y,width,height,0,0,1,1,0xffffffff,cw,ch);
+            quad(batch,c->x,c->y,width,height,0,0,1,1,0xffffffff,p);
             if(c->kind==UI_LINE) {
                 float dx=c->w-c->x,dy=c->h-c->y,length=sqrtf(dx*dx+dy*dy);if(length<0.01f)continue;
                 width=length;height=c->t;float nx=-dy/length*c->t/2,ny=dx/length*c->t/2;
                 float xx[6]={c->x+nx,c->w+nx,c->x-nx,c->x-nx,c->w+nx,c->w-nx};
                 float yy[6]={c->y+ny,c->h+ny,c->y-ny,c->y-ny,c->h+ny,c->h-ny};
-                for(int v=0;v<6;v++){batch[v].x=xx[v]*2/cw-1;batch[v].y=1-yy[v]*2/ch;}
+                for(int v=0;v<6;v++)project(batch+v,xx[v],yy[v],p);
             } else if(c->kind==UI_TRIANGLE) {
                 float xx[3]={c->x,c->w,c->x2},yy[3]={c->y,c->h,c->y2};
-                for(int v=0;v<3;v++){batch[v].x=xx[v]*2/cw-1;batch[v].y=1-yy[v]*2/ch;}width=height=0;primitives=1;
+                for(int v=0;v<3;v++)project(batch+v,xx[v],yy[v],p);width=height=0;primitives=1;
             }
             float box[4]={width,height,c->r,c->kind==UI_OUTLINE?c->t:0},top[4],bottom[4];
             color_f(c->color,top);color_f(c->kind==UI_GRADIENT?c->bottom:c->color,bottom);
@@ -331,6 +344,8 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
         InterlockedExchange(&launch_art_ready,0);
     }
     struct launch_visual_sample v;launch_visual_get(&visual,now,&v);
+    int canvas_width=ui_canvas()->w,canvas_height=ui_canvas()->h;
+    v.x-=(1280-canvas_width)*0.5f*v.dim; /* center the finished cover in 4:3 */
     if(!cover.first && launch_has_video())launch_cover_frame(&cover,(DWORD)InterlockedCompareExchange(&launch_first_ms,0,0));
     if(launch_cancelled())launch_cover_cancel(&cover);
     enum launch_status status=launch_display_status((enum launch_status)InterlockedCompareExchange(&launch_status,0,0),launch_has_video(),launch_cancelled());
@@ -351,9 +366,13 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
     d->SetPixelShaderConstantF(6,detail,1);
     static const float text_layout[4]={(float)LAUNCH_STATUS_Y,(float)LAUNCH_STATUS_H,(float)LAUNCH_HINT_Y,(float)LAUNCH_LOGO_Y};
     d->SetPixelShaderConstantF(7,text_layout,1);
+    float layout[4]={(float)canvas_width,(canvas_width-512)*0.5f,(canvas_width-512)*0.5f+130,0};
+    d->SetPixelShaderConstantF(8,layout,1);
     d->SetTexture(0,launch_current>=0?launch_art[launch_current]:launch_text);d->SetTexture(1,launch_text);
     d->SetTexture(2,launch_backdrop);d->SetTexture(3,launch_previous?launch_art[1-launch_current]:launch_text);
-    quad(batch,0,0,1280,720,0,0,1,1,0xffffffff,1280,720);d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
+    ui_projection p=projection(canvas_width,canvas_height);
+    quad(batch,0,0,(float)canvas_width,(float)canvas_height,0,0,1,1,0xffffffff,p);
+    d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
     for(int i=0;i<4;i++)d->SetTexture(i,NULL);
     d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);launch_fence=d->InsertFence();
     if(v.intro && launch_backdrop)launch_background_fence=launch_fence;

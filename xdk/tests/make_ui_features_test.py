@@ -49,6 +49,7 @@ int main(){
  ui_set_language(99);assert(!strcmp(ui_translate("Settings"),"Settings"));
  ui_set_language(0);const char *original="Settings";assert(ui_translate(original)==original);
  ui_set_language(1);assert(!strcmp(ui_translate("Starting %s"),"Iniciando %s"));
+ assert(!strcmp(ui_translate("Unknown key"),"Unknown key") && !strcmp(ui_translate(NULL),""));
  char title[80];snprintf(title,sizeof(title),ui_translate("Starting %s"),"Settings");assert(!strcmp(title,"Iniciando Settings"));
  ui_set_page(UI_SETTINGS);ui_set_language(0);int root=ui_location_enter("Settings");ui_location_enter("Developer");
  ui_set_language(1);char path[256];ui_location_path(path,sizeof(path),NULL,NULL);assert(!strcmp(path,"Ajustes  >  Avanzado"));ui_location_restore(root);
@@ -70,6 +71,10 @@ int main(){
  hostrows[1].label="Name";ui_draw_settings_page("Profile actions",hostrows,2,0);actual=value_glyphs();
  ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,776,293,410,C_TEXT_DIM,"Right");
  assert(!actual.empty() && actual==value_glyphs()); // exact host-name glyphs, never "Derecho"
+ assert(ui_init_layout(960,720,1) && W==960 && H==720);
+ ui_draw_settings_page("Settings",hostrows,2,0);bounds();
+ ui_draw_main(NULL,NULL,0,0,NULL,0);bounds();
+ assert(ui_init(1280,720));
  const int sizes[][2]={{848,480},{1280,720},{1920,1080},{640,480},{720,576}};
  for(unsigned k=0;k<sizeof(sizes)/sizeof(sizes[0]);k++)for(int language=0;language<CONFIG_LANGUAGE_COUNT;language++){
   ui_set_language(language);assert(ui_init(sizes[k][0],sizes[k][1]));assert(W>=1279.9f && H>=719.9f);

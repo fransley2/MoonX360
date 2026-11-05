@@ -36,14 +36,23 @@ struct config {
     int launch_cover_ms; /* global 0..10000; not part of stream profiles */
     bool mdns_discovery;
     int adaptive_quality; /* 0 manual, 1 bounded automatic reconnect on sustained pressure */
-    int display_mode; /* render target: 0 auto, 1 480p, 2 720p, 3 1080p; next app start */
+    int display_mode; /* render target: 0 auto, 1 widescreen 480p, 2 720p, 3 1080p, 4 640x480; next app start */
+    int ui_layout; /* 0 16:9 (default), 1 4:3; next app start, independent of stream size */
     int mouse_hud,stream_menu_style; /* global: compact/text/hidden HUD; compact/sidebar menu */
     bool ui_motion; /* bounded local menu focus animation; global */
     int ui_background,ui_accent; /* global appearance, never owned by stream profiles */
+    bool menu_sounds;
+    int menu_volume; /* independent menu PCM volume, 0..100 */
     int language; /* 0 English, 1 Spanish, 2 Brazilian Portuguese; persisted */
     int thread_layout; /* 0 legacy, 1 balanced; next connection */
     int decode_workers; /* 3 or 4; requires rebuilt FFmpeg mapping */
     int left_min, left_max, right_min, right_max; /* axial activation/saturation percentages */
+    bool aurora_enabled,aurora_direct_enabled;
+    bool artwork_cache_enabled;
+    int artwork_cache_mb; /* 32, 64, or 128; disk only */
+    int aurora_cache_handling; /* 0 Safe, 1 Manual; neither writes Aurora DB */
+    char aurora_shortcuts_folder[160],aurora_main_xex[160],aurora_path[160];
+    char aurora_default_profile[80]; /* empty = game/current binding */
 };
 
 /* Finds a writable USB/HDD device and creates <dev>:/moonlight/. */

@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
 #include <inttypes.h>
 
 #define MAX_OPTION_NAME_LEN 128
@@ -619,5 +620,7 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
 
     freeAttributeList(attributeList);
     *length = offset;
+    perf_request_fps(PERF_FPS_SDP,StreamConfig.fps,
+        AppVersionQuad[0] >= 7 ? StreamConfig.clientRefreshRateX100 : 0);
     return payload;
 }

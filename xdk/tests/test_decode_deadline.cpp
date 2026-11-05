@@ -3,10 +3,13 @@
 #include <stdio.h>
 #include <string.h>
 static uint64_t tick=1000000;
-static bool sample(decode_deadline *s,int fps,uint32_t age,uint32_t ema,bool forced=false){
+static bool sample_decode(decode_deadline *s,int fps,uint32_t age,uint32_t ema,uint32_t actual,bool forced=false){
     tick+=1000000/(fps?fps:30);
     bool fast=decode_deadline_before(s,forced,fps,tick-age,tick,ema);
-    decode_deadline_after(s,fast,true,ema);return fast;
+    decode_deadline_after(s,fast,true,actual);return fast;
+}
+static bool sample(decode_deadline *s,int fps,uint32_t age,uint32_t ema,bool forced=false){
+    return sample_decode(s,fps,age,ema,ema,forced);
 }
 int main(){
     decode_deadline s={};
@@ -36,5 +39,17 @@ int main(){
     assert(decode_deadline_before(&s,false,60,tick+1,tick,1000));
     int fps[]={24,30,40,50,60};
     for(int i=0;i<5;i++){memset(&s,0,sizeof(s));sample(&s,fps[i],0,1000);assert(s.budget_us==1000000u/fps[i]);}
+#if ADAPTIVE_FAST_DECODE
+    memset(&s,0,sizeof(s));
+    for(int i=0;i<4;i++)assert(!sample_decode(&s,60,0,13500,15500));
+    assert(sample_decode(&s,60,0,13500,15500));
+    assert(s.recoveries==1 && !decode_deadline_needs_refresh(&s));
+    for(int i=0;i<45;i++)sample_decode(&s,60,0,8000,8000);
+    assert(!s.recovery && s.recoveries==1 && s.tail_count==0);
+    memset(&s,0,sizeof(s));
+    for(int i=0;i<2;i++)assert(!sample_decode(&s,60,0,13500,15500));
+    for(int i=0;i<20;i++)assert(!sample_decode(&s,60,0,8000,8000));
+    assert(s.recoveries==0); // two isolated slow frames cannot change filtering
+#endif
     puts("PASS: recovery hysteresis, no timed IDR, bounded backlog reset, cooldown, invalid clocks, forced fast");
 }

@@ -72,6 +72,7 @@ jobs = [('app-restart',[OUT/'app-restart.cpp']),('focus-motion',[ROOT/'xdk/tests
         ('render-pacing', [OUT / 'render-pacing.cpp']),
         ('video-report', [OUT / 'video-report.cpp']),
         ('gpu-policy', [ROOT / 'xdk/tests/test_gpu_policy.cpp']),
+        ('video-watchdog', [ROOT / 'xdk/tests/test_video_watchdog.cpp']),
         ('display', [OUT / 'display.cpp']),
         ('session-profile', [OUT / 'session-profile.cpp']),
         ('settings-preview', [OUT / 'settings-preview.cpp', ROOT / 'src/config.c', *ui, OUT / 'fonts.obj']),
@@ -87,6 +88,7 @@ jobs = [('app-restart',[OUT/'app-restart.cpp']),('focus-motion',[ROOT/'xdk/tests
         ('input', [ROOT / 'xdk/tests/test_input_session.cpp']),
         ('settings', [ROOT / 'xdk/tests/test_settings_layout.cpp']),
         ('config', [ROOT / 'xdk/tests/test_config.cpp', ROOT / 'src/config.c']),
+        ('timing', [ROOT / 'xdk/tests/test_timing.cpp']),
         ('overlay', [OUT / 'overlay.cpp', *ui, OUT / 'fonts.obj']),
         ('home', [ROOT / 'xdk/tests/test_home_ui.cpp', *ui, OUT / 'fonts.obj'])]
 selected=set(sys.argv[1:])

@@ -140,12 +140,13 @@ int main(){
  // A rejected source is a decode failure and receives the same persistent cooldown.
  assert(art_request_app(30,false,true));finish();assert(!art_cache.items[ui_cover_find(&art_cache,&(other=key(30)))].pixels);
  assert(!ui_cover_retry(&art_cache,&other,tick));decoder_allowed=true;
- // Optional UUID identity survives both a host endpoint change and numeric app ID change.
+ // The required key is host UUID + Sunshine App ID. A changed ID gets a new cover.
  app_count=1;apps[0].id=21;strcpy(apps[0].uuid,"stable-game-uuid");tick+=UI_COVER_VALID_MS;
- assert(art_request_app(21,true,true));assert(art_job.protocol_app==21 && art_job.key.app==1);finish();
+ assert(art_request_app(21,true,true));assert(art_job.protocol_app==21 && art_job.key.app==21);finish();
  assert(app_art[0]);uint32_t *stable=app_art[0];unsigned stable_generation=art_generation[0];
  strcpy(server.address,"10.0.0.87");apps[0].id=22;art_sync_views();baseline=requests;
- assert(app_art[0]==stable && art_generation[0]==stable_generation && !art_request_app(22,true,true) && requests==baseline);
+ assert(!app_art[0] && art_request_app(22,true,true));finish();
+ assert(app_art[0] && app_art[0]!=stable && art_generation[0]!=stable_generation && requests==baseline+1);
  stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);memset(&art_disk,0,sizeof(art_disk));art_pause(false);art_loader_start();
  baseline=requests;assert(art_request_app(22,true,true));finish();assert(requests==baseline && app_art[0]);
  for(int id=0;id<app_count;id++)art_update(map,app_count,id,6);

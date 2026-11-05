@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string>
 #include "../../src/config.h"
+#include "../../src/display_policy.h"
+#include "../../src/video_viewport.h"
+#include "../../src/ui_layout_geometry.h"
 
 static std::string ini;
 static int writes;static bool allow_write=true;
@@ -26,8 +29,46 @@ int main(void)
 {
     config c, loaded;
     config_load(&c);
-    assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000);
-    assert(writes == 0 && !c.ui_motion);
+    assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000 && c.ui_layout==0);
+    assert(c.artwork_cache_enabled && c.artwork_cache_mb==128);
+    assert(writes == 0 && c.ui_motion && c.menu_sounds && c.menu_volume==18);
+    ini="width=640\nheight=480\nfps=60\nbitrate=8000\ndisplay_mode=4\nui_layout=1\n";
+    config_load(&c);
+    assert(c.width==640 && c.height==480 && c.display_mode==4 && c.ui_layout==1);
+    assert(config_save(&c));config_load(&loaded);
+    assert(loaded.width==640 && loaded.height==480 && loaded.display_mode==4 && loaded.ui_layout==1);
+    assert(config_test_bitrate(&loaded,1)==10000);
+    loaded.bitrate_kbps=10000;
+    assert(config_test_bitrate(&loaded,1)==4000);
+    struct user_profiles four_three_profiles={};
+    four_three_profiles.count=1;
+    strcpy(four_three_profiles.items[0].name,"4:3");
+    config_profile_capture(&four_three_profiles.items[0].options,&c);
+    char serialized_4_3[CONFIG_PROFILES_BYTES];
+    assert(config_profiles_serialize(&four_three_profiles,serialized_4_3,sizeof(serialized_4_3))>0);
+    struct config four_three_applied=c;
+    four_three_applied.width=1280;four_three_applied.height=720;
+    assert(config_profiles_apply(&four_three_profiles,0,&four_three_applied));
+    assert(four_three_applied.width==640 && four_three_applied.height==480);
+    int out_w=0,out_h=0,left=0,top=0,right=0,bottom=0;
+    display_render_size(c.display_mode,1920,1080,&out_w,&out_h);
+    assert(out_w==640 && out_h==480);
+    video_fit_rect(640,480,1280,720,&left,&top,&right,&bottom);
+    assert(left==160 && top==0 && right==1120 && bottom==720);
+    video_fit_rect(640,480,640,480,&left,&top,&right,&bottom);
+    assert(left==0 && top==0 && right==640 && bottom==480);
+    video_fit_rect(1280,720,640,480,&left,&top,&right,&bottom);
+    assert(left==0 && top==60 && right==640 && bottom==420);
+    ui_layout_canvas_size(1,&out_w,&out_h);
+    assert(out_w==960 && out_h==720);
+    ui_layout_viewport(out_w,out_h,640,480,&left,&top,&right,&bottom);
+    assert(left==0 && top==0 && right==640 && bottom==480);
+    ui_layout_canvas_size(0,&out_w,&out_h);
+    assert(out_w==1280 && out_h==720);
+    ui_layout_viewport(out_w,out_h,640,480,&left,&top,&right,&bottom);
+    assert(left==0 && top==60 && right==640 && bottom==420);
+    ini.clear();
+    config_load(&c);
     assert(c.quit_combo == 0 && c.stick_deadzone == 0 && !c.session_report);
     ini = "host=192.168.1.3\nwidth=1920\nheight=1080\nfps=60\nbitrate=14000\npacket_size=1392\nfast_decode=0\nrenderer=cpu\nvsync=0\nsops=0\nlocal_audio=1\n";
     config_load(&c);
@@ -39,7 +80,12 @@ int main(void)
     assert(config_save(&c));
     config_load(&loaded);
     assert(memcmp(&c, &loaded, sizeof(c)) == 0);
-    for(int bg=0;bg<3;bg++)for(int accent=0;accent<4;accent++){
+    c.artwork_cache_enabled=false;c.artwork_cache_mb=32;
+    assert(config_save(&c));config_load(&loaded);
+    assert(!loaded.artwork_cache_enabled && loaded.artwork_cache_mb==32);
+    c.artwork_cache_enabled=true;c.artwork_cache_mb=128;
+    ini="artwork_cache_mb=999\n";config_load(&loaded);assert(loaded.artwork_cache_mb==128);
+    for(int bg=0;bg<5;bg++)for(int accent=0;accent<4;accent++){
         c.ui_background=bg;c.ui_accent=accent;assert(config_save(&c));config_load(&loaded);
         assert(loaded.ui_background==bg && loaded.ui_accent==accent);
         config_apply_preset(&loaded,1);assert(loaded.ui_background==bg && loaded.ui_accent==accent);
@@ -50,11 +96,13 @@ int main(void)
         c.ui_motion=motion!=0;assert(config_save(&c));config_load(&loaded);assert(loaded.ui_motion==c.ui_motion);
     }
     ini="ui_motion=invalid\n";config_load(&loaded);assert(!loaded.ui_motion);
-    ini="host=192.168.1.3\n";config_load(&loaded);assert(!loaded.ui_motion);
+    ini="host=192.168.1.3\n";config_load(&loaded);assert(loaded.ui_motion);
+    c.menu_sounds=false;c.menu_volume=47;assert(config_save(&c));config_load(&loaded);
+    assert(!loaded.menu_sounds && loaded.menu_volume==47);
     config reset=c;strcpy(reset.host_uuid,"stable-uuid");reset.mouse_hud=2;reset.stream_menu_style=1;reset.ui_motion=true;
     config before_reset=reset;std::string before_ini=ini;allow_write=false;
     assert(!config_reset_preferences(&reset) && !memcmp(&reset,&before_reset,sizeof(reset)) && ini==before_ini);allow_write=true;
-    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==12000 && !reset.mouse_hud && !reset.stream_menu_style && !reset.ui_motion);
+    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==12000 && !reset.mouse_hud && !reset.stream_menu_style && reset.ui_motion && reset.menu_sounds && reset.menu_volume==18);
     assert(!strcmp(reset.host,before_reset.host) && !strcmp(reset.host_uuid,"stable-uuid"));
     for(int hud=0;hud<3;hud++)for(int style=0;style<2;style++){
         reset.mouse_hud=hud;reset.stream_menu_style=style;assert(config_save(&reset));config_load(&loaded);
@@ -93,6 +141,14 @@ int main(void)
     for(const char *bad:{"fps=0\n","fps=90\n","fps=invalid\n"}) {
         ini=bad;int before=writes;config_load(&c);assert(c.fps==60 && writes==before);
         assert(config_save(&c));config_load(&loaded);assert(loaded.fps==60);
+    }
+    for(const char *bad:{"width=0\nheight=720\n", "width=1920\nheight=720\n",
+                         "width=2147483647\nheight=1080\n", "width=3840\nheight=2160\n"}) {
+        ini=bad;config_load(&c);
+        assert(c.width==1280 && c.height==720);
+    }
+    for(const char *bad:{"packet_size=0\n", "packet_size=2147483647\n", "packet_size=invalid\n"}) {
+        ini=bad;config_load(&c);assert(c.packet_size==1024);
     }
     assert(!config_fps_supported(25) && config_cycle_fps(25,1) == 60 && config_cycle_fps(25,-1)==60);
     ini="host=old-pc\n";config_load(&c);assert(c.fps==60 && config_video_preset(&c)==CONFIG_PROFILE_SMOOTH);
@@ -210,9 +266,9 @@ int main(void)
     config_load(&c);assert(c.left_min==14 && c.right_min==0 && c.left_max==100 && c.right_max==90);
     ini="stick_deadzone=9\nleft_max=80\nright_max=75\n";
     config_load(&c);assert(c.left_min==9 && c.right_min==9 && c.left_max==80 && c.right_max==75);
-    ini="left_min=-1\nright_min=80\nleft_max=0\nright_max=200\ndisplay_mode=99\ndecode_workers=99\n";
+    ini="left_min=-1\nright_min=80\nleft_max=0\nright_max=200\ndisplay_mode=99\nui_layout=99\ndecode_workers=99\n";
     config_load(&c);assert(c.left_min==0 && c.right_min==30 && c.left_max==50 && c.right_max==100);
-    assert(c.display_mode==0 && c.decode_workers==4);
+    assert(c.display_mode==0 && c.ui_layout==0 && c.decode_workers==4);
     c.language=1;c.adaptive_quality=1;c.decode_workers=3;c.display_mode=2;c.thread_layout=0;
     c.left_min=8;c.left_max=93;c.right_min=14;c.right_max=88;
     assert(config_save(&c));config_load(&loaded);assert(!memcmp(&c,&loaded,sizeof(c)));

@@ -31,6 +31,7 @@ static uint32_t plat_now_ms();
 struct Done {};
 struct plat_thread {};
 static config cfg;
+static int appearance_calls,config_writes;
 static const char *host_key(){return cfg.host;}
 static const char *home_key(){return cfg.host;}
 static void art_drain(){}
@@ -59,14 +60,18 @@ static bool task_was_cancelled;
 static bool recover_host_ui(){return true;}
 static const char *host_display_name(){return "PC";}
 static gs_error_code gs_error_kind(){return GS_ERROR_PROTOCOL;}
-static bool server_ok=true,stream_return_home,host_cache_save_failed,details_play;
+static bool server_ok=true,stream_return_home,host_cache_save_failed,details_play,app_exit_pending;
+static bool art_host_online=true;
 static unsigned next_discovery=99,next_socket_retry=99,discovery_round=3;
 static int navigation_pending=-1,settings_initial_group=-1;
-static int library_size=1,last_play_id,first_play_id,last_resume_id;static bool add_recent_on_play;
-static int plays,details,pauses,library_calls,context_calls,loads,draws,settings_calls,host_panels;
+static char library_query[64];
+static bool edit_search_query(char *text){strcpy(text,"game");return true;}
+static void appearance_menu(){appearance_calls++;cfg.ui_background=4;}
+static int library_size=1,last_play_id,first_play_id,last_resume_id,last_featured_id;static bool add_recent_on_play;
+static int plays,details,pauses,library_calls,context_calls,loads,draws,settings_calls,host_panels,history_calls;
 static std::deque<int> keys;
 char *storage_read(const char*,size_t*){return NULL;}
-bool storage_write(const char*,const void*,size_t){return true;}
+bool storage_write(const char*,const void*,size_t){config_writes++;return true;}
 static int input_menu_pressed(){if(keys.empty())throw Done();int key=keys.front();keys.pop_front();return key;}
 static void plat_sleep_ms(unsigned){}
 static const char *plat_console_ip(){return "192.168.1.2";}
@@ -86,12 +91,13 @@ static void app_menu(){library_calls++;}
 static void message(int,const char*,const char*){}
 static void host_options_menu(){context_calls++;}
 static void hosts_menu(int page){assert(page==UI_HOME);host_panels++;}
-static void history_menu(){}
+static void history_menu(){history_calls++;}
 static bool host_details(){details++;return details_play;}
 static bool tab_from_host_settings;
 static void manage_host(){details++;if(tab_from_host_settings)navigation_pending=UI_STREAM;}
 static bool edit_ip(char *ip,size_t cap){manual_calls++;if(manual_accept){snprintf(ip,cap,"192.168.1.10");return true;}return false;}
 static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
+static const char *game_profile_label(int){return selected_profile_name();}
 const char *ui_translate(const char *s){return s;}
 static ui_host host_view(){ui_host h={"PC","PC",HOST_PAIRED,NULL,NULL};return h;}
 static const char *app_name(int id){for(int i=0;i<app_count;i++)if(apps[i].id==id)return apps[i].name;return NULL;}
@@ -101,7 +107,10 @@ static void stream(int id,const char *name){
     if(add_recent_on_play){session_record r={};strcpy(r.host,cfg.host);strcpy(r.app,"Stale title");r.app_id=43;history_push(&session_history,&r);stream_return_home=true;}
 }
 static bool app_details(int){details++;return details_play;}
-static bool app_details_for(int id,const char *name,int index){assert(index>=0 && index<app_count && apps[index].id==id && !strcmp(name,apps[index].name));details++;return details_play;}
+static bool app_details_for(int id,const char *name,int index){
+    if(index>=0)assert(index<app_count && apps[index].id==id && !strcmp(name,apps[index].name));
+    else assert(id==server.current_game && !strcmp(name,"Running app"));
+    details++;return details_play;}
 static void library_context(int*){context_calls++;}
 static int library_map(int,int *map){for(int i=0;i<app_count;i++)map[i]=i;return app_count;}
 static void draw_apps(int,int,const int*,int){draws++;}
@@ -111,7 +120,11 @@ static void *art_loader(void*){return NULL;}
 static plat_thread *plat_thread_start(void *(*)(void*),void*){return NULL;}
 static void art_update(const int*,int,int,int){}
 static void *applist_task(void*){return NULL;}
-static void run_busy(const char*,const char*,void *(*)(void*),void *count){app_list_cache_store(&app_cache,host_key(),plat_now_ms());loads++;*(int*)count=library_size;app_count=library_size;for(int i=0;i<library_size;i++){apps[i].id=42+i;sprintf(apps[i].name,"Library game %d",42+i);}}
+static void *quit_task(void*){return NULL;}
+static void run_busy(const char *title,const char*,void *(*)(void*),void *count){
+    if(!strcmp(title,"Stopping app")){*(bool*)count=true;server.current_game=0;return;}
+    app_list_cache_store(&app_cache,host_key(),plat_now_ms());loads++;*(int*)count=library_size;app_count=library_size;
+    for(int i=0;i<library_size;i++){apps[i].id=42+i;sprintf(apps[i].name,"Library game %d",42+i);}}
 static void artwork_refresh_apps(const char *title,int *count){run_busy(title,NULL,applist_task,count);}
 static const char *gs_error(){return "Error";}
 int ui_location_enter(const char*){return 0;}
@@ -119,6 +132,7 @@ void ui_location_restore(int){}
 void ui_present(){}
 bool ui_focus_tick(uint32_t){return false;}
 bool ui_home_tick(uint32_t){return false;}
+bool ui_home_prepare_cover(const char*,const ui_app*,uint32_t){return false;}
 bool ui_library_tick(uint32_t){return false;}
 static uint32_t plat_now_ms(){return 0;}
 void ui_draw_hosts(const ui_setting *rows,int n,int sel,int page,bool){
@@ -129,47 +143,68 @@ int ui_apps_columns(){return 6;}
 void ui_art_size(int *w,int *h){*w=150;*h=200;}
 void ui_drop_main_cache(){}
 void ui_draw_dashboard(const ui_host*,const ui_menu_item*,int n,int sel,const char*,const ui_dashboard *d){
-    assert(n==5+d->recent_count && sel>=0 && sel<n && d->recent_count<=4);
+    assert(n==9+d->recent_count && sel>=0 && sel<n && d->recent_count<=8);
     assert(!strcmp(d->profile,"Smooth"));
     assert(!strcmp(d->connection,"720p60  \xE2\x80\xA2  12 Mbps"));
     last_resume_id=d->resume_id;
+    last_featured_id=d->featured_id;
+    assert((d->featured_id>0)==(d->featured!=NULL));
+    if(d->featured)assert(d->featured->name);
     if(d->resume){bool valid=false;for(int i=0;i<app_count;i++)if(apps[i].id==d->resume_id && !strcmp(apps[i].name,d->resume->name))valid=true;assert(valid);}
-    for(int i=0;i<d->recent_count;i++)assert(!d->resume || strcmp(d->recent[i].name,d->resume->name));
+    for(int i=0;i<d->recent_count;i++)assert(d->recent[i].name);
     draws++;
 }
 /* PRODUCTION */
 static void reset(){
+    library_query[0]=0;
     app_cache.valid=false;
     wake_accept=true;wake_calls=0;
-    library_size=1;last_play_id=first_play_id=last_resume_id=0;add_recent_on_play=false;stream_return_home=false;
+    library_size=1;last_play_id=first_play_id=last_resume_id=last_featured_id=0;add_recent_on_play=false;stream_return_home=false;
     config_defaults(&cfg);strcpy(cfg.host,"PC");server.paired=true;server.current_game=0;
     server_ok=true;navigation_pending=-1;app_count=0;art_version=0;session_history.count=0;
-    plays=details=pauses=library_calls=context_calls=loads=draws=settings_calls=0;details_play=false;host_panels=0;hosts.count=0;manual_accept=inject_host=false;manual_calls=0;
+    plays=details=pauses=library_calls=context_calls=loads=draws=settings_calls=history_calls=0;details_play=false;host_panels=0;hosts.count=0;manual_accept=inject_host=false;manual_calls=0;appearance_calls=config_writes=0;
     next_discovery=99;next_socket_retry=99;discovery_round=3;
 }
 static void home(std::initializer_list<int> input){keys=input;try{main_menu();assert(false);}catch(Done&){}}
 int main(){
+    navigation_pending=-1;assert(tab_key(RB_FLAG,UI_LIBRARY) && navigation_pending==UI_PAGE_COUNT);
+    navigation_pending=-1;assert(tab_key(RB_FLAG,UI_PAGE_COUNT) && navigation_pending==UI_SETTINGS);
+    navigation_pending=-1;assert(tab_key(RB_FLAG,UI_SETTINGS) && navigation_pending==UI_HOME);
+    navigation_pending=-1;assert(tab_key(LB_FLAG,UI_SETTINGS) && navigation_pending==UI_PAGE_COUNT);
+    assert(ui_dashboard_move_tiles(3,1,0,9,0)==3);
     reset();keys={A_FLAG,B_FLAG};actual_app_menu();assert(plays==1 && details==0);
     reset();keys={X_FLAG,B_FLAG};actual_app_menu();assert(plays==0 && details==1);
     reset();details_play=true;keys={X_FLAG,B_FLAG};actual_app_menu();assert(plays==1 && details==1);
     reset();keys={Y_FLAG,B_FLAG};actual_app_menu();assert(loads==2 && plays==0);
     reset();library_size=6;keys={RIGHT_FLAG,RIGHT_FLAG,Y_FLAG,A_FLAG,B_FLAG};actual_app_menu();assert(last_play_id==44 && loads==2);
     reset();keys={PLAY_FLAG,B_FLAG};actual_app_menu();assert(context_calls==1 && plays==0);
-    reset();home({A_FLAG});assert(library_calls==1 && details==0);
-    reset();server.current_game=42;home({A_FLAG});assert(plays==1 && details==0);
-    reset();home({X_FLAG});assert(details==1 && !library_calls && !plays);
-    reset();home({Y_FLAG,0,0});assert(pauses==1 && draws==2 && host_panels==1);
+    reset();home({RIGHT_FLAG,A_FLAG});assert(library_calls==1 && details==0);
+    reset();home({RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(host_panels==1);
+    reset();home({RIGHT_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(settings_calls==1 && !library_calls);
+    reset();home({DOWN_FLAG,DOWN_FLAG,A_FLAG});assert(library_calls==1 && appearance_calls==0);
+    reset();home({DOWN_FLAG,A_FLAG});assert(library_calls==1 && !plays);
+    reset();server.current_game=42;home({A_FLAG});assert(plays==1 && last_play_id==42 && last_featured_id==42);
+    reset();server.current_game=42;home({X_FLAG});assert(details==1 && !plays);
+    reset();server.current_game=999;home({X_FLAG});assert(details==1 && !plays && last_featured_id==999);
+    reset();server.current_game=42;home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(!server.current_game && !plays);
+    reset();home({Y_FLAG});assert(library_calls==1 && !plays);
     reset();home({PLAY_FLAG});assert(context_calls==1 && !library_calls);
     reset();server.current_game=42;home({RB_FLAG});assert(library_calls==1 && plays==0);
     reset();session_history.count=1;strcpy(session_history.records[0].host,"PC");
     strcpy(session_history.records[0].app,"Game");session_history.records[0].app_id=42;
-    home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(plays==1 && details==0);
+    home({A_FLAG});assert(plays==1 && details==0 && last_play_id==42);
     reset();session_history.count=1;strcpy(session_history.records[0].host,"PC");
     strcpy(session_history.records[0].app,"Game");session_history.records[0].app_id=42;
-    home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,X_FLAG});assert(plays==0 && details==1);
+    home({X_FLAG});assert(plays==0 && details==1);
     reset();session_history.count=1;strcpy(session_history.records[0].host,"PC");
     strcpy(session_history.records[0].app,"Game");session_history.records[0].app_id=42;
-    home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(plays==1 && details==0);
+    home({DOWN_FLAG,UP_FLAG,A_FLAG});assert(plays==1 && last_play_id==42 && last_featured_id==42);
+    reset();session_history.count=1;strcpy(session_history.records[0].host,"PC");
+    strcpy(session_history.records[0].app,"Game");session_history.records[0].app_id=42;
+    home({DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(history_calls==1 && !plays);
+    reset();session_history.count=1;strcpy(session_history.records[0].host,"PC");
+    strcpy(session_history.records[0].app,"Game");session_history.records[0].app_id=42;
+    home({DOWN_FLAG,DOWN_FLAG,A_FLAG});assert(library_calls==1 && !plays);
     reset();keys={Y_FLAG,0,B_FLAG};actual_hosts_menu(UI_HOME);assert(!pauses && host_rows_seen==2);
     reset();inject_host=true;keys={0,B_FLAG};actual_hosts_menu(UI_HOME);assert(host_rows_seen==3 && !pauses);
     reset();inject_host=true;keys={A_FLAG};actual_hosts_menu(UI_HOME);assert(!strcmp(cfg.host,"192.168.1.9") && pauses==1);
@@ -177,19 +212,18 @@ int main(){
     reset();inject_host=true;keys={X_FLAG,B_FLAG};actual_hosts_menu(UI_HOME);assert(details==1 && plays==0);
     reset();inject_host=true;tab_from_host_settings=true;keys={X_FLAG};actual_hosts_menu(UI_SETTINGS);
     assert(keys.empty() && navigation_pending==UI_STREAM);tab_from_host_settings=false;
-    // Active session wins over a different most-recent game; all display/action
-    // identity comes from the selected host library, not stale TSV names.
+    // An active session is reported separately; recent actions use real library IDs.
     reset();library_size=6;server.current_game=43;
     session_history.count=1;strcpy(session_history.records[0].host,"PC");strcpy(session_history.records[0].app,"GTA stale");session_history.records[0].app_id=42;
-    home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(last_play_id==43 && last_resume_id==43);
+    home({A_FLAG});assert(last_play_id==43 && last_resume_id==43 && last_featured_id==43);
     reset();library_size=6;add_recent_on_play=true;
     session_history.count=1;strcpy(session_history.records[0].host,"PC");strcpy(session_history.records[0].app,"Old title");session_history.records[0].app_id=42;
-    home({DOWN_FLAG,RIGHT_FLAG,RIGHT_FLAG,A_FLAG,A_FLAG});assert(plays==2 && first_play_id==42 && last_play_id==43 && last_resume_id==43);
+    home({A_FLAG,A_FLAG});assert(plays==2 && first_play_id==42 && last_play_id==43);
     reset();session_history.count=1;strcpy(session_history.records[0].host,"OTHER PC");session_history.records[0].app_id=42;home({0});assert(!last_resume_id);
     reset();server_ok=false;hosts.count=1;strcpy(hosts.hosts[0].ip,cfg.host);hosts.hosts[0].auto_wake=true;wake_accept=false;
     home_connect(false);assert(wake_calls==1 && !plays && !library_calls && !server_ok);
     wake_accept=true;home_connect(false);assert(wake_calls==2 && server_ok && library_calls==1);
-    puts("PASS: production Home/Library A direct play, X details, details Play, Y refresh/search without pause, Start context, Library tab with running game and saved recent launch.");
+    puts("PASS: four native top destinations, Y search, real recent A/X routing, library/hosts shortcuts, focus persistence and host identity.");
 }
 """
 code='\n'.join([
@@ -199,6 +233,7 @@ code='\n'.join([
     function(app,'static void home_connect('),
     function(app,'static void app_menu(void)').replace('static void app_menu(void)','static void actual_app_menu(void)'),
     function(app,'static void home_sync_apps(void)'),
+    function(app,'static void home_search(void)'),
     function(app,'static void main_menu(void)'),
     function(app,'static void hosts_menu(int page)\n{').replace('static void hosts_menu(int page)','static void actual_hosts_menu(int page)')])
 Path(sys.argv[1]).write_text(fixture.replace('/* PRODUCTION */',code))

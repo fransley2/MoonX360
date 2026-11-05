@@ -52,6 +52,7 @@ struct ui_stat {
 };
 
 bool ui_init(int width, int height);
+bool ui_init_layout(int width, int height, int layout_4_3);
 canvas_t *ui_canvas(void);
 /* Size that box art should be scaled to before passing it to ui_draw_apps. */
 void ui_art_size(int *w, int *h);
@@ -97,9 +98,15 @@ struct ui_dashboard {
     int recent_count;
     const struct ui_app *resume; /* independent validated Continue target, or NULL */
     int resume_id;
+    const struct ui_app *featured; /* running app or latest valid play history */
+    int featured_id;
 };
 void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *items,int n,int sel,
     const char *console_ip,const struct ui_dashboard *dashboard);
+/* Prepared outside drawing; the previous image remains valid during fades. */
+bool ui_home_prepare_cover(const char *host,const struct ui_app *app,uint32_t now);
+void ui_home_cancel_prepare(void);
+void ui_home_set_user_wallpaper(const uint32_t *pixels,int width,int height);
 void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,int sel,const char *filter);
 void ui_draw_list(const char *title,const struct ui_setting *rows,int n,int sel);
 void ui_draw_advisor(const struct ui_stat *rows,int n,const char *note,bool can_apply);
@@ -108,10 +115,11 @@ int ui_dashboard_move(int selected,int dx,int dy,int count);
 void ui_set_page(int page);
 void ui_set_language(int language);
 const char *ui_translate(const char *english);
-/* Home: compact Continue + up to eight recents and four quick-access tiles. */
+/* Home: four destinations, one contextual action, up to eight recents, four shortcuts. */
 int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents);
 
 void ui_draw_app_details(const struct ui_host*,const struct ui_app*,const char *profile,const char *coverage,int selected);
+void ui_app_details_aurora(bool enabled,bool exists);
 void ui_draw_performance(const char *grade,const char *mode,float shown,const char *decode,
     const char *latency,const char *cause,const char *note,bool can_apply);
 

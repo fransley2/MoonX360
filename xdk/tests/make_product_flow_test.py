@@ -17,6 +17,7 @@ fixture=r'''
 #include <string>
 #include <deque>
 #include "../src/config.h"
+#include "../src/aurora_launch.h"
 #include "../src/product_features.h"
 #include "../src/launch_settings.h"
 #include "../src/video.h"
@@ -29,6 +30,7 @@ static uint32_t *app_art[MAX_APPS],art_generation[MAX_APPS];
 static int app_count;
 static library_favorites favorites;
 static config cfg;
+static bool aurora_direct_active;static moonx_launch_data aurora_direct_data;
 static const char *host_key(){return cfg.host;}
 static game_bindings game_bindings;
 static char library_query[64];
@@ -39,6 +41,7 @@ static video_stats stats;
 static int writes,details,messages,reconnects,stream_calls;
 static bool connection_terminated;static int termination_error;static std::string last_report;
 static unsigned adaptive_reconnects;
+static unsigned video_reconnects;
 static struct {bool paired;int current_game;} server={true,0};
 static char server_error[80],unstable_title[64];
 static std::deque<int> buttons;
@@ -63,6 +66,7 @@ static const char *game_profile_label(int){return "Profile";}
 static void history_menu() {history_calls++;}
 static ui_host host_view() {ui_host h={"PC","PC",HOST_PAIRED,NULL,NULL};return h;}
 void ui_draw_app_details(const ui_host*,const ui_app *a,const char*,const char*,int selected) {assert(a->name && selected>=0 && selected<6);}
+void ui_app_details_aurora(bool,bool) {}
 void ui_set_page(int) {}
 int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}

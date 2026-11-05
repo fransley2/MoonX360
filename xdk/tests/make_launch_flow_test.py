@@ -11,7 +11,7 @@ def function(signature):
 
 once=function('static bool stream_once(')
 prefix=once[:once.index('    /* A cached online')]+ '\nreturn true;\n}'
-assert once.count('    launch_begin(')==1 and once.count('    art_launch_begin(')==1 and once.count('ui_launch_begin(')==1
+assert once.count('launch_begin(cover_delay')==1 and once.count('art_launch_begin(app_id)')==1 and once.count('ui_launch_begin(&launch_app')==1
 assert once.index('launch_present();')<once.index('discovery_pause();')<once.index('refresh_server();')
 retry=once[once.index('    if(cj.ret!=0 && !launch_cancelled()'):once.index('    if(task_was_cancelled || task_timed_out)',once.index('    if(cj.ret!=0 && !launch_cancelled()'))]
 assert 'launch_begin(' not in retry and 'launch_end(' not in retry and 'launch_prepare(' not in retry
@@ -30,7 +30,9 @@ fixture=r'''
 #include "../src/launch_cover.h"
 #include "../src/ui/ui.h"
 static config cfg;
-static bool stream_return_home,launch_connecting,task_was_cancelled,server_ok,active,cancelled;
+static unsigned session_generation;
+static void cl_log(const char*,...){}
+static bool stream_return_home,launch_connecting,task_was_cancelled,server_ok,active,cancelled,aurora_direct_active;
 static bool fail_host,cancel_refresh,pair_needed,pair_cancel,pair_failure;
 static int busy_draws,pair_draws,begins,ends,presents,refreshes,recovers,phase;
 static volatile int launch_handoff,task_cancel;

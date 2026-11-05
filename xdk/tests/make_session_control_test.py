@@ -34,6 +34,7 @@ static int plat_atomic_load(volatile int *p){return *p;}
 static void plat_atomic_store(volatile int *p,int n){*p=n;}
 static uint32_t plat_now_ms(){return tick++;}
 static void plat_log(const char*){}
+static void plat_diagnostics_checkpoint(const char*){}
 static void cl_log(const char*,...){}
 static void set_error(const char *format,const char *arg){snprintf(last_error,sizeof(last_error),format,arg?arg:"");}
 static void make_uuid(char uuid[37]){strcpy(uuid,"fixture-request");}
