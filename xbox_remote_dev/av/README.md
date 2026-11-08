@@ -19,6 +19,11 @@ the WARP address to `192.168.15.8`. A further restart and actual media capture
 were deferred by the user. See [the setup diagnosis](SETUP_DIAGNOSTIC_20261108.md)
 for observed state, hashes and recovery material.
 
+The subsequent authorized [physical capture attempt](PHYSICAL_CAPTURE_20261108.md)
+verified reboot recovery and module presence with the corrected destination,
+but received no media connection or A/V payload. Boot loading remains an
+unsuccessful capture path; the specific initialization/network cause is open.
+
 ## Start the supplied Python viewer reliably
 
 For the user-provided copy at `xbox_remote_dev/360Stream/PC`, use
