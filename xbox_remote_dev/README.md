@@ -20,7 +20,7 @@ py -B xbox_remote_dev/host/diagnose.py 192.168.15.10 evidence/new-run
 py -B xbox_remote_dev/host/diagnose.py 192.168.15.10 evidence/new-screen-run --screenshot
 powershell -NoProfile -ExecutionPolicy Bypass -File xbox_remote_dev/windows/build.ps1
 py -B xbox_remote_dev/xdk/build.py
-py -B xbox_remote_dev/host/baseline.py 192.168.15.10 evidence/new-baseline
+py -B xbox_remote_dev/host/baseline.py 192.168.15.10 "$env:LOCALAPPDATA\XboxRemoteDev\recovery\new-baseline"
 ```
 
 Use a **new** evidence directory for each run. Screenshot capture is explicit

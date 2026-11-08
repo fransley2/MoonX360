@@ -16,7 +16,9 @@ The standalone test title was **not launched**.
   Its plugin entries include XBDM and do not reference RemoteAgent. This is
   a candidate configuration backup; the active DashLaunch source was not
   independently proven. The local backup and directory listings are private
-  and intentionally excluded from Git.
+  and intentionally excluded from Git. The configuration backup was moved to
+  `%LOCALAPPDATA%\XboxRemoteDev\recovery\20261108\Usb0-launch.ini` outside the
+  synchronized checkout; its SHA-256 was rechecked after the move.
 - `HDD:\Apps\RemoteAgent\RemoteAgent.xex` was read in full, 16,384 bytes.
   Its SHA-256 `61fd90477cebf7761fac23c074e6a537b870d3fa9341e4232d7cc468e9152682`
   matches the previous local artifact. It was absent from the module list.
@@ -81,3 +83,6 @@ A host-only `imagexex` experiment without `<sysdll/>` removed the warning but
 produced a title-plus-DLL image at `0x88000000`, which does not establish a
 DashLaunch-compatible resident plugin. That variant was not installed or
 added to the project build.
+Adding `<exportnames/>` preserved both warnings. The installed XDK's ImageXEX
+error-code documentation labels IM1034 "No Exp Container" and IM1040 "Image
+May Not Run". The heartbeat plugin remains an uninstalled experiment.
