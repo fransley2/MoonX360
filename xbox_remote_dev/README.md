@@ -53,6 +53,10 @@ No plugin installation or `launch.ini` edit is automated by this project.
 The `RemoteAgent.xex` build currently reports an XDK system-module export
 warning; see [STARTUP_REPORT.md](STARTUP_REPORT.md). Do not install it yet.
 Fresh console findings are in [VALIDATION_REPORT_20261108.md](VALIDATION_REPORT_20261108.md).
+The guarded standalone RemoteTest launch on 2026-11-08 returned to Aurora
+within three seconds without a confirmed RemoteTest module load or startup
+marker. Its remote hash could not be verified because XBDM readback failed.
+This build is not hardware-validated as a working title.
 The standalone `host/probe_remote_test.py` uploads only to a new dated name
 and normally refuses to launch if its full remote hash cannot be verified.
 When the installed XBDM truncates `getfile`, a separate, explicit

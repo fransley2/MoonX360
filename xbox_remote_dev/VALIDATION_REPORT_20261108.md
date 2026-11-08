@@ -2,7 +2,8 @@
 
 Console `192.168.15.10`, XBDM TCP 730. All actions below used new evidence
 paths. No installed `default.xex`, `launch.ini`, or plugin entry was changed.
-The standalone test title was **not launched**.
+The standalone test title was subsequently attempted through the guarded
+size-only path described below. Its load was not confirmed.
 
 ## Read-only baseline
 
@@ -61,7 +62,7 @@ The standalone test title was **not launched**.
 completion and directory size 102,400 bytes, matching the local file.
 The readback then closed at **87,476/102,400** bytes. A later readback
 returned `414`, including through OXDK. The remote SHA-256 is unverified.
-`host/probe_remote_test.py` therefore refused `magicboot`; the last checks
+`host/probe_remote_test.py` therefore refused `magicboot` on that first run; the last checks
 still showed `getexecstate=start` and `Aurora.xex` loaded. The copied test
 file remains under its unique name and must not be mistaken for a validated
 title. No other file was overwritten.
@@ -72,6 +73,50 @@ The console title was not interrupted. After the screenshot investigation,
 the collector was updated to resume a debugger that was confirmed running
 before capture and stopped afterward; this behavior has not yet been tested
 on the console.
+
+## Guarded standalone launch with Aurora active
+
+After the console user confirmed Aurora was open, a fresh preflight reported
+`Aurora.xex` and debugger `start`. The third probe reused only the existing
+dated test file. The original upload receipt, local SHA-256
+`ed68eb1f690d886bb4f7f38de4cc0ef1df0766c748326c8c36c5c7cdac1ceb1f`,
+and current directory size of 102,400 bytes matched. Full remote hash remained
+**unverified**; the size-only override was explicit. No file was uploaded or
+overwritten in this probe.
+
+`magicboot` returned `200 OK`. At 0.5 and 1 second, the module-based title
+query returned no title and `getexecstate` reported `reboot_title`. At 3, 6,
+10 and 14 seconds, `Aurora.xex` was loaded and the state was `start`. The
+probe's `test_loaded` result is false. This is a hardware observation of a
+failed standalone launch attempt, **not** a successful RemoteTest run.
+
+An independent OXDK `notify` connection had returned `205 now a notification
+channel` before launch. Its log records `Aurora.xex` unloading, a transient
+`lhelper.xex` load, another `reboot_title`, and `Aurora.xex` loading again.
+It has no `RemoteTest` module load or `[RemoteTest]` startup marker. The
+channel captured other `debugstr` events, confirming notification delivery
+for this interval. These observations narrow the failure to loading or very
+early execution, but cannot prove whether the exact test bytes reached the
+loader or whether its entrypoint ran: remote readback is incomplete and a
+short-lived module might escape the 0.5-second polling samples.
+
+Local `imagexex /dump` compared the RemoteTest build with the preserved
+known-good MoonX360 XEX. Both are title modules at `0x82000000`, import
+`xam.xex` and `xboxkrnl.exe` version 2.0.21256.0, and use the same XDK
+compiler/linker family. RemoteTest has image size `0x30000`, entrypoint
+`0x820104E0`, title ID `58524454`, and no ImageXEX warnings. The known-good
+XEX has image size `0x790000`, entrypoint `0x823626A0`, title ID `4D583336`,
+and an additional insecure-sockets privilege. None of these differences is
+established as the cause. The local test XEX hash matches its build manifest;
+the preserved known-good hash remains
+`0e62c46c05b59bdb39cf9075c30edbc074a9f559168d7e502e2029ffcdaeeb44`.
+
+Evidence is saved locally and excluded from Git:
+`evidence/20261108-remote-test-probe-03.json` and
+`evidence/20261108-remote-test-notify-03.out.txt`. A later readback using both
+`HDD:` and `Hdd1:` returned `414 access denied`; the directory still lists
+the test file at 102,400 bytes. Aurora and debugger `start` remained active.
+No second launch or plugin installation followed.
 
 Aurora FTP accepted a TCP connection but rejected anonymous login with
 `530 Need username`. No credentials were guessed or sent. A separately
