@@ -33,6 +33,10 @@ class ConfigTests(unittest.TestCase):
         for data in (INI.replace(b"plugin3 = ", b"plugin3 = existing.xex"), INI.replace(b"plugin4 =", b"plugin3 =")):
             with self.assertRaises(ValueError): candidate(data)
 
+    def test_already_configured_ini_is_unchanged(self):
+        after = candidate(INI)
+        self.assertEqual(candidate(after), after)
+
     def test_verified_activation_keeps_remote_original(self):
         remote = Files()
         after = candidate(INI)
@@ -52,6 +56,16 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply(remote, INI, candidate(INI), "backup", "stage", "failed")
         self.assertNotIn("stage", remote.files)
+
+    def test_media_ini_change_does_not_touch_boot_config(self):
+        remote = Files()
+        target = r"Usb0:\PERFORMER-AV.ini"
+        before = b"PC_IP=172.16.0.2\r\n"
+        after = b"PC_IP=192.168.15.8\r\n"
+        remote.files[target] = before
+        apply(remote, before, after, "backup", "stage", "failed", target=target)
+        self.assertEqual(remote.files[target], after)
+        self.assertEqual(remote.files[ACTIVE], INI)
 
 
 if __name__ == "__main__":

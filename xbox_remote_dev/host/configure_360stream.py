@@ -34,6 +34,8 @@ def candidate(data):
     next_section = re.search(rb"(?m)^\[", data[start:])
     end = start + next_section.start() if next_section else len(data)
     entries = list(re.finditer(rb"(?im)^([ \t]*plugin3[ \t]*=[ \t]*)([^\r\n]*)", data[start:end]))
+    if len(entries) == 1 and entries[0][2].strip().lower() == PLUGIN.lower():
+        return data
     if len(entries) != 1 or entries[0][2].strip():
         raise ValueError("plugin3 must exist once and be empty; refusing replacement")
     match = entries[0]
@@ -75,32 +77,32 @@ class Remote:
                 raise OSError("sendfile completion was not 200")
 
 
-def apply(remote, before, after, backup, staged, failed):
+def apply(remote, before, after, backup, staged, failed, target=ACTIVE):
     if any(remote.exists(p) for p in (backup, staged, failed)):
         raise ValueError("recovery filename already exists")
-    if remote.read(ACTIVE) != before:
+    if remote.read(target) != before:
         raise ValueError("launch.ini changed since preparation")
     remote.upload_new(staged, after)
     if remote.read(staged) != after:
         raise OSError("staged INI readback mismatch; original is untouched")
-    if remote.read(ACTIVE) != before:
+    if remote.read(target) != before:
         raise ValueError("launch.ini changed while staging; refusing activation")
     try:
-        remote.rename(ACTIVE, backup)
-        remote.rename(staged, ACTIVE)
-        if remote.read(ACTIVE) != after or remote.read(backup) != before:
+        remote.rename(target, backup)
+        remote.rename(staged, target)
+        if remote.read(target) != after or remote.read(backup) != before:
             raise OSError("active or backup readback mismatch")
     except Exception as error:
         if remote.exists(backup):
             if remote.read(backup) != before:
                 raise OSError("backup mismatch: manual recovery required") from error
             # Resolve an acknowledgement lost after a successful promotion.
-            if remote.exists(ACTIVE) and remote.read(ACTIVE) == after:
+            if remote.exists(target) and remote.read(target) == after:
                 return "active and backup verified after command error"
-            if remote.exists(ACTIVE):
-                remote.rename(ACTIVE, failed)
-            remote.rename(backup, ACTIVE)
-            if remote.read(ACTIVE) != before:
+            if remote.exists(target):
+                remote.rename(target, failed)
+            remote.rename(backup, target)
+            if remote.read(target) != before:
                 raise OSError("rollback unverified: manual recovery required") from error
             raise OSError("activation failed; original INI restored and verified") from error
         raise
@@ -127,7 +129,9 @@ def main():
               "local_recovery": str(output), "applied": False,
               "module_load_or_reboot_requested": False, "capture_verified": False}
     try:
-        if args.apply:
+        if before == after:
+            report["result"] = "already configured and verified; no remote write"
+        elif args.apply:
             backup = rf"Usb0:\launch-xrd-bak-{stamp}.ini"
             report["remote_backup"] = backup
             report["result"] = apply(remote, before, after, backup,
