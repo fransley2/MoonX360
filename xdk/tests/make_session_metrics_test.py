@@ -28,6 +28,7 @@ static bool network_valid;
 static int setup_fps_argument;
 struct RTP_VIDEO_STATS {uint32_t packetCountVideo,packetCountFec,packetCountFecRecovered,packetCountFecFailed,packetCountOOS,packetCountInvalid;};
 static RTP_VIDEO_STATS last_rtp_stats;
+static uint64_t rtp_counter_duration_us=10000000;
 static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_late_packets,last_lost_frames;
 static uint32_t last_data_packets,last_fec_packets,present_duplicates;
 /* CODE */
@@ -39,7 +40,7 @@ int main(){
  last_packet_age_stop_ms=25;last_decode_age_stop_ms=30;last_present_age_stop_ms=40;
  options.target_fps=60;options.stats_overlay=true;decode_us_sum=0;
  setup_fps_argument=60;
- last_complete_frames=1100;last_video_packets=8000;last_rtp_stats.packetCountFecRecovered=12;
+ last_complete_frames=550;last_video_packets=8000;last_rtp_stats.packetCountFecRecovered=12;
  last_rtp_stats.packetCountVideo=7000;last_rtp_stats.packetCountFec=1000;last_data_packets=6800;last_fec_packets=950;
  pipeline_calls[TIME_DECODE]=1000;pipeline_total[TIME_DECODE]=17000000;
  streaming_start_us=100;streaming_end_us=20000100;
@@ -48,7 +49,7 @@ int main(){
  assert(s.last_video_packet_age_ms==25 && s.last_decoded_age_ms==30 && s.last_presented_age_ms==40);
  assert(s.requested_fps==60 && s.setup_fps_argument==60 && !s.negotiated_fps_known && !s.negotiated_fps);
  assert(s.callback_fps==60 && s.decoded_fps==50 && s.presented_fps==49);
- assert(s.complete_frame_fps==55 && s.complete_frames==1100 && s.video_packets==8000 && s.fec_recovered==12);
+ assert(s.complete_frame_fps==55 && s.complete_frames==550 && s.video_packets==8000 && s.fec_recovered==12);
  assert(s.expected_video_data_packets==7000 && s.expected_fec_packets==1000 && s.accepted_data_packets==6800 && s.accepted_fec_packets==950);
  setup_fps_argument=30;video_get_session_performance(&s);
  assert(s.requested_fps==60 && s.setup_fps_argument==30 && !s.negotiated_fps_known);

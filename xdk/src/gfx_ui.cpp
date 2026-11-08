@@ -126,7 +126,7 @@ struct ui_projection {float sx,sy,ox,oy;int bw,bh,left,top,right,bottom;};
 static ui_projection projection(int cw,int ch)
 {
     ui_projection p;gfx_backbuffer_size(&p.bw,&p.bh);
-    ui_layout_viewport(cw,ch,p.bw,p.bh,&p.left,&p.top,&p.right,&p.bottom);
+    gfx_ui_viewport(cw,ch,p.bw,p.bh,&p.left,&p.top,&p.right,&p.bottom);
     p.sx=(p.right-p.left)/(float)cw;p.sy=(p.bottom-p.top)/(float)ch;
     p.ox=(float)p.left;p.oy=(float)p.top;return p;
 }

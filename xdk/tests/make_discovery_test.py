@@ -82,7 +82,7 @@ int main(){
 }
 '''
 # No hidden discovery activity or changed stream negotiation.
-stream=s[s.index('static bool stream_once('):s.index('static void stream(int app_id,')]
+stream=s[s.index('static bool stream_once('):s.index('static bool stream_session(')]
 assert stream.count('discovery_pause();')==1 and 'discovery_tick' not in stream and 'mdns_' not in stream
 for field,value in [('width','cfg.width'),('height','cfg.height'),('fps','cfg.fps'),('bitrate','cfg.bitrate_kbps')]:
     assert f'lj.sc.{field} = {value};' in stream

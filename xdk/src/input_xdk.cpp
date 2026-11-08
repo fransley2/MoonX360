@@ -24,6 +24,7 @@
 #include "../../src/remote_input.h"
 #include "../../src/quick_menu.h"
 #include "../../src/audio.h"
+#include "../../src/video.h"
 static volatile LONG mouse_mode;
 bool input_mouse_active(void) {return InterlockedCompareExchange(&mouse_mode,0,0)!=0;}
 
@@ -42,7 +43,7 @@ static bool initial_stats;
 static volatile LONG quick_snapshot,mouse_available=1,quick_available=1;
 void input_quick_ui_unavailable(void){InterlockedExchange(&quick_available,0);}
 unsigned input_quick_snapshot(void){return (unsigned)InterlockedCompareExchange(&quick_snapshot,0,0);}
-bool input_stats_visible(void){return (input_quick_snapshot()&4096)!=0;}
+bool input_stats_visible(void){return (input_quick_snapshot()&QUICK_STATS)!=0;}
 void input_mouse_indicator_available(bool available){InterlockedExchange(&mouse_available,available?1:0);}
 void input_configure_pointer(int speed,int acceleration,int scroll_ms,bool stats)
 {pointer_speed=speed<25?25:speed>200?200:speed;pointer_acceleration=acceleration;pointer_scroll_ms=scroll_ms<50?50:scroll_ms>400?400:scroll_ms;initial_stats=stats;}
@@ -241,6 +242,8 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(!InterlockedCompareExchange(&quick_available,0,0)){if(quick.open){quick.open=false;quick.neutral=true;}quick.latch=true;}
         bool local=block_launch;
         if(!block_launch && !shortcut_fired)local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&quick_close_app,&mouse_action,started);
+        if(quick.refresh_request)video_request_picture_refresh();
+        video_refresh_tick(started);
         if(!quick_was_open && quick.open)plat_log("[INPUT] Quick Menu combo detected\n");
         if(quick_quit)InterlockedExchange(&quit_requested,1);
         if(quick_close_app)InterlockedExchange(&close_app_requested,1);

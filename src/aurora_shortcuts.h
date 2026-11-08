@@ -29,7 +29,7 @@ int aurora_shortcut_detect_aurora(char *path,size_t capacity);
 bool aurora_shortcut_valid_aurora(const char *folder);
 bool aurora_shortcut_install_sync(const char *aurora_folder,char *error,size_t capacity);
 int aurora_shortcut_edit_path(char *path,size_t capacity,const char *title);
-enum { AURORA_BROWSER_FOLDER=0, AURORA_BROWSER_XEX=1, AURORA_BROWSER_AURORA_XEX=2, AURORA_BROWSER_MAX=192 };
+enum { AURORA_BROWSER_FOLDER=0, AURORA_BROWSER_XEX=1, AURORA_BROWSER_AURORA_XEX=2, AURORA_BROWSER_IMAGE=3, AURORA_BROWSER_MAX=192 };
 struct aurora_browser_entry { char name[64]; int folder; };
 int aurora_browser_roots(struct aurora_browser_entry *items,int capacity);
 int aurora_browser_list(const char *folder,int mode,struct aurora_browser_entry *items,int capacity);

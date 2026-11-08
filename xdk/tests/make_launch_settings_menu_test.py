@@ -32,7 +32,7 @@ static void plat_log(const char *s){assert(strstr(s,"STORAGE"));}
 static void plat_diagnostics_flush(){}
 /* CODE */
 int main(){
- config_defaults(&cfg);assert(cfg.launch_animation && !cfg.ui_motion);
+ config_defaults(&cfg);assert(cfg.launch_animation && cfg.ui_motion);
  keys={LEFT_FLAG,LEFT_FLAG,LEFT_FLAG,LEFT_FLAG,LEFT_FLAG,DOWN_FLAG,A_FLAG,DOWN_FLAG,A_FLAG};launch_defaults_menu();
  assert(keys.empty() && cfg.launch_cover_ms==0 && !cfg.launch_animation);
  keys={B_FLAG};launch_defaults_menu();assert(displayed=="0 s");

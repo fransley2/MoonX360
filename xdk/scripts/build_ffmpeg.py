@@ -87,7 +87,9 @@ def apply_fixups(fixups):
             f.write(updated)
 # The FFmpeg libraries need HAVE_AV_CONFIG_H (pulls in libavutil/internal.h);
 # XBMC-360's "Release" configuration sets it, its "Release_LTCG" one doesn't.
-FFMPEG_DEFINES = ["HAVE_AV_CONFIG_H"]
+STAGE_PROFILE = os.environ.get('XDK_H264_STAGE_PROFILE','0')
+if STAGE_PROFILE not in ('0','1'): raise SystemExit('XDK_H264_STAGE_PROFILE must be 0 or 1')
+FFMPEG_DEFINES = ["HAVE_AV_CONFIG_H"] + (["XDK_H264_STAGE_PROFILE=1"] if STAGE_PROFILE=='1' else [])
 
 LIBS = {
     # name: (vcxproj, extra include dirs relative to the project dir, forced includes, extra defines)
@@ -195,13 +197,23 @@ def build(name):
 
 
 if __name__ == "__main__":
-    patch_worker_map(os.path.join(FFMPEG,"libavcodec","xb_thread.c"),WORKER_MAP)
+    worker_source=open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),encoding='utf-8').read()
+    instrumented = 'ff_xbox_slice_last_dispatch(' in worker_source
+    if os.environ.get('XDK_H264_PARALLEL_DIAGNOSTIC','0') == '1' and not instrumented:
+        raise SystemExit('Requested H.264 diagnostics are absent from the worker source')
+    if instrumented:
+        if WORKER_MAP != 'current' or 'ff_xbox_slice_last_dispatch(' not in worker_source or \
+                'static const int xenon_worker_map[5] = {1, 2, 4, 3, 5};' not in worker_source:
+            raise SystemExit('Instrumented H.264 build requires the current worker map and diagnostic source')
+    else:
+        patch_worker_map(os.path.join(FFMPEG,"libavcodec","xb_thread.c"),WORKER_MAP)
     names = sys.argv[1:] or ["pthreads", "avutil", "avcodec"]
     apply_fixups(HOOK_FIXUPS)
     ok = all([build(n) for n in names])
     if ok and 'avcodec' in names:
         with open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),encoding='utf-8') as f:worker_text=f.read()
         manifest = {'profile': PROFILE,'worker_map':WORKER_MAP,'source_root':FFMPEG,
+                    'h264_stage_profile': int(STAGE_PROFILE),
                     'slice_dispatch':SLICE_DISPATCH,
                     'slice_dispatch_sha256':hashlib.sha256(generate(worker_text).encode('utf-8')).hexdigest() if SLICE_DISPATCH=='batched' else None,
                     'worker_sha256': hashlib.sha256(open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),'rb').read()).hexdigest(),

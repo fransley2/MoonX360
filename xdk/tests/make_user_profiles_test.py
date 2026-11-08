@@ -52,7 +52,7 @@ int main(){
  user_profiles p={};assert(config_profiles_load(&p) && p.count==1 && !strcmp(p.items[0].name,"Meu perfil 1"));
  assert(config_profiles_selected(&p,&cfg)==0);config saved=cfg;
  config_customize_stream(&cfg);cfg.bitrate_kbps=25000;assert(config_profiles_selected(&p,&cfg)==-1);
- keys={DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,A_FLAG};stream_profile_menu();
+ keys.clear();for(int i=0;i<CONFIG_PROFILE_COUNT-1;i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);stream_profile_menu();
  assert(keys.empty() && cfg.bitrate_kbps==saved.bitrate_kbps && cfg.language==2 && config_profiles_selected(&p,&cfg)==0);
  // Current saved profile opens selected. Rename cancellation and successful rename.
  keys={Y_FLAG,DOWN_FLAG,DOWN_FLAG,A_FLAG,UP_FLAG,B_FLAG,B_FLAG};stream_profile_menu();

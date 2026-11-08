@@ -10,6 +10,12 @@ typedef uint32_t DWORD;typedef void *LPVOID;
 typedef long LONG;
 static volatile LONG stream_error;
 enum { VIDEO_STREAM_OK, VIDEO_STREAM_UNSUPPORTED_SIZE, VIDEO_STREAM_RESOURCE_ERROR };
+enum { VIDEO_REFRESH_IDLE, VIDEO_REFRESH_REQUESTED, VIDEO_REFRESH_WAITING,
+       VIDEO_REFRESH_DECODED, VIDEO_REFRESH_UNAVAILABLE };
+static volatile LONG refresh_active,refresh_state,refresh_requests,refresh_decoded_idrs;
+static volatile LONG refresh_completed_request;
+static volatile LONG refresh_last_idr_ms,refresh_last_request_ms;
+static DWORD GetTickCount(){return 1000;}
 static LONG InterlockedExchange(volatile LONG *p,LONG n) {LONG old=*p;*p=n;return old;}
 #define WINAPI
 #define CREATE_SUSPENDED 4

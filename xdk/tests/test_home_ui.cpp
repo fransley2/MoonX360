@@ -208,6 +208,7 @@ int main(void)
     cmd=ui_draw_commands(&command_count);int before_ready=0;
     for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)before_ready++;
     assert(before_ready==1); /* Old wallpaper stays complete during preparation. */
+    ui_set_motion(true);
     for(int i=1;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1300)==(i==29));
     ui_set_motion(true);ui_home_tick(1300);
     ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
@@ -217,6 +218,16 @@ int main(void)
     cmd=ui_draw_commands(&command_count);backgrounds=0;
     for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
     assert(backgrounds==1);
+    // A new image arriving without navigation replaces the focused backdrop once.
+    ui_set_motion(false);recent[2].generation++;
+    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1600)==(i==29));
+    assert(!ui_home_prepare_cover("uuid:PC",recent+2,1600));
+    ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    cmd=ui_draw_commands(&command_count);backgrounds=0;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    assert(backgrounds==1); // Reduce Motion never draws the preceding backdrop.
+    assert(!ui_home_prepare_cover("uuid:other",recent+2,1700));ui_home_cancel_prepare();
+    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1800)==false);
     std::vector<uint32_t> custom(1280*720);
     for(int y=0;y<720;y++)for(int x=0;x<1280;x++)custom[y*1280+x]=(x&1)?0xFFF4A431u:0xFF1768C1u;
     ui_home_set_user_wallpaper(custom.data(),1280,720);ui_set_appearance(3,0);

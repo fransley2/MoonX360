@@ -34,6 +34,13 @@ static int aurora_path_parent(char *path)
     *end=0;
     return 1;
 }
+static int aurora_path_image_name(const char *name)
+{
+    const char *ext=name?strrchr(name,'.'):NULL;char lower[6];size_t n=ext?strlen(ext):0;
+    if(!n || n>=sizeof(lower))return 0;
+    for(size_t i=0;i<=n;i++)lower[i]=(ext[i]>='A' && ext[i]<='Z')?(char)(ext[i]+'a'-'A'):ext[i];
+    return !strcmp(lower,".png") || !strcmp(lower,".jpg") || !strcmp(lower,".jpeg");
+}
 static int aurora_path_xex_name(const char *name)
 {
     size_t n=name?strlen(name):0;

@@ -10,6 +10,15 @@ static struct perf_slot slots[PERF_COUNT];
 static struct perf_slot last_slots[PERF_COUNT];
 static uint64_t marks[PERF_EVENT_COUNT],frequency,origin,ui_started,input_sample_us[4];
 static uint64_t counters[PERF_C_COUNT];
+static volatile LONG pressure[4];
+void perf_pressure_read(struct perf_pressure *out)
+{
+    out->recovered=(uint32_t)InterlockedCompareExchange(&pressure[0],0,0);
+    out->missing=(uint32_t)InterlockedCompareExchange(&pressure[1],0,0);
+    out->lost=(uint32_t)InterlockedCompareExchange(&pressure[2],0,0);
+    out->overflows=(uint32_t)InterlockedCompareExchange(&pressure[3],0,0);
+    out->valid=true; /* event counters; exact packet loss is still unavailable */
+}
 static uint64_t last_video_packet_us;
 static uint32_t video_packet_ordinal;
 static volatile LONG video_tracking;
@@ -76,7 +85,12 @@ void perf_begin(bool enabled)
 void perf_record(int metric,uint64_t us)
 {if(perf_enabled() && metric>=0 && metric<PERF_COUNT)perf_window_add(&slots[metric].window,us);}
 void perf_count(int counter,uint32_t amount)
-{if(perf_enabled() && counter>=0 && counter<PERF_C_COUNT)counters[counter]+=amount;}
+{
+    int index=counter==PERF_C_VIDEO_FEC_RECOVERED?0:counter==PERF_C_VIDEO_FEC_FAILED?1:
+        counter==PERF_C_VIDEO_FRAMES_LOST?2:counter==PERF_C_VIDEO_QUEUE_OVERFLOW?3:-1;
+    if(index>=0)InterlockedExchangeAdd(&pressure[index],(LONG)amount);
+    if(perf_enabled() && counter>=0 && counter<PERF_C_COUNT)counters[counter]+=amount;
+}
 void perf_video_packet_seen(uint32_t bytes)
 {
     video_progress_note(VP_RX);
@@ -109,6 +123,16 @@ void perf_frame_complete(uint32_t frame_number)
 }
 uint64_t perf_counter_read(int counter)
 {return counter>=0 && counter<PERF_C_COUNT?counters[counter]:0;}
+uint64_t perf_window_counter_read(int counter)
+{
+    if(counter<0 || counter>=PERF_C_COUNT)return 0;
+    return counters[counter]-(capture_started_us?capture_counter_base[counter]:0);
+}
+uint64_t perf_window_duration_us(void)
+{
+    if(capture_started_us)return capture_closed?capture_duration_us:perf_clock()-capture_started_us;
+    return origin?perf_clock()-origin:0;
+}
 uint64_t perf_last_counter_read(int counter)
 {return counter>=0 && counter<PERF_C_COUNT?last_counters[counter]:0;}
 void perf_input_sample(int controller,uint64_t detected_us)
@@ -172,11 +196,11 @@ static void flush_report(const char *path)
         "video_decode_queue_age","host_reported_processing","audio_buffers","audio_queued_ms",
         "y_plane_transfer","u_plane_transfer","v_plane_transfer","yuv_transfer_total",
         "cached_free_texture_slots","legacy_texture_upload","frame_ready_to_present","present_call_interval",
-        "present_call_cpu","h264_avcodec_call","post_decode_handling","cpu_gpu_submit"};
+        "present_call_cpu","h264_avcodec_call","post_decode_handling","cpu_gpu_submit","d3d_thread_ownership"};
     static const char *counter_names[]={"input_coalesced","input_queue_full","video_udp_packets",
         "video_udp_bytes","video_fec_complete_frames","video_late_packets","video_oos_packets",
-        "video_fec_recovered_packets","video_fec_failed_events","video_lost_frames","video_invalid_packets",
-        "video_gap_filled_frames","video_gap_unresolved_frames","video_data_packets_accepted","video_fec_packets_accepted"};
+        "video_fec_recovered_packets","video_incomplete_data_deficit","video_lost_frames","video_invalid_packets",
+        "video_gap_filled_frames","video_gap_unresolved_frames","video_data_packets_accepted","video_fec_packets_accepted","video_decode_queue_overflows"};
     static const char *events[]={"connect_start","app_launch_response","moonlight_connected","first_video_packet","first_decoded","first_presented","stop_start","return_menu"};
     char report[16384];int n=snprintf(report,sizeof(report),"schema=2\nscope=single-producer CPU wall time; p50/p95/p99 rolling 128; no per-frame logs\n");
     for(int i=0;i<PERF_EVENT_COUNT && n>0 && (size_t)n<sizeof(report);i++)

@@ -21,7 +21,7 @@ def load_ffmpeg(profile, out):
 class NativePolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.text=(ROOT/'xdk/deps/XBMC-360/libraries/ffmpeg/libavcodec/xb_thread.c').read_text()
+        cls.text=(ROOT/'xdk/tests/fixtures/xb_thread_pinned.c').read_text()
         worker.validate(cls.text)
         cls.original=cls.text.replace(worker.NEW,worker.OLD)
 

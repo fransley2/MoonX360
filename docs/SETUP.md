@@ -4,10 +4,10 @@ MoonX360 runs as a dashboard XEX on an RGH/JTAG Xbox 360 with DashLaunch configu
 
 ## Install on the Xbox 360
 
-1. Extract `MoonX360-v0.2.3.zip` from the GitHub release.
-2. Copy the `MoonX360` folder to the console HDD or supported USB storage, for example `Hdd1:\Apps\MoonX360\`.
+1. Extract the dashboard ZIP from the GitHub release.
+2. Copy default.xex to a writable folder on the console HDD or supported USB storage, for example Hdd1:\Apps\MoonX360\default.xex.
 3. Refresh the game list in Aurora and launch MoonX360.
-4. Keep the existing `MoonX360\moonlight` data folder during updates to preserve settings, saved hosts, and pairing identity.
+4. Keep the moonlight data folder next to default.xex during updates to preserve settings, saved hosts, and pairing identity.
 
 ## Find and pair a PC
 

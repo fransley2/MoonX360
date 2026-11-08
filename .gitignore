@@ -15,16 +15,31 @@
 !/tools/
 !/third_party/
 !/assets/
+!/test-support/
 !/xdk/
 !/docs/
 
 # Preserve the maintained guides; local reports and dated evidence stay local.
 /docs/*
+!/docs/release-candidate/
 !/docs/BUILD.md
 !/docs/DEPENDENCIES.md
 !/docs/LIMITATIONS.md
+!/docs/LATENCY_INSTRUMENTATION.md
+!/docs/LATENCY_PHASE2_RESULTS.md
+!/docs/INPUT_POLLING_AB_XBOX360.md
+!/docs/FPS_CADENCE_INVESTIGATION.md
+!/docs/H264_CORRUPTION_DIAGNOSTIC.md
+!/docs/H264_REFERENCE_DRIFT_AB_20261106.md
+!/docs/H264_REFERENCE_SAFE_PARALLEL_20261106.md
+!/docs/H264_720P_REFERENCE_SAFE_PERFORMANCE_20261106.md
+!/docs/GTA_HOST_XBOX_FPS_CORRELATION.md
+!/docs/AURORA_DIRECT_LAUNCH.md
+!/docs/ARTWORK_CACHE_AURORA_METADATA.md
+!/docs/AURORA_HANDOFF_DIAGNOSTICS.md
 !/docs/PUBLICATION.md
 !/docs/SETUP.md
+!/docs/RELEASE_NOTES_v0.2.4.md
 
 # Downloaded dependency trees, SDKs, and generated build output.
 /xdk/deps/
@@ -44,7 +59,6 @@ xdk/*.md
 /evidencias/
 /host-tests/
 /host-tests-*/
-/test-support/
 /xdk/scripts/audit_threads.py
 /xdk/scripts/collect_session.py
 /xdk/tests/build_*_console_probe.py

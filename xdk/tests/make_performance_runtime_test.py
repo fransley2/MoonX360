@@ -21,11 +21,15 @@ static void QueryPerformanceFrequency(LARGE_INTEGER *out){out->QuadPart=1000000;
 static LONG InterlockedExchange(volatile LONG *p,LONG value){LONG old=*p;*p=value;return old;}
 static LONG InterlockedCompareExchange(volatile LONG *p,LONG value,LONG expected){LONG old=*p;if(old==expected)*p=value;return old;}
 static LONG InterlockedIncrement(volatile LONG *p){return ++*p;}
+static LONG InterlockedExchangeAdd(volatile LONG *p,LONG n){LONG old=*p;*p+=n;return old;}
 static uint32_t GetTickCount(){return (uint32_t)(tick/1000);}
 static bool storage_write(const char *p,const void *data,size_t n){path=p;report.assign((const char*)data,n);reports[path]=report;writes++;return true;}
 /* ACTUAL */
 int main(){
     perf_begin(false);clock_calls=0;{PerfScope scope(PERF_UI_UPLOAD);}
+    perf_pressure before,after;perf_pressure_read(&before);
+    perf_count(PERF_C_VIDEO_FEC_FAILED,3);perf_count(PERF_C_VIDEO_QUEUE_OVERFLOW,1);perf_pressure_read(&after);
+    assert(after.valid && after.missing-before.missing==3 && after.overflows-before.overflows==1);
     perf_record(PERF_AUDIO_DECODE,100);perf_mark(PERF_CONNECTED);perf_flush();
     assert(!clock_calls && !writes);
     tick=10;perf_begin(true);perf_mark(PERF_CONNECT_BEGIN);
@@ -50,6 +54,7 @@ int main(){
     tick=45000999;assert(!perf_capture_tick());
     tick=45001000;assert(perf_capture_tick() && !perf_capture_tick() && !perf_enabled());
     uint64_t counted=perf_counter_read(PERF_C_VIDEO_PACKETS);
+    assert(perf_window_counter_read(PERF_C_VIDEO_PACKETS)==13 && perf_window_duration_us()==45000000);
     perf_video_packet_seen(42);assert(perf_video_tracking_enabled());
     video_progress_snapshot progress;video_progress_snapshot_get(&progress);
     assert(progress.count[VP_RX]==1 && progress.last_ms[VP_RX]==GetTickCount());
@@ -60,6 +65,7 @@ int main(){
     assert(perf_capture_duration_us()==45000000);
     assert(perf_last_counter_read(PERF_C_VIDEO_PACKETS)==13);
     tick=100;perf_begin(true);perf_capture_start(true);
+    assert(perf_window_duration_us()==0 && perf_window_counter_read(PERF_C_VIDEO_PACKETS)==0);
     tick=50100;perf_count(PERF_C_VIDEO_PACKETS,2);perf_capture_close();
     assert(!perf_enabled());perf_flush();
     assert(perf_capture_duration_us()==50000 && perf_last_counter_read(PERF_C_VIDEO_PACKETS)==2);

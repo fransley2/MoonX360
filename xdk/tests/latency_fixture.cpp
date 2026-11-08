@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "../src/video.h"
+#include "../src/video_picture.h"
 #include "../src/stream_metrics.h"
 typedef uint32_t DWORD;
 typedef int32_t LONG;
@@ -25,6 +26,10 @@ struct staging { unsigned char *plane[3]; };
 static unsigned char values[3][3];
 static staging slots[3];
 static uint64_t legacy_ready_us[3];
+static uint64_t legacy_picture[3];
+static bool reuse_on_release;
+static uint64_t presented_ready,presented_picture;
+static uint32_t presented_serial;
 static uint32_t legacy_ready_ms[3];
 static DWORD GetTickCount(){return 100;}
 static uint32_t legacy_serial[3],publish_serial;
@@ -47,7 +52,13 @@ static D3DDevice device;
 static D3DDevice *gfx_begin() { assert(!owned); owned=true; inject(inject_begin); return &device; }
 static void gfx_end() { assert(owned && !locked); owned=false; }
 static void EnterCriticalSection(int*) { assert(!locked); locked=true; }
-static void LeaveCriticalSection(int*) { assert(locked); locked=false; }
+static void LeaveCriticalSection(int*) {
+    assert(locked); locked=false;
+    if(reuse_on_release && slot_rendering==-1 && uploads==3) {
+        legacy_ready_us[uploaded_slot]=9999;legacy_serial[uploaded_slot]=9999;
+        legacy_picture[uploaded_slot]=9999;reuse_on_release=false;
+    }
+}
 static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
 static uint64_t now_us() { return (uint64_t)++clock_calls * 100; }
 static bool overlay_text(char*,size_t) { return false; }
@@ -72,14 +83,15 @@ struct gfx_copy_cost { DWORD lock_us,copy_us; };
 enum {TIME_FENCE_WAIT,TIME_TEXTURE_LOCK,TIME_TEXTURE_COPY};
 static void pipeline_sample(int,uint64_t) {}
 static bool gfx_upload_timed(D3DTexture *t,const void *s,int p,int w,int h,gfx_copy_cost*) { return gfx_upload(t,s,p,w,h); }
-static DWORD present_video(D3DDevice *d,D3DTexture**,int,const char*,bool,uint64_t,uint32_t) {
+static DWORD present_video(D3DDevice *d,D3DTexture**,int,const char*,bool,uint64_t ready,uint32_t serial,uint64_t picture) {
+    presented_ready=ready;presented_serial=serial;presented_picture=picture;
     last_present_shown=true;gfx_draw_rect(d,0,0,0,0,0);DWORD f=d->InsertFence();d->Present(NULL,NULL,NULL,NULL);return f;
 }
 static bool gfx_system_ui_active(){return guide;}
 static bool gfx_fence_pending(DWORD fence){assert(fence<16);inject(inject_fence);return pending_fences[fence];}
 /* ACTUAL_DRAW */
 #define FRAME_SLOTS 3
-struct AVFrame { unsigned char *data[3]; int linesize[3]; };
+struct AVFrame { unsigned char *data[3]; int linesize[3];int64_t reordered_opaque;int key_frame; };
 static int frame_event, consume_during_copy;
 static void SetEvent(int) {}
 static void copy_plane(unsigned char*,int,int,const unsigned char*,int) {
@@ -92,6 +104,7 @@ static void reset() {
     slot_rendering=0;slot_pending=-1; tex_next=0;
     inject_begin=inject_fence=inject_upload=-1;
     uploads=presents=clock_calls=0; uploaded_slot=uploaded_texture=-1; fail_upload=false;
+    reuse_on_release=false;
     memset(pending_fences,0,sizeof(pending_fences));
     tex_fence[0]=3; tex_fence[1]=4;
     memset(legacy_fence_submitted_ms,0,sizeof(legacy_fence_submitted_ms));
@@ -99,6 +112,9 @@ static void reset() {
     for(int i=0;i<2;i++) for(int k=0;k<3;k++) tex[i][k]=&objects[i][k];
 }
 static void test() {
+    reset();legacy_ready_us[0]=123;legacy_serial[0]=456;legacy_picture[0]=789;
+    reuse_on_release=true;assert(draw_frame(0));
+    assert(legacy_serial[0]==9999 && presented_serial==456 && presented_ready==123 && presented_picture==789);
     reset(); assert(draw_frame(0)); assert(uploaded_slot==0 && presents==1 && clock_calls==0);
     reset(); inject_fence=1; assert(draw_frame(0));
     assert(uploaded_slot==1 && slot_pending==-1 && slot_rendering==-1);
@@ -160,7 +176,7 @@ enum {XINPUT_MAX_KEYBOARD_STATE=6,ERROR_SUCCESS=0,
 struct XINPUT_KEYBOARDSTATE {WORD VKCodes[6];BYTE bModifiers;};
 static int XInputGetKeyboardState(DWORD,XINPUT_KEYBOARDSTATE *state){memset(state,0,sizeof(*state));if(!test_cover)return 1;if(polls<=3)state->VKCodes[0]=65;return ERROR_SUCCESS;}
 struct remote_input {bool mouse[4],suppress[4];int speed,acceleration,scroll_ms;};
-struct quick_menu {bool open,neutral,latch,muted,stats;int volume;};
+struct quick_menu {bool open,neutral,latch,muted,stats,refresh_request;int volume;};
 static int pointer_speed=100,pointer_acceleration,pointer_scroll_ms=100;
 static DWORD stream_interval_ms=4;
 static bool initial_stats,physical_connected[4]={true,true,true,true};
@@ -168,6 +184,8 @@ static volatile LONG quick_available=1,mouse_available=1,mouse_mode,quick_snapsh
 static int input_exit_mask(int){return 0;}
 static bool quick_step(quick_menu*,pad*,bool,int,bool*,bool*,int*,DWORD){return false;}
 static unsigned quick_pack(quick_menu*){return 0;}
+static bool video_request_picture_refresh(){return false;}
+static void video_refresh_tick(uint32_t){}
 static void remote_mouse_release(remote_input*,int){}
 static void remote_release(remote_input*){}
 static void remote_keys(remote_input*,bool*,bool enabled){if(test_cover && polls<=4)assert(!enabled);}

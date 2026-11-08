@@ -26,13 +26,14 @@ def parse_report(path):
             'build_profile':fields.get('build_profile'),'video_requested_fps':fields.get('video'),
             'workers_requested':number(fields,'workers_requested'),'workers_active':number(fields,'workers_active'),
             'thread_layout':fields.get('thread_layout'),'bitrate_kbps':number(fields,'bitrate_kbps'),
-            'duration_us':duration,'callback_fps':rate('received'),'decoded_fps':rate('decoded'),'shown_fps':rate('shown'),
+            'duration_us':duration,'callback_fps':rate('received'),'completed_fps':None,'decoded_fps':rate('decoded'),'shown_fps':rate('shown'),
+            'fast_decode_active':fields.get('fast_decode_active'),
             'fast_decode_config':number(fields,'fast_decode_config'),'recovery_count':number(fields,'recovery_count'),
             'full_frames':number(fields,'full_frames'),'reduced_filter_frames':number(fields,'fast_frames'),
             'callback_mean_us':number(fields,'callback_total_avg_us'),'callback_gap_mean_us':number(fields,'callback_gap_avg_us'),
             'frame_copy_mean_us':number(fields,'frame_copy_avg_us'),
             'network_received_fps':None,'decode_mean_us':number(fields,'decode_avg_us'),
-            'decode_p95_us':tail('decode',95),'decode_p99_us':tail('decode',99),
+            'decode_p50_us':tail('decode',50),'decode_p95_us':tail('decode',95),'decode_p99_us':tail('decode',99),
             'present_wait_p95_us':tail('present_wait',95),'present_wait_p99_us':tail('present_wait',99),
             'queue_peak_us':number(fields,'queue_age_max_session_us'),'queue_peak_sampled_frames':number(fields,'network_queue_peak_sampled_1Hz'),
             'drops':number(fields,'dropped'),'decode_errors':number(fields,'decode_errors'),
@@ -43,6 +44,20 @@ def parse_report(path):
             'percentile_scope':fields.get('pipeline_percentiles'),'idr_received':None,'idr_requests':None,
             'packet_loss':None,'fec_recovered':None,'fec_unrecoverable':None,
             'audio_latency_ms':None,'input_latency_ms':None,'warnings':[]}
+    counter_duration=number(fields,'rtp_counter_duration_us')
+    counter_frames=number(fields,'rtp_completed_frames')
+    result['completed_counter_scope']=fields.get('rtp_counter_scope')
+    result['completed_counter_duration_us']=counter_duration
+    if fields.get('rtp_counter_scope')=='performance_window' and counter_duration and counter_frames is not None:
+        result['completed_fps']=counter_frames*1000000/counter_duration
+    parallel=path.parent/'h264-parallel-session.txt'
+    facts=dict(line.split('=',1) for line in parallel.read_text(encoding='utf-8-sig',errors='replace').splitlines() if '=' in line) if parallel.is_file() else {}
+    result.update(reference_pictures=number(facts,'reference_frames'),
+                  nonreference_pictures=number(facts,'nonreference_frames'),
+                  reference_scope='Parsed access units with slices; diagnostic overlay required; not decoded output pictures',
+                  fec_recovered=number(fields,'fec_recovered_packets'),
+                  fec_failed_data_deficit=number(fields,'fec_failed_data_deficit'),
+                  idr_received=number(fields,'idr_received'),periodic_idr_requests=number(fields,'periodic_refresh_requests'))
     if result['workers_requested']!=result['workers_active']:result['warnings'].append('requested/active worker count differs')
     if result['worker_map'] not in ('current','previous'):result['warnings'].append('missing/unknown build worker map')
     if not duration:result['warnings'].append('missing/invalid session duration; FPS unavailable')

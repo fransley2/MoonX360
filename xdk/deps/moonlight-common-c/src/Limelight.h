@@ -897,14 +897,23 @@ const RTP_AUDIO_STATS* LiGetRTPAudioStats(void);
 // The data should be considered read-only and must not be modified.
 // Right now this is mainly used to track total video and FEC packets, as there are
 // many video stats already implemented at a higher level in moonlight-qt.
+#define RTP_VIDEO_FRAME_SAMPLES 64
+typedef struct _RTP_VIDEO_FRAME_STATS {
+    uint32_t frame,expectedData,expectedFec,acceptedData,acceptedFec,bytes,maxGapUs;
+    uint64_t firstUs,lastUs;
+    bool valid;
+} RTP_VIDEO_FRAME_STATS;
 typedef struct _RTP_VIDEO_STATS {
-    uint32_t packetCountVideo;         // total video packets
-    uint32_t packetCountFec;           // total packets of type FEC
+    uint32_t packetCountVideo;         // expected data shards in observed FEC blocks, NOT received packets
+    uint32_t packetCountFec;           // expected parity shards in observed FEC blocks, NOT received packets
     uint32_t packetCountFecRecovered;  // a packet was saved
-    uint32_t packetCountFecFailed;     // tried to recover but too much was lost
+    uint32_t packetCountFecFailed;     // data deficit when an incomplete block is discarded; not a count of FEC events
     uint32_t packetCountOOS;           // out-of-sequence packets
     uint32_t packetCountInvalid;       // corrupted packets, etc
     uint32_t packetCountFecInvalid;    // invalid FEC packet
+    uint32_t datagrams,acceptedData,acceptedFec;
+    uint64_t datagramBytes;
+    RTP_VIDEO_FRAME_STATS frames[RTP_VIDEO_FRAME_SAMPLES]; /* diagnostic-only last 64 frame slots */
 } RTP_VIDEO_STATS, *PRTP_VIDEO_STATS;
 
 const RTP_VIDEO_STATS* LiGetRTPVideoStats(void);

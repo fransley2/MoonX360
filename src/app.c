@@ -56,6 +56,7 @@
 #include "ui/cover_cache.h"
 #include "cover_disk.h"
 #include "cover_decode.h"
+#include "wallpaper.h"
 
 #define MAX_APPS 64
 
@@ -1004,6 +1005,11 @@ static const char *selected_profile_name(void)
     else snprintf(name,sizeof(name),"%s",ui_translate(config_preset_name(config_match_factory(&cfg))));
     return name;
 }
+#ifdef _XBOX
+static void choose_wallpaper(void);
+#else
+static void choose_wallpaper(void){message(ICON_INFO,"Choose wallpaper","Copy home-wallpaper.png to MoonX360 storage.");}
+#endif
 static void appearance_menu(void)
 {
     static const char *backgrounds[]={"MoonX360","Midnight","Solid graphite","Custom wallpaper","Focused game art"};
@@ -1012,17 +1018,18 @@ static void appearance_menu(void)
     for(;;) {
         char volume[16];snprintf(volume,sizeof(volume),"%d%%",cfg.menu_volume);
         struct ui_setting rows[]={
-            {"Background",backgrounds[cfg.ui_background],"Custom image: copy home-wallpaper.png to MoonX360 storage."},
+            {"Background",backgrounds[cfg.ui_background],"Select an image with Choose wallpaper, or copy home-wallpaper.png to storage."},
             {"Accent color",accents[cfg.ui_accent],"Changes focus, the app symbol and the streaming panel. Launcher icon stays green."},
             {"Reduce Motion",cfg.ui_motion?"Off":"On","On uses immediate focus changes and wallpaper replacement."},
             {"Menu sounds",cfg.menu_sounds?"On":"Off","Short sounds for menu navigation and actions."},
             {"Menu volume",volume,"Independent of streaming audio volume."},
-            {"Reset appearance","Reset","Restore the original geometric background and green accent."}};
-        const int kinds[]={UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_ACTION};
-        ui_draw_settings_options("Customize Home",rows,kinds,6,selected);ui_present();
+            {"Reset appearance","Reset","Restore the original geometric background and green accent."},
+            {"Choose wallpaper","Browse","Select a PNG or JPEG image from local storage."}};
+        const int kinds[]={UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_ACTION,UI_OPTION_OPEN};
+        ui_draw_settings_options("Customize Home",rows,kinds,7,selected);ui_present();
         int key=wait_button();if(key&B_FLAG)break;
-        if(key&UP_FLAG)selected=(selected+5)%6;
-        if(key&DOWN_FLAG)selected=(selected+1)%6;
+        if(key&UP_FLAG)selected=(selected+6)%7;
+        if(key&DOWN_FLAG)selected=(selected+1)%7;
         if(key&(A_FLAG|LEFT_FLAG|RIGHT_FLAG)) {
             int direction=(key&LEFT_FLAG)?-1:1;
             if(selected==0)cfg.ui_background=(cfg.ui_background+direction+5)%5;
@@ -1030,6 +1037,7 @@ static void appearance_menu(void)
             if(selected==2)cfg.ui_motion=!cfg.ui_motion;
             if(selected==3)cfg.menu_sounds=!cfg.menu_sounds;
             if(selected==4){cfg.menu_volume+=direction*10;if(cfg.menu_volume<0)cfg.menu_volume=100;if(cfg.menu_volume>100)cfg.menu_volume=0;}
+            if(selected==6 && (key&A_FLAG))choose_wallpaper();
             if(selected==5 && (key&A_FLAG)){cfg.ui_background=0;cfg.ui_accent=0;cfg.ui_motion=true;cfg.menu_sounds=true;cfg.menu_volume=18;}
             ui_set_appearance(cfg.ui_background,cfg.ui_accent);ui_set_motion(cfg.ui_motion);ui_set_stream_hud(cfg.stream_menu_style,cfg.mouse_hud);
 #ifdef _XBOX
@@ -1115,14 +1123,14 @@ static void settings_menu(void)
             "On-screen statistics", "Diagnostic capture", "View logs", "H.264 slices", "Bitrate comparisons",
             "Image quality", "Record session history", "Recent sessions", "Performance analysis",
             "Find PCs automatically (mDNS)", "UI resources", "Recovery information", "Network diagnostics",
-            "Automatic quality adjustment", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Remote mouse and keyboard", "Save profile", "Launch coverage", "Latency diagnostics",
+            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Remote mouse and keyboard", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength",
         };
         static const char *helps[SET_COUNT] = {
             "Requested host resolution. Compare measured decode and queue time on hardware; lower resolution alone does not guarantee better performance.",
             "24, 30, 40, 50 or 60 FPS requested from the host, without interpolation. Smooth defaults to 60 FPS. "
             "Higher rates cost more decode time; rates that do not divide the 60 Hz display may look uneven.",
             "Requested bitrate: 1-70 Mbps. Changing it keeps the current decoder and image settings, then selects Custom. Applies next connection.",
-            "Shows the effective setting. On skips H.264 deblocking and may show blocks. Changing it selects Custom. Off retains automatic partial recovery under overload.",
+            "On skips H.264 deblocking for speed. Off retains automatic partial recovery under overload. Changing it selects Custom. Next connection.",
             "GPU: the Xenos GPU converts and scales each frame (fastest). CPU modes are fallbacks if "
             "the GPU path misbehaves.",
             "Wait for the TV's refresh before showing a frame (no tearing). Off gives slightly lower latency.",
@@ -1157,7 +1165,7 @@ static void settings_menu(void)
             "Show actual UI resource usage.",
             "Current automatic H.264 recovery and latest-frame behavior. This page does not change decoder, queue or recovery policy.",
             "Last stopped session: H.264 payload, decode queue age, drops, RTT and Moonlight FEC counters. Exact packet loss remains unavailable.",
-            "Manual keeps your selection. Auto may lower bitrate or resolution after sustained network/decode pressure, with a brief reconnection at most 3 times. FPS and saved settings are preserved.",
+            "Recommendations separate RTP/FEC reconstruction pressure, decoder overload and frequent-refresh risk. No automatic reconnect or mid-game parameter changes. Applies after sustained evidence.",
             "Physical output detected from the console. HDMI/VGA/component output mode is configured in the Xbox dashboard.",
             "Rendering resolution: Auto, widescreen 480p, 720p, 1080p or 640x480 (4:3). Applies after restarting the app; the console scales it to the physical output. It does not change the cable mode.",
             "Interface and stream HUD layout: 16:9 or 4:3. Choose 4:3 with 640x480 to use the whole VGA screen. Applies after restarting the app; video keeps its own aspect ratio.",
@@ -1172,13 +1180,30 @@ static void settings_menu(void)
             "Save effective stream, decoder, presentation and audio parameters as a new named profile.",
             "Cover time after first decoded frame. This timer does not detect game readiness.",
             "Last stopped session: local input, network, decode, presentation and audio timing. Enable Diagnostic capture for a bounded 45-second report.",
+            "Optional IDR refresh: Off, 0.125, 0.25, 1-10, 15, 20, 30, 45 or 60 seconds. Automatic error recovery stays active. Applies next stream.",
+            "0-10% margin per edge for menus and HUDs only. Gameplay is not cropped. App restart required.",
+            "Optional vertical luma filter for measured 480i output and SD streams. No temporal IDR smoothing. May soften fine detail; compare on the TV. Falls back when unavailable.",
+            "Offer 4:3 UI, 640x480 app target and 5% UI margin. Saves previous app display settings. Requires app restart; never changes console video timing.",
+            "Restore only the app target, layout and UI margin saved before CRT setup. Other preferences remain unchanged. App restart required.",
+            "Off by default. GPU Smooth (Experimental) mixes two raw YUV pictures for two presentations after a selected decoded IDR. Cached pipeline and an extra YUV slot are required. Failure bypasses to Fast. Check smoothing-session.txt for actual blended Present calls. Next session.",
+            "Low uses at most 10% then 4% previous picture; Medium at most 15% then 7%. Motion/difference gates may bypass. This heuristic cannot guarantee clean history. Does not change refresh frequency. Next session.",
         };
         char val[SET_COUNT][128];
+        snprintf(val[SET_REFRESH_SMOOTHING],128,"%s",cfg.refresh_smoothing?"GPU Smooth (Experimental)":"Off");
+        snprintf(val[SET_SMOOTHING_STRENGTH],128,"%s",cfg.smoothing_strength?"Medium":"Low");
+        snprintf(val[SET_UI_SAFE_AREA],128,"%d%% / edge",cfg.ui_safe_area);
+        snprintf(val[SET_CRT_CLARITY],128,"%s",cfg.crt_clarity?"On":"Off");
+        snprintf(val[SET_CRT_SETUP],128,"Confirm...");
+        snprintf(val[SET_CRT_RESTORE],128,"%s",cfg.crt_display_backup?"Confirm...":"No backup");
         snprintf(val[SET_REMOTE_INPUT],48,"%s","Back + R3");
         snprintf(val[SET_AUDIO_MODE],48,"%s",cfg.audio_mode?"5.1":"Stereo");
         snprintf(val[SET_USER_PROFILES],48,"Manage");
         snprintf(val[SET_SAVE_PROFILE],48,"Save");
         snprintf(val[SET_LAUNCH_COVER],48,"%d s",cfg.launch_cover_ms/1000);
+        if(cfg.refresh_interval_ms==125)snprintf(val[SET_REFRESH_INTERVAL],48,"0.125 s");
+        else if(cfg.refresh_interval_ms==250)snprintf(val[SET_REFRESH_INTERVAL],48,"0.25 s");
+        else if(cfg.refresh_interval_ms)snprintf(val[SET_REFRESH_INTERVAL],48,"%d s",cfg.refresh_interval_ms/1000);
+        else snprintf(val[SET_REFRESH_INTERVAL],48,"Off");
         struct ui_setting rows[SET_COUNT];
         int map[SET_COUNT],children[SET_COUNT],kinds[SET_COUNT];   /* row -> setting id and interaction */
         int b, i, n = 0, res = 0;
@@ -1195,7 +1220,10 @@ static void settings_menu(void)
         bool experimental=config_video_preset(&cfg)==CONFIG_PROFILE_1080_SMOOTH;
         snprintf(profile_summary,sizeof(profile_summary),"%dx%d | %d FPS | %.1f Mbps%s%s",cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps/1000.0,
             experimental?". ":"",experimental?ui_translate("Experimental: performance may drop on Xbox 360."):"");
-        snprintf(val[SET_FAST], 48, "%s", effective.fast_decode ? "On" : "Off");
+#ifndef XDK_H264_REFERENCE_MODE
+#define XDK_H264_REFERENCE_MODE 0
+#endif
+        snprintf(val[SET_FAST],48,"%s",fast_decode_name(XDK_H264_REFERENCE_MODE==1?0:effective.fast_decode));
         snprintf(val[SET_RENDERER], 48, "%s", cfg.renderer == RENDERER_GPU ? "GPU" :
                  cfg.renderer == RENDERER_CPU ? "CPU" : "CPU + colour matrix");
         snprintf(val[SET_VSYNC], 48, "%s", cfg.vsync ? "On" : "Off");
@@ -1207,7 +1235,7 @@ static void settings_menu(void)
         }
         snprintf(val[SET_EXIT], 48, "%s", cfg.quit_combo == 1 ? "Back+Start+LB+RB" : "LB+RB+L3+R3");
         snprintf(val[SET_DEADZONE], 48, "L %d-%d%% | R %d-%d%%", cfg.left_min,cfg.left_max,cfg.right_min,cfg.right_max);
-        snprintf(val[SET_ADAPTIVE],48,"%s",cfg.adaptive_quality?"Auto (reconnect)":"Manual");
+        snprintf(val[SET_ADAPTIVE],48,"%s",cfg.adaptive_quality?"Recommendations":"Off");
         char display_info[128];plat_display_info(display_info,sizeof(display_info));
         snprintf(val[SET_DISPLAY_INFO],48,"%s",display_info);
         static const char *display_modes[]={"Auto","480p","720p","1080p","640x480 (4:3)"};
@@ -1297,7 +1325,7 @@ static void settings_menu(void)
             case MENU_HOSTS:hosts_menu(UI_SETTINGS);break;
             case MENU_HOST_DETAILS:host_details();break;
             case MENU_CONNECTION_TEST:refresh_server();if(!server_ok)recover_host_ui();break;
-            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v0.2.3","MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
+            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v0.2.4","MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
             case MENU_APPEARANCE:appearance_menu();break;
             case MENU_STREAM_UI:overlay_options_menu();break;
             case MENU_RESTART_APP:maintenance_menu(1);break;
@@ -1359,6 +1387,21 @@ static void settings_menu(void)
             case SET_EXIT: cfg.quit_combo = !cfg.quit_combo; break;
             case SET_DEADZONE:if(b&A_FLAG)calibrate_sticks();break;
             case SET_ADAPTIVE:cfg.adaptive_quality=!cfg.adaptive_quality;break;
+            case SET_REFRESH_SMOOTHING:config_customize_stream(&cfg);cfg.refresh_smoothing=!cfg.refresh_smoothing;break;
+            case SET_SMOOTHING_STRENGTH:cfg.smoothing_strength=!cfg.smoothing_strength;break;
+            case SET_REFRESH_INTERVAL:{
+                cfg.refresh_interval_ms=config_cycle_refresh_interval(cfg.refresh_interval_ms,d);break;
+            }
+            case SET_UI_SAFE_AREA:cfg.ui_safe_area=(cfg.ui_safe_area+d+11)%11;break;
+            case SET_CRT_CLARITY:cfg.crt_clarity=!cfg.crt_clarity;break;
+            case SET_CRT_SETUP:case SET_CRT_RESTORE:if(b&A_FLAG) {
+                bool restore=map[sel]==SET_CRT_RESTORE;
+                if(confirm_action(restore?"Restore app display?":"CRT TV app layout?",
+                    "This changes only the app render target, interface layout and UI margin. App restart required. Physical component output must be 480i, TV 16:9 mode Off.",restore?"Restore":"Use CRT layout")) {
+                    if(!config_crt_display_commit(&cfg,!restore))message(ICON_ERROR,"Display settings not saved","Current app display settings were preserved.");
+                }
+                break;
+            }
             case SET_DISPLAY_INFO:break;
             case SET_DISPLAY_MODE:cfg.display_mode=(cfg.display_mode+d+5)%5;break;
             case SET_UI_LAYOUT:cfg.ui_layout=!cfg.ui_layout;break;
@@ -1730,7 +1773,10 @@ static void save_latency_capture(const struct video_stats *first,const struct vi
     struct performance_sample s;video_get_session_performance(&s);
     uint64_t duration=perf_capture_duration_us();
     uint32_t ms=(uint32_t)(duration/1000);
-    last_capture_rates[0]=ms?(s.complete_frames-first_complete)*1000.0/ms:0.0;
+    /* The stopped snapshot already subtracts the capture baseline and uses
+     * that counter's own window. Do not subtract first_complete twice. */
+    (void)first_complete;
+    last_capture_rates[0]=s.complete_frame_fps;
     last_capture_rates[1]=ms?(last->received-first->received)*1000.0/ms:0.0;
     last_capture_rates[2]=ms?(last->decoded-first->decoded)*1000.0/ms:0.0;
     last_capture_rates[3]=ms?(last->rendered-first->rendered)*1000.0/ms:0.0;
@@ -1927,13 +1973,19 @@ static bool stream_once(int app_id, const char *app_title)
     launch_ui_started=plat_now_ms();ui_launch_begin(&launch_app,launch_ui_started,cfg.launch_animation);
     ui_launch_pair_pin(launch_pair_pin);
     ui_launch_session(selected_profile_name(),cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps);
-    /* Freeze commands while their borrowed cover pointers are still valid.
-     * art_launch_begin may drain/replace a cache entry or evict an old tile.
-     * Preparing the backdrop afterward must never rasterize those pointers. */
+    ui_launch_crt_note(config_crt_profile(&cfg) && plat_crt_output_status()!=1);
+    /* Capture origin and hide the original tile before freezing borrowed commands.
+     * Then prioritize its artwork before the expensive GPU preparation. */
     ui_draw_software();
+    if(!aurora_direct_active) {
+        art_launch_begin(app_id);art_launch_tick();
+        /* Draining the mailbox may have replaced or evicted the borrowed image. */
+        launch_app.art=NULL;launch_app.generation=0;
+        for(int i=0;i<app_count;i++)if(apps[i].id==app_id){launch_app.art=app_art[i];launch_app.generation=art_generation[i];break;}
+        if(!launch_app.art)launch_app.art=home_art_get(&home_art,home_key(),app_id,&launch_app.generation);
+    }
     int aw,ah;ui_art_size(&aw,&ah);launch_offer_art(launch_app.art,aw,ah,launch_app.generation);
     launch_prepare();draw_launch(NULL,launch_ui_started);launch_present();
-    if(!aurora_direct_active){art_launch_begin(app_id);art_launch_tick();}
 #endif
     discovery_pause();
 #ifdef _XBOX
@@ -1985,14 +2037,14 @@ static bool stream_once(int app_id, const char *app_title)
 #endif
     char title[128], msg[200];
     uint32_t started, elapsed, last_network_ms;
-    bool local_exit, allow_adapt=false;
+    bool local_exit;
 #ifdef _XBOX
     bool launch_timed_out=false,launch_watch_video=false;
     uint32_t launch_watch_started=0,first_media_since=0;
 #endif
     int adapt_reason=0;
     struct adaptive_stream adaptation={0};
-    struct config adapted=cfg;
+    struct perf_pressure pressure_previous={0};perf_pressure_read(&pressure_previous);
     plat_atomic_store(&connection_poor,0);
     int video_error=VIDEO_STREAM_OK;
 
@@ -2073,6 +2125,10 @@ static bool stream_once(int app_id, const char *app_title)
     vo.width = cfg.width;
     vo.height = cfg.height;
     vo.slice_count = cfg.slice_count;
+    vo.refresh_interval_ms = cfg.refresh_interval_ms;
+    vo.refresh_smoothing=effective.refresh_smoothing;vo.smoothing_strength=effective.smoothing_strength;
+    vo.crt_clarity = effective.crt_clarity!=0;vo.packet_size=cfg.packet_size;
+    snprintf(vo.host_name,sizeof(vo.host_name),"%s",host_display_name());
     vo.color_space = lj.sc.colorSpace;
     perf_request_fps(PERF_FPS_VIDEO_OPTIONS,vo.target_fps,0);
     video_set_options(&vo);
@@ -2239,13 +2295,20 @@ static bool stream_once(int app_id, const char *app_title)
             bool valid = LiGetEstimatedRttInfo(&rtt, &variance);
             video_set_network_stats(rtt, variance, valid, LiGetPendingVideoFrames(), LiGetPendingAudioDuration());
             last_network_ms = now;
-            if(cfg.adaptive_quality && adaptive_reconnects<3) {
+            if(cfg.adaptive_quality) {
                 struct video_stats measured;video_get_stats(&measured);
-                int reason=adaptive_stream_sample(&adaptation,now,plat_atomic_load(&connection_poor)!=0,
-                    (unsigned)LiGetPendingVideoFrames(),measured.avg_decode_us,cfg.fps,plat_system_ui_active());
-                if(reason && adaptive_stream_lower(reason,&adapted.width,&adapted.height,&adapted.bitrate_kbps)) {
-                    adapt_reason=reason;break;
-                }
+                struct perf_pressure pressure;perf_pressure_read(&pressure);
+                struct adaptive_evidence evidence={0};
+                evidence.network_valid=pressure.valid && pressure_previous.valid;
+                evidence.recovered=pressure.recovered-pressure_previous.recovered;
+                evidence.missing=pressure.missing-pressure_previous.missing;
+                evidence.lost=pressure.lost-pressure_previous.lost;
+                evidence.overflows=pressure.overflows-pressure_previous.overflows;
+                evidence.queue=(unsigned)LiGetPendingVideoFrames();evidence.decode_us=measured.avg_decode_us;
+                evidence.fps=cfg.fps;evidence.refresh_ms=cfg.refresh_interval_ms;
+                evidence.suspended=plat_system_ui_active();pressure_previous=pressure;
+                int reason=adaptive_stream_observe(&adaptation,now,&evidence);
+                if(reason) {adapt_reason=reason;plat_log(adaptive_stream_advice(reason));}
             }
         }
         plat_sleep_ms(50);
@@ -2261,7 +2324,6 @@ static bool stream_once(int app_id, const char *app_title)
 #ifdef _XBOX
     if(launch_cancelled())local_exit=true;
 #endif
-    allow_adapt=adapt_reason && !local_exit && !connection_terminated;
     plat_log("[STREAM] Disconnect requested\n");
     plat_shutdown_stage("Stopping controller forwarding\n");
     perf_mark(PERF_STOP_BEGIN);
@@ -2297,12 +2359,13 @@ static bool stream_once(int app_id, const char *app_title)
     save_session_report(elapsed);
     save_video_stall_report(video_error,watchdog_reconnect?"bounded_video_reconnect":
         local_exit?"local_exit":remote_terminated?"remote_termination":
-        video_error?"video_error":allow_adapt?"adaptive_reconnect":"host_or_user_exit");
+        video_error?"video_error":"host_or_user_exit");
 #ifdef _XBOX
     if(cfg.diagnostic_log)save_latency_capture(&capture_first,&capture_last,capture_first_complete);
 #endif
     record_session(app_id,app_title,elapsed);
 #ifdef _XBOX
+    if(cfg.diagnostic_log && cfg.stats_overlay)plat_archive_session_reports();
     if(launch_timed_out){message(ICON_ERROR,"No usable video","The opening timed out without usable video. Check the PC and reconnect.");stream_return_home=true;return false;}
 #endif
     if(video_error!=VIDEO_STREAM_OK) {
@@ -2312,15 +2375,10 @@ static bool stream_once(int app_id, const char *app_title)
         stream_return_home=true;
         return false;
     }
-    if(allow_adapt) {
-        cfg=adapted;cfg.stream_profile=0;cfg.fast_decode=true;cfg.image_quality=1;
-        adaptive_reconnects++;
-        ui_draw_busy("Adapting stream","Reconnecting with a lighter video setting...",plat_now_ms());ui_present();
-        return true;
-    }
+    if(adapt_reason)message(ICON_INFO,"Next-session recommendation",adaptive_stream_advice(adapt_reason));
     if(watchdog_reconnect) {
-        plat_log("[VIDEO STALL] reconnecting once with current host/app settings\n");
-        return true;
+        /* Teardown is complete. Reconnect only after explicit controller approval. */
+        return confirm_action("Video stalled","The session stopped safely. Reconnect with the current settings?","Reconnect");
     }
     if (local_exit) {
         plat_log("[UI] Returning to MoonX360\n");
@@ -2356,8 +2414,99 @@ static bool stream_session(int app_id,const char *app_title)
     return retry;
 }
 
+struct switch_job {
+    struct gs_server host;
+    int previous_app,target_app;
+    bool confirmed,ok;
+    char error[256];
+};
+static void *switch_task(void *arg)
+{
+    struct switch_job *j=(struct switch_job*)arg;
+    static struct gs_app listed[MAX_APPS]; /* worker is joined before reuse */
+    j->host.cancel=&task_cancel;
+    task_state(HOST_FETCHING_APPS);
+    int count=gs_applist(&j->host,listed,MAX_APPS);
+    bool found=false;for(int i=0;i<count;i++)if(listed[i].id==j->target_app)found=true;
+    if(!found){snprintf(j->error,sizeof(j->error),"%s",count<0?gs_error():"This app is no longer listed by the selected PC. Refresh the library.");return NULL;}
+    if(j->confirmed) {
+        task_state(HOST_SWITCHING);
+        if(!gs_switch_app(&j->host,j->previous_app,j->target_app)) {
+            snprintf(j->error,sizeof(j->error),"%s",gs_error());return NULL;
+        }
+        /* Revalidate after termination: a library entry can be removed on PC. */
+        task_state(HOST_FETCHING_APPS);count=gs_applist(&j->host,listed,MAX_APPS);
+        found=false;for(int i=0;i<count;i++)if(listed[i].id==j->target_app)found=true;
+        if(!found){snprintf(j->error,sizeof(j->error),"%s",count<0?gs_error():"The selected app is no longer available. Refresh the library.");return NULL;}
+    }
+    j->ok=!plat_atomic_load(&task_cancel);return NULL;
+}
+static bool prepare_selected_app(int app_id)
+{
+    /* One synchronous menu operation, with HTTP owned by the existing worker.
+     * No input from Library/Home/Aurora is dispatched until it has joined. */
+    discovery_pause();refresh_server();
+    if(task_was_cancelled || task_start_failed)return false;
+    if(!server_ok){if(!aurora_direct_active)recover_host_ui();return false;}
+    if(!server.paired) {
+        if(aurora_direct_active)return false; /* preserve Direct Launch pairing chooser */
+        do_pair();
+        if(task_was_cancelled || !server.paired)return false;
+        refresh_server();
+        if(task_was_cancelled || !server_ok || !server.paired)return false;
+    }
+    struct switch_job job;memset(&job,0,sizeof(job));job.host=server;
+    job.previous_app=server.current_game;job.target_app=app_id;
+    job.host.rtsp_session_url=NULL;job.host.info.rtspSessionUrl=NULL;
+    job.host.info.address=job.host.address;job.host.info.serverInfoAppVersion=job.host.app_version;
+    job.host.info.serverInfoGfeVersion=job.host.gfe_version;
+    if(server.current_game && server.current_game!=app_id) {
+        int choice=0;
+        for(;;) {
+            ui_draw_switch_confirm(choice);ui_present();int key=wait_button();
+            if(key&B_FLAG)return false;
+            if(key&(LEFT_FLAG|UP_FLAG))choice=0;
+            if(key&(RIGHT_FLAG|DOWN_FLAG))choice=1;
+            if(key&A_FLAG){if(!choice)return false;break;}
+        }
+        job.confirmed=true;
+    }
+    run_busy(job.confirmed?"Switching application":"Checking application",
+        job.confirmed?"Waiting for the PC to end the previous session.":"Validating the app on the selected PC.",switch_task,&job);
+    bool ok=job.ok && !task_was_cancelled && !task_timed_out && !task_start_failed &&
+        !strcmp(server.uuid,job.host.uuid) && !strcmp(server.address,job.host.address);
+    if(ok)server.current_game=job.host.current_game;
+    if(!ok && !task_was_cancelled)message(ICON_ERROR,"Couldn't start app",job.error[0]?job.error:"The operation timed out or the selected PC changed. Refresh and try again.");
+    gs_server_free(&job.host);return ok;
+}
+#ifdef _XBOX
+static void offer_stream_environment(void)
+{
+    int link=plat_network_link();char info[256],mode[160];
+    plat_display_info(mode,sizeof(mode));
+    snprintf(info,sizeof(info),"[ENV] console_link=%s; host_path=unknown; physical=%s; crt_output_status=%d\n",
+        console_link_name(link),mode,plat_crt_output_status());plat_log(info);
+    if(link==CONSOLE_LINK_WIRELESS && config_video_preset(&cfg)!=CONFIG_PROFILE_WIRELESS) {
+        struct ui_setting rows[]={
+            {"Keep current profile","Selected","No saved settings will change."},
+            {"Wireless Stable","720p30 / 6 Mbps","Use for this session: fast H.264, 1024-byte packets, VSync and 5-second refresh."}};
+        int choice=0;
+        for(;;) {
+            const int kinds[]={UI_OPTION_ACTION,UI_OPTION_ACTION};
+            ui_draw_settings_options("Wireless Xbox link",rows,kinds,2,choice);ui_present();int key=wait_button();
+            if(key&B_FLAG)break;
+            if(key&(UP_FLAG|DOWN_FLAG))choice=!choice;
+            if(key&A_FLAG){if(choice)config_select_factory(&cfg,CONFIG_PROFILE_WIRELESS);break;}
+        }
+    }
+
+}
+#endif
 static void stream(int app_id, const char *app_title)
 {
+    stream_return_home=false;
+    char selected_title[64];history_text(selected_title,sizeof(selected_title),app_title);
+    if(!prepare_selected_app(app_id))return;
     struct config requested=cfg;
     int binding=aurora_direct_active && aurora_direct_data.profile_id[0]?-1:binding_find(&game_bindings,host_key(),app_id);
     if(binding>=0) {
@@ -2369,9 +2518,12 @@ static void stream(int app_id, const char *app_title)
             if(!applied)message(ICON_INFO,"Game profile unavailable","The assigned saved profile is missing or unreadable. Current stream settings will be used.");
         }
     }
+#ifdef _XBOX
+    offer_stream_environment();
+#endif
     adaptive_reconnects=0;
     video_reconnects=0;
-    char stable_title[64];history_text(stable_title,sizeof(stable_title),app_title);
+    char stable_title[64];history_text(stable_title,sizeof(stable_title),selected_title);
     while (stream_session(app_id, stable_title)) {
 #ifdef _XBOX
         if(input_close_app_requested())break;
@@ -2474,6 +2626,9 @@ static bool aurora_direct_execute(void)
 
 static volatile int art_cancel,art_request=-1,art_ready=-1,art_streaming,art_io_cancel;
 static uint32_t *art_result;
+static volatile int art_finished,art_persist,art_serial;
+static const uint32_t *art_persist_pixels;
+static bool art_aborted;
 static bool art_network,art_disk_hit;
 static uint32_t art_fetched;
 static struct cover_disk_cache art_disk;
@@ -2487,7 +2642,7 @@ static struct ui_cover_cache art_cache;
 static struct ui_cover_key opening_art_key;
 static bool opening_art_pin;
 static int opening_art_id;
-struct art_work {struct ui_cover_key key;char host_identity[96];struct gs_server host;unsigned context;int slot,protocol_app;bool disk,network,stale,persist;};
+struct art_work {struct ui_cover_key key;char host_identity[96];struct gs_server host;unsigned context;int slot,protocol_app;bool disk,network,stale,persist,priority;};
 static struct art_work art_job;
 static void art_key(struct ui_cover_key *key,int app)
 {
@@ -2519,32 +2674,46 @@ static void art_memory(void)
 }
 static void art_drain(void)
 {
+    if(plat_atomic_load(&art_finished)) {
+        if(art_job.slot>=0 && art_job.slot<UI_COVER_LIMIT && ui_cover_same(&art_cache.items[art_job.slot].key,&art_job.key))
+            art_cache.items[art_job.slot].inflight=false;
+        plat_atomic_store(&art_finished,0);plat_atomic_store(&art_request,-1);
+    }
     int completed=plat_atomic_load(&art_ready);if(completed<0)return;
     struct art_work job=art_job;uint32_t *pixels=art_result;art_result=NULL;
     bool network=art_network,disk=art_disk_hit;uint32_t fetched=art_fetched,now=plat_now_ms();
     /* Snapshot request identity before releasing the worker's publication slot. */
-    plat_atomic_store(&art_request,-1);plat_atomic_store(&art_ready,-1);
+    /* Keep the mailbox occupied until the worker has finished persistence. */
     /* Also remember failures for results made stale by a host switch. */
-    if(network)ui_cover_attempt(&art_cache,&job.key,now,pixels!=NULL);
+    if(network && !art_aborted)ui_cover_attempt(&art_cache,&job.key,now,pixels!=NULL);
     if(disk)art_disk_hits++;
-    if(network){if(pixels)art_downloads++;else {art_failures++;if(job.stale)art_stale_used++;}}
+    if(network && !art_aborted){if(pixels)art_downloads++;else {art_failures++;if(job.stale)art_stale_used++;}}
     if(job.context!=art_context || strcmp(job.host_identity,host_key())) {
         if(job.slot>=0 && ui_cover_same(&art_cache.items[job.slot].key,&job.key))art_cache.items[job.slot].inflight=false;
-        free(pixels);return;
+        free(pixels);plat_atomic_store(&art_ready,-1);return;
     }
     ui_drop_main_cache();
-    if(ui_cover_publish(&art_cache,job.slot,&job.key,pixels,now))art_version++;
+    bool has_result=pixels!=NULL;
+    bool published=ui_cover_publish(&art_cache,job.slot,&job.key,pixels,now);
+    if(published)art_version++;
+    /* Prevent eviction or refresh while the worker reads the published pixels.
+     * No extra full-size allocation; UI owns them after publication. */
+    art_cache.items[job.slot].inflight=true;
+    if(art_aborted) {art_cache.items[job.slot].disk_checked=false;art_cache.items[job.slot].attempt=false;}
+    art_persist_pixels=has_result?art_cache.items[job.slot].pixels:NULL;
+    plat_atomic_store(&art_persist,has_result && network && job.persist && !art_aborted?1:0);
     if(disk && pixels)art_cache.items[job.slot].updated=fetched;
     art_sync_views();art_memory();
+    plat_atomic_store(&art_ready,-1);
 }
 static void *art_loader(void *arg)
 {
-    (void)arg;
+    (void)arg;int handled=-1;
     while(!plat_atomic_load(&art_cancel)) {
-        int slot=plat_atomic_load(&art_request);
-        if(slot<0 || plat_atomic_load(&art_ready)>=0){plat_sleep_ms(4);continue;}
+        int slot=plat_atomic_load(&art_request);int serial=plat_atomic_load(&art_serial);
+        if(slot<0 || serial==handled || plat_atomic_load(&art_ready)>=0 || plat_atomic_load(&art_finished)){plat_sleep_ms(4);continue;}
         /* Immutable host/app/size/context, never an index into mutable apps[]. */
-        struct art_work job=art_job;
+        struct art_work job=art_job;handled=serial;
         unsigned char *png=NULL;size_t len=0;uint32_t *scaled=NULL;
         bool network=false,disk=false;uint32_t loaded=0;
         if(job.disk && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_cancel)) {scaled=cover_disk_read(&art_disk,storage_dir(),&job.key,plat_now_ms(),&loaded);disk=scaled!=NULL;}
@@ -2555,16 +2724,24 @@ static void *art_loader(void *arg)
             if(fetched)perf_record(PERF_COVER_HTTP,perf_clock()-fetched);
             bool allowed=available && cover_decode_allowed(png,len);
             if(allowed && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming))scaled=plat_decode_art(png,len,job.key.w,job.key.h);
-            bool stored=false;
-            if(scaled && job.persist && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming))stored=cover_disk_write(&art_disk,storage_dir(),&job.key,scaled,plat_now_ms());
+
             if(!scaled && job.stale)plat_log("[Artwork] refresh failed, keeping cached artwork\n");
-            if(perf_enabled())cl_log("[ART] app=%d http=%d bytes=%u source=%d thumbnail=%d disk=%d\n",job.protocol_app,available,(unsigned)len,allowed,scaled!=NULL,stored);
+            if(perf_enabled())cl_log("[ART] app=%d http=%d bytes=%u source=%d thumbnail=%d\n",job.protocol_app,available,(unsigned)len,allowed,scaled!=NULL);
         }
         free(png);
         if(plat_atomic_load(&art_cancel)){free(scaled);break;}
+        art_aborted=plat_atomic_load(&art_io_cancel)!=0;
+        if(art_aborted){free(scaled);scaled=NULL;}
+        plat_atomic_store(&art_persist,0);
         art_network=network;art_disk_hit=disk;art_fetched=loaded;
         art_result=scaled;plat_atomic_store(&art_ready,slot);
         while(plat_atomic_load(&art_ready)>=0 && !plat_atomic_load(&art_cancel))plat_sleep_ms(4);
+        if(plat_atomic_load(&art_cancel))break; /* unclaimed pixels are released after join */
+        if(plat_atomic_load(&art_persist) && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_io_cancel)) {
+            bool stored=cover_disk_write(&art_disk,storage_dir(),&job.key,art_persist_pixels,plat_now_ms());
+            if(perf_enabled())cl_log("[ART] app=%d disk_persist=%d after_publish=1\n",job.protocol_app,stored);
+        }
+        plat_atomic_store(&art_finished,1);
     }
     return NULL;
 }
@@ -2577,6 +2754,9 @@ static void art_loader_start(void)
 static void art_pause(bool pause){plat_atomic_store(&art_streaming,pause?1:0);if(pause)plat_atomic_store(&art_io_cancel,1);}
 static bool art_request_app(int id,bool selected,bool evict)
 {
+    art_drain();
+    if(selected && plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id && !art_job.priority)
+        plat_atomic_store(&art_io_cancel,1);
     if(plat_atomic_load(&art_streaming) || plat_atomic_load(&art_request)>=0 || plat_atomic_load(&art_ready)>=0 || !art_worker)return false;
     struct ui_cover_key key;art_key(&key,id);int slot=ui_cover_find(&art_cache,&key);
     if(slot<0) {
@@ -2594,12 +2774,14 @@ static bool art_request_app(int id,bool selected,bool evict)
     bool network=art_host_online && ui_cover_retry(&art_cache,&key,now);
     if(!disk && (!network || !ui_cover_due(e,now)))return false;
     memset(&art_job,0,sizeof(art_job));art_job.key=key;snprintf(art_job.host_identity,sizeof(art_job.host_identity),"%s",host_key());art_job.slot=slot;art_job.context=art_context;
-    art_job.protocol_app=id;
+    art_job.protocol_app=id;art_job.priority=selected;
     art_job.host=server;art_job.host.cancel=&art_io_cancel;art_job.host.rtsp_session_url=NULL;art_job.host.info.rtspSessionUrl=NULL;
     art_job.disk=disk;
     art_job.network=network;art_job.stale=e->pixels!=NULL;
     art_job.persist=art_persistent_enabled && !strncmp(key.host,"uuid:",5);e->disk_checked=true;
-    e->inflight=true;plat_atomic_store(&art_io_cancel,0);plat_atomic_store(&art_request,slot);return true;
+    e->inflight=true;plat_atomic_store(&art_io_cancel,0);
+    plat_atomic_store(&art_serial,(int)((unsigned)plat_atomic_load(&art_serial)+1));
+    plat_atomic_store(&art_request,slot);return true;
 }
 static void art_update(const int *map,int count,int selected,int columns)
 {
@@ -2813,8 +2995,8 @@ static bool aurora_browse_path(const char *title,char out[160],int mode)
                     rows[0].help="A select | X select folder | B back | Y roots";kinds[0]=UI_OPTION_ACTION;
                     rows[1].label="Create Folder";rows[1].value="Create";rows[1].help="A enter the new folder name with the Xbox keyboard.";kinds[1]=UI_OPTION_ACTION;}
         for(int i=0;i<count;i++){
-            rows[i+actions].label=entries[i].name;rows[i+actions].value=entries[i].folder?"Folder >":"Select XEX";
-            rows[i+actions].help=entries[i].folder?"A open | X select folder | B back | Y roots":"A select XEX | B back | Y roots";
+            rows[i+actions].label=entries[i].name;rows[i+actions].value=entries[i].folder?"Folder >":mode==AURORA_BROWSER_IMAGE?"Select image":"Select XEX";
+            rows[i+actions].help=entries[i].folder?"A open | X select folder | B back | Y roots":mode==AURORA_BROWSER_IMAGE?"A select image | B back | Y roots":"A select XEX | B back | Y roots";
             kinds[i+actions]=entries[i].folder?UI_OPTION_OPEN:UI_OPTION_ACTION;
         }
         ui_draw_settings_options(title,rows,kinds,n,selected);ui_present();int key=wait_button();
@@ -2852,6 +3034,7 @@ static bool aurora_browse_path(const char *title,char out[160],int mode)
             if(!aurora_shortcut_folder_ready(candidate)){message(ICON_ERROR,"Folder unavailable","The device or folder is no longer accessible.");continue;}
             snprintf(folder,sizeof(folder),"%s",candidate);selected=0;continue;
         }
+        if(mode==AURORA_BROWSER_IMAGE){snprintf(out,160,"%s",candidate);return true;}
         if(mode==AURORA_BROWSER_AURORA_XEX){
             if(_stricmp(entries[index].name,"Aurora.xex") || !aurora_shortcut_valid_aurora(folder)){
                 message(ICON_ERROR,"Invalid Aurora XEX","Select Aurora.xex with a readable XEX2 header.");continue;}
@@ -2868,6 +3051,21 @@ static bool aurora_browse_path(const char *title,char out[160],int mode)
         }
         snprintf(out,160,"%s",candidate);return true;
     }
+}
+static void choose_wallpaper(void)
+{
+    char path[160]="";
+    if(!aurora_browse_path("Choose wallpaper",path,AURORA_BROWSER_IMAGE))return;
+    size_t bytes=0;unsigned char *encoded=wallpaper_read_file(path,&bytes);
+    int width=0,height=0;uint32_t *pixels=wallpaper_decode(encoded,bytes,&width,&height);
+    if(!pixels){free(encoded);message(ICON_ERROR,"Wallpaper not loaded","Select a valid PNG or JPEG up to 2048 x 2048 and 8 MiB.");return;}
+    /* Commit verified encoded bytes before replacing the visible wallpaper. */
+    if(!storage_write("home-wallpaper.png",encoded,bytes)) {
+        free(pixels);free(encoded);message(ICON_ERROR,"Wallpaper not saved","Previous wallpaper preserved. Check storage availability.");return;
+    }
+    ui_home_set_user_wallpaper(pixels,width,height);free(pixels);free(encoded);
+    cfg.ui_background=3;
+    if(!config_save(&cfg))message(ICON_ERROR,"Settings not saved","Wallpaper saved; the background selection could not be saved.");
 }
 static void aurora_main_path_selected(const char *found)
 {
@@ -3154,7 +3352,9 @@ static void aurora_integration_menu(void)
 #ifdef _XBOX
 static void art_launch_begin(int id)
 {
-    art_pause(false);art_loader_start();art_drain();art_key(&opening_art_key,id);opening_art_id=id;opening_art_pin=true;
+    art_pause(false);art_loader_start();art_drain();
+    if(plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id)plat_atomic_store(&art_io_cancel,1);
+    art_key(&opening_art_key,id);opening_art_id=id;opening_art_pin=true;
     int slot=ui_cover_find(&art_cache,&opening_art_key);if(slot>=0)art_cache.items[slot].pinned=true;
     art_request_app(id,true,true);
 }
@@ -3217,6 +3417,7 @@ static void stop_art_loader(plat_thread **loader)
     if(*loader){plat_atomic_store(&art_streaming,1);plat_atomic_store(&art_io_cancel,1);plat_atomic_store(&art_cancel,1);plat_thread_join(*loader);*loader=NULL;}
     if(art_job.slot>=0 && art_job.slot<UI_COVER_LIMIT)art_cache.items[art_job.slot].inflight=false;
     free(art_result);art_result=NULL;plat_atomic_store(&art_request,-1);plat_atomic_store(&art_ready,-1);
+    plat_atomic_store(&art_finished,0);plat_atomic_store(&art_persist,0);art_persist_pixels=NULL;
 }
 static void log_launch_settings_failure(const struct launch_settings *prefs)
 {
@@ -3344,6 +3545,7 @@ static void library_context(int *filter)
 static void app_menu(void)
 {
     int count=-1,sel=0,seen_version=-1,cols=ui_apps_columns(),filter=2,map[MAX_APPS],restore_id=0;
+    int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms();
     char title[96];snprintf(title,sizeof(title),ui_translate("Loading apps from %s"),host_display_name());
     art_host_online=server_ok && server.paired;
     if(app_list_cache_valid(&app_cache,host_key(),plat_now_ms()))count=app_count;
@@ -3363,8 +3565,19 @@ static void app_menu(void)
             if(sel>=count)sel=count?count-1:0;
         }
         if(art_worker)art_update(map,count,sel,cols);
-        bool rail_moving=ui_library_tick(plat_now_ms());
-        if(seen_version!=art_version || rail_moving) {seen_version=art_version;draw_apps(sel,filter,map,count);}
+        uint32_t now=plat_now_ms();bool backdrop_changed=false;
+        if(cfg.ui_background==4 && count>0) {
+            int index=map[sel];
+            if(wall_focus!=apps[index].id){wall_focus=apps[index].id;wall_focus_ms=now;ui_home_cancel_prepare();}
+            if(now-wall_focus_ms>=220) {
+                struct ui_app focused;memset(&focused,0,sizeof(focused));
+                focused.name=apps[index].name;focused.art=app_art[index];focused.generation=art_generation[index];
+                backdrop_changed=ui_home_prepare_cover(home_key(),&focused,now);
+            }
+            if(ui_home_tick(now))backdrop_changed=true;
+        }
+        bool rail_moving=ui_library_tick(now);
+        if(seen_version!=art_version || rail_moving || backdrop_changed) {seen_version=art_version;draw_apps(sel,filter,map,count);}
         int key=input_menu_pressed();if(!key) {if(ui_focus_tick(plat_now_ms()))ui_present();plat_sleep_ms(16);continue;}
         if(key&B_FLAG)break;
         if(tab_key(key,UI_LIBRARY))break;
@@ -3394,10 +3607,8 @@ static void app_menu(void)
             }
             if(navigation_pending>=0)break;
             if(play) {
-                if(server.current_game && server.current_game!=apps[index].id)
-                    message(ICON_INFO,"Another app is running","Open the running app with X, then choose Stop app.");
-                else {stream(apps[index].id,apps[index].name);
-                    if(stream_return_home)break;refresh_server();}
+                stream(apps[index].id,apps[index].name);
+                if(stream_return_home)break;refresh_server();
             }
         }
         seen_version=-1;
@@ -4072,6 +4283,7 @@ static void main_menu(void)
             const struct ui_app *wall_app=sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?
                 recent+sel-DASH_RECENT:sel==DASH_NAV && featured_id?&featured:NULL;
             if(wall_app && ui_home_prepare_cover(home_key(),wall_app,plat_now_ms()))dirty=true;
+            if(!wall_app)ui_home_cancel_prepare();
         }
         int key=input_menu_pressed();
         if(!key) {if(ui_focus_tick(plat_now_ms()))ui_present();plat_sleep_ms(16);continue;}
@@ -4083,7 +4295,7 @@ static void main_menu(void)
         if(key&DOWN_FLAG)sel=ui_dashboard_move_tiles(sel,0,1,n,recent_count);
         if(key&LEFT_FLAG)sel=ui_dashboard_move_tiles(sel,-1,0,n,recent_count);
         if(key&RIGHT_FLAG)sel=ui_dashboard_move_tiles(sel,1,0,n,recent_count);
-        if(sel!=previous_sel)focus_changed_ms=plat_now_ms();
+        if(sel!=previous_sel){focus_changed_ms=plat_now_ms();ui_home_cancel_prepare();}
         if(key&B_FLAG){sel=0;continue;}
         if(key&Y_FLAG) {home_search();continue;}
         if(!(key&(A_FLAG|X_FLAG|PLAY_FLAG)))continue;
@@ -4168,9 +4380,8 @@ void app_main(void)
     ui_set_language(cfg.language);
     ui_set_appearance(cfg.ui_background,cfg.ui_accent);ui_set_motion(cfg.ui_motion);ui_set_stream_hud(cfg.stream_menu_style,cfg.mouse_hud);
     {size_t bytes=0;char *encoded=storage_read("home-wallpaper.png",&bytes);
-     if(encoded && cover_decode_allowed((const unsigned char*)encoded,bytes)){
-         int width=0,height=0;uint32_t *pixels=image_decode_argb((const unsigned char*)encoded,bytes,&width,&height);
-         if(pixels){ui_home_set_user_wallpaper(pixels,width,height);free(pixels);}}
+     int width=0,height=0;uint32_t *pixels=wallpaper_decode((const unsigned char*)encoded,bytes,&width,&height);
+     if(pixels){ui_home_set_user_wallpaper(pixels,width,height);free(pixels);}
      free(encoded);}
     plat_fixup_config(&cfg);
     char *saved_hosts=storage_read("hosts.tsv",NULL);host_cache_decode(&hosts,saved_hosts);free(saved_hosts);

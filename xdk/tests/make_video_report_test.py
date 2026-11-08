@@ -15,12 +15,20 @@ fixture = r'''
 #include "../src/video_gpu_policy.h"
 #include "../src/stream_metrics.h"
 #include "../src/decode_deadline.h"
+#include "../src/video_h264_diagnostic.h"
+#include "../src/h264_reference_policy.h"
 #define XDK_BUILD_PROFILE_LABEL "test"
 #define XDK_WORKER_MAP_LABEL "current"
+#define XDK_H264_REFERENCE_MODE 0
+#define XDK_H264_NO_RFI 0
 enum {TIME_DECODE,TIME_FRAME_COPY,TIME_TEXTURE_LOCK,TIME_TEXTURE_COPY,TIME_GPU_SUBMIT,TIME_FENCE_WAIT,
       TIME_PRESENT_WAIT,TIME_PACKET_PREPARE,TIME_CALLBACK_TOTAL,TIME_CALLBACK_GAP,TIME_COUNT};
 static video_options options;
+static video_h264_diagnostic h264_diagnostic={1,0,1,0};
+static int h264_workers(){return h264_diagnostic.workers==1?1:options.decode_workers==3?3:4;}
 static video_stats stats;
+static uint32_t idr_received,idr_decoded;
+static volatile long refresh_requests;
 static decode_deadline deadline;
 static stream_observations observations;
 static gpu_quality_policy quality_policy;
@@ -33,6 +41,7 @@ static unsigned network_rtt,network_variance;
 static int network_video_queue,network_video_queue_peak;
 static bool network_valid,shader_diagnostic_override;
 static RTP_VIDEO_STATS last_rtp_stats;
+static uint64_t rtp_counter_duration_us;
 static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_late_packets,last_lost_frames;
 static uint32_t last_data_packets,last_fec_packets;
 static uint32_t last_present_serial,present_duplicates;
@@ -57,13 +66,18 @@ static void actual_report(){
 }
 int main(){
     options.stats_overlay=true;options.target_fps=60;options.vsync=true;options.color_space=COLORSPACE_REC_709;
+    options.fast_decode=true;
     stats.received=1200;stats.decoded=1000;stats.rendered=980;
     streaming_start_us=100;streaming_end_us=20000100;
+    rtp_counter_duration_us=2000000;last_complete_frames=110;
     actual_report();assert(writes==1);
+    assert(strstr(saved,"rtp_counter_scope=performance_window\nrtp_counter_duration_us=2000000\n"));
     assert(strstr(saved,"requested_fps=60\n") && strstr(saved,"setup_fps_argument=60\n"));
+    assert(strstr(saved,"h264_fast_flag=1\nh264_rfi=1\nh264_workers_effective=4\n"));
     assert(strstr(saved,"negotiated_fps=unknown\nnegotiated_fps_known=0\n"));
     assert(strstr(saved,"callback_fps=60.000\n") && strstr(saved,"decoded_fps=50.000\n") && strstr(saved,"presented_fps=49.000\n"));
     assert(strstr(saved,"vsync_enabled=1\n") && strstr(saved,"not_scanout_or_visible_frames"));
+    assert(strstr(saved,"idr_received=0\nidr_decoded=0\nperiodic_refresh_requests=0\n"));
     assert(strstr(saved,"callback_gap_p99_us=0\n")); // report tail was not truncated
     setup_fps_argument=30;streaming_end_us=0;actual_report();
     assert(writes==2 && strstr(saved,"setup_fps_argument=30\n") && strstr(saved,"negotiated_fps=unknown\n"));

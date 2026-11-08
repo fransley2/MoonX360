@@ -5,7 +5,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'xdk/scripts'))
 import slice_dispatch as dispatch
-SOURCE=ROOT/'xdk/deps/XBMC-360/libraries/ffmpeg/libavcodec/xb_thread.c'
+SOURCE=ROOT/'xdk/tests/fixtures/xb_thread_pinned.c'
 
 class Policy(unittest.TestCase):
     def test_report_identity_and_legacy_unavailable(self):
@@ -36,6 +36,7 @@ class Policy(unittest.TestCase):
         for mode in ('legacy','batched'):
             with tempfile.TemporaryDirectory() as d,patch.dict(os.environ,{'XDK_BUILD_DIR':d,'XDK_SLICE_DISPATCH':mode,'XDK_OPTIMIZATION':'compatible'}):
                 spec=importlib.util.spec_from_file_location('native_scheduler_'+mode,ROOT/'xdk/build.py');b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+                source=Path(d)/'source/libavcodec/xb_thread.c';source.parent.mkdir(parents=True);source.write_bytes(SOURCE.read_bytes());b.FFMPEG=str(source.parent.parent)
                 ff=Path(d)/'ffmpeg';ff.mkdir();manifest={'profile':'compatible','worker_map':'current','worker_sha256':hashlib.sha256(SOURCE.read_bytes()).hexdigest(),'slice_dispatch':'batched' if mode=='legacy' else 'legacy'}
                 (ff/'build-manifest.json').write_text(json.dumps(manifest))
                 with self.assertRaisesRegex(SystemExit,'slice dispatch changed'):b.target_xex()

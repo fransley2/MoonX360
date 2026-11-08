@@ -32,6 +32,7 @@ void ui_present(void) {
 char *storage_read(const char*,size_t*){return NULL;}
 bool storage_write(const char*,const void*,size_t){return true;}
 static int wait_button(){return B_FLAG;}
+static void choose_wallpaper(){}
 '''
 for name in ('labels','helps'):output+='static const char *'+name+'[]='+initializer(name)+';\n'
 output+='\n'.join(function(sig) for sig in ('static void appearance_menu(void)\n{','static void overlay_options_menu(void)\n{','static void pointer_settings_menu(void)\n{'))
@@ -41,7 +42,7 @@ static void name(const char *page,int selected) {
 }
 int main(void) {
     const int sizes[][2]={{640,480},{1280,720}};
-    const char *values[]={"1280x720","30 FPS","12 Mbps","On","GPU","On","On","Off","Run test","Standard","LB+RB+L3+R3","L 0-100% | R 0-100%","Off","1024 bytes","Off","Off","View logs","Auto","12 Mbps","Auto Quality","On","12 sessions","View analysis","On","View usage","Automatic (current)","View metrics","Manual","1280x720 / 60 Hz","Auto","16:9","Portuguese (Brazil)","Balanced","4","Confirm...","Confirm...","Manage","Stereo","Back + R3","Save","5 s","View last session"};
+    const char *values[]={"1280x720","30 FPS","12 Mbps","On","GPU","On","On","Off","Run test","Standard","LB+RB+L3+R3","L 0-100% | R 0-100%","Off","1024 bytes","Off","Off","View logs","Auto","12 Mbps","Auto Quality","On","12 sessions","View analysis","On","View usage","Automatic (current)","View metrics","Manual","1280x720 / 60 Hz","Auto","16:9","Portuguese (Brazil)","Balanced","4","Confirm...","Confirm...","Manage","Stereo","Back + R3","Save","5 s","View last session","Off","5% / edge","Off","Confirm...","Confirm...","Off","Low"};
     static_assert(sizeof(values)/sizeof(values[0])==SET_COUNT,"Preview needs every setting value");
     for(int size=0;size<2;size++)for(language=0;language<CONFIG_LANGUAGE_COUNT;language++) {
         width=sizes[size][0];height=sizes[size][1];assert(ui_init(width,height));ui_draw_enable(true);ui_set_language(language);

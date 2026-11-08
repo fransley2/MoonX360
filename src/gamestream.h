@@ -47,6 +47,8 @@ bool gs_unpair(struct gs_server *srv);
 int  gs_applist(struct gs_server *srv, struct gs_app *apps, int max_apps);
 bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, bool sops, bool local_audio);
 bool gs_quit(struct gs_server *srv);
+/* Explicitly confirmed replacement; returns only after authoritative idle state. */
+bool gs_switch_app(struct gs_server *srv, int previous_app, int target_app);
 /* Fetches an app's box art (PNG) over HTTPS; *data is malloc'd. */
 bool gs_app_art(struct gs_server *srv, int app_id, unsigned char **data, size_t *len);
 void gs_server_free(struct gs_server *srv);

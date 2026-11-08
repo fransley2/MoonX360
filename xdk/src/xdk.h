@@ -44,7 +44,13 @@ void gfx_end(void);
 
 /* Draws a textured rectangle (logical UI coordinates) with one of the pixel shaders.
  * The caller sets the textures: RGB uses sampler 0, YUV uses 0 (Y), 1 (U), 2 (V). */
-enum gfx_shader { GFX_SHADER_RGB, GFX_SHADER_YUV_FAST, GFX_SHADER_YUV_QUALITY, GFX_SHADER_RGBA };
+enum gfx_shader { GFX_SHADER_RGB, GFX_SHADER_YUV_FAST, GFX_SHADER_YUV_QUALITY, GFX_SHADER_RGBA, GFX_SHADER_CRT_CLARITY, GFX_SHADER_YUV_SMOOTH, GFX_SHADER_YUV_SMOOTH_CRT };
+bool gfx_smoothing_available(bool crt);
+uint64_t gfx_texture_allocation_bytes(D3DTexture *texture);
+bool gfx_crt_clarity_available(void);
+bool gfx_crt_shader_compiled(void);
+bool gfx_display_known(void);
+void gfx_ui_viewport(int cw,int ch,int ow,int oh,int *l,int *t,int *r,int *b);
 #define GFX_SHADER_YUV GFX_SHADER_YUV_FAST
 void gfx_draw_rect(D3DDevice *dev, int shader, float x0, float y0, float x1, float y1);
 void gfx_draw_layout_rect(D3DDevice *dev,int shader,float x0,float y0,float x1,float y1);
@@ -77,7 +83,7 @@ bool gfx_ui_ready(void);
 
 /* CPU-cached texture operations never acquire the device from the decoder.
  * XDK LockRect/UnlockRect are valid off-owner on unbound, fenced resources. */
-struct gfx_copy_cost { DWORD lock_us, copy_us; };
+struct gfx_copy_cost { DWORD lock_us, copy_us; bool verify; unsigned mismatch_rows; };
 uint64_t gfx_now_us(void);
 void gfx_backbuffer_size(int *w, int *h);
 void gfx_display_size(int *w, int *h);
@@ -92,9 +98,20 @@ bool gfx_cached_upload_prevalidated(D3DTexture *texture, const BYTE *src, int sr
                                     int width, int height, struct gfx_copy_cost *cost);
 bool gfx_cached_selftest(D3DDevice *d);
 bool cached_video_init(int width, int height);
+bool cached_video_enable_history(void); /* cold: before producer/render start */
+void cached_video_reset_smoothing_diagnostics(void); /* session boundary, including forced Legacy */
+struct smoothing_diagnostics;
+int cached_video_prepare_smoothing(int current,int strength,D3DTexture **previous,float *alpha);
+void cached_video_smoothing_drawn(void);
+void cached_video_presented(int current,bool shown);
+void cached_video_invalidate_history(void);
+void cached_video_smoothing_snapshot(struct smoothing_diagnostics *out);
 int cached_video_publish(const BYTE *const planes[3], const int pitches[3], struct gfx_copy_cost *cost);
+int cached_video_publish_picture(const BYTE *const planes[3],const int pitches[3],struct gfx_copy_cost *cost,uint64_t picture);
+uint64_t cached_video_picture(int slot);
 uint64_t cached_video_ready_time(int slot);
 uint32_t cached_video_frame_serial(int slot);
+bool cached_video_has_ready(void); /* Read-only; no D3D ownership or fence queries. */
 int cached_video_take(D3DTexture **planes, unsigned *discarded);
 void cached_video_submitted(int slot, DWORD fence);
 void cached_video_cleanup(D3DDevice *d);

@@ -2,10 +2,24 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "../src/video_session.h"
+#include "../src/video_h264_diagnostic.h"
+#include "../src/h264_reference_policy.h"
+#ifndef XDK_H264_REFERENCE_MODE
+#define XDK_H264_REFERENCE_MODE 0
+#endif
+#ifndef XDK_H264_NO_RFI
+#define XDK_H264_NO_RFI 0
+#endif
 static video_options options;
 static bool running;
 static int session_slices=8;
+static video_h264_diagnostic h264_diagnostic={};
+static int h264_workers(){return 4;}
+static const char *diagnostic_override;
+static char *storage_read(const char*,size_t*){return diagnostic_override?_strdup(diagnostic_override):NULL;}
+static void vlog(const char*,...){}
 static int video_setup(int,int,int,int,void*,int) { return 0; }
 static void video_start() {}
 static void video_stop() {}
@@ -59,6 +73,12 @@ int main()
     assert(video_colorspace(1920,1080)==COLORSPACE_REC_709);
     assert(video_colorspace(854,480)==COLORSPACE_REC_601);
     DECODER_RENDERER_CALLBACKS cb;
+    for(int enabled=0;enabled<2;enabled++) {
+        video_options selected={};selected.fast_decode=enabled!=0;selected.crt_clarity=enabled!=0;selected.width=1280;selected.height=720;selected.target_fps=60;
+        video_set_options(&selected);video_init_callbacks(&cb);assert(options.fast_decode==enabled && options.crt_clarity==(enabled!=0));
+        running=true;selected.fast_decode=!enabled;selected.crt_clarity=enabled==0;video_set_options(&selected);
+        assert(options.fast_decode==enabled && options.crt_clarity==(enabled!=0));running=false;
+    }
     for(int mode=0;mode<2;mode++) {
         video_options vo={};vo.width=mode?1920:1280;vo.height=mode?1080:720;vo.target_fps=60;
         const int requests[]={0,8,12,16,7};

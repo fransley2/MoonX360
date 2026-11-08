@@ -345,6 +345,7 @@ char *storage_read(const char *name, size_t *len)
     if(fseek(f,0,SEEK_END)!=0){fclose(f);errno=EIO;return NULL;}
     size = ftell(f);
     if(size<0 || ((!strcmp(name,"profiles-a.tsv") || !strcmp(name,"profiles-b.tsv")) && size>=CONFIG_PROFILES_BYTES) ||
+       (!strcmp(name,"home-wallpaper.png") && size>8*1024*1024) ||
        (!strcmp(name,"sessions.tsv") && size>16384) ||
        ((!strcmp(name,"launch-settings.tsv") || !strcmp(name,"launch-settings.tsv.bak")) && size>8192) ||
        (!strcmp(name,"game-bindings.tsv") && size>8192) ||
@@ -396,6 +397,80 @@ bool storage_write(const char *name, const void *data, size_t len)
     }
     if(!ok)storage_log_failure(path);
     return ok;
+}
+
+/* Session reports are otherwise overwritten by the next stream. Keep five
+ * bounded, per-installation snapshots, committed only after all copies work.
+ * This runs after transport and decoder teardown, never on a video worker. */
+void plat_archive_session_reports(void)
+{
+    static const struct {const char *name;bool required;} reports[] = {
+        {"last-session.txt",true}, {"decoder-session.txt",true},
+        {"seamless-session.txt",false}, {"smoothing-session.txt",false}, {"network-session.txt",false}, {"refresh-frame-trace.txt",false},
+        {"performance-session.txt",true}, {"present-trace.txt",true},
+        {"last-log.txt",true}, {"h264-parallel-session.txt",true},
+        {"h264-parallel-trace.txt",true}, {"h264-stage-session.txt",false},
+        {"latency-capture.txt",false}, {"frame-cadence.txt",false},
+    };
+    char *state;size_t state_len=0;
+    unsigned slot=1,next=2,count=0;
+    char manifest_name[64],manifest[2048],entries[1536];size_t used=0;
+    SYSTEMTIME utc;
+    int n;
+    if(!storage_dir())return;
+    state=storage_read("session-archive-next.txt",&state_len);
+    if(state) {
+        unsigned parsed=0;
+        if(state_len<16 && sscanf(state,"%u",&parsed)==1 && parsed>=1 && parsed<=5)
+            slot=parsed;
+        free(state);
+    }
+    next=slot==5?1:slot+1;
+    GetSystemTime(&utc);
+    snprintf(manifest_name,sizeof(manifest_name),"session-archive-%u-index.txt",slot);
+    n=snprintf(manifest,sizeof(manifest),
+        "schema=1\nstatus=writing\nslot=%u\nutc=%04u-%02u-%02uT%02u:%02u:%02uZ\n",
+        slot,utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond);
+    if(n<=0 || (size_t)n>=sizeof(manifest) ||
+       !storage_write(manifest_name,manifest,(size_t)n))return;
+    for(unsigned i=0;i<sizeof(reports)/sizeof(reports[0]);i++) {
+        char source[128],archive[96];FILE *f;long size;char *bytes;
+        n=snprintf(source,sizeof(source),"%s\\%s",storage_root,reports[i].name);
+        if(n<=0 || (size_t)n>=sizeof(source))return;
+        f=fopen(source,"rb");
+        if(!f) {
+            if(!reports[i].required && errno==ENOENT)continue;
+            plat_log("[DIAGNOSTIC] session archive source unavailable\n");
+            return;
+        }
+        if(fseek(f,0,SEEK_END)!=0 || (size=ftell(f))<0 || size>65536 ||
+           fseek(f,0,SEEK_SET)!=0) {
+            fclose(f);plat_log("[DIAGNOSTIC] session archive source invalid\n");return;
+        }
+        bytes=(char*)malloc((size_t)size+1);
+        if(!bytes) {fclose(f);return;}
+        bool read_ok=fread(bytes,1,(size_t)size,f)==(size_t)size;
+        if(fclose(f)!=0)read_ok=false;
+        if(!read_ok) {free(bytes);plat_log("[DIAGNOSTIC] session archive read failed\n");return;}
+        n=snprintf(archive,sizeof(archive),"session-archive-%u-%s",slot,reports[i].name);
+        if(n<=0 || (size_t)n>=sizeof(archive) ||
+           !storage_write(archive,bytes,(size_t)size)) {free(bytes);return;}
+        free(bytes);
+        n=snprintf(entries+used,sizeof(entries)-used,"file=%s,bytes=%u\n",archive,(unsigned)size);
+        if(n<=0 || (size_t)n>=sizeof(entries)-used)return;
+        used+=(size_t)n;count++;
+    }
+    if(count<7)return;
+    n=snprintf(manifest,sizeof(manifest),
+        "schema=1\nstatus=complete\nslot=%u\nutc=%04u-%02u-%02uT%02u:%02u:%02uZ\nreports=%u\n%.*s",
+        slot,utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond,count,(int)used,entries);
+    if(n<=0 || (size_t)n>=sizeof(manifest))return;
+    /* The slot manifest commits the snapshot; individual copied reports remain
+     * directly inspectable even if this final write fails. */
+    if(!storage_write(manifest_name,manifest,(size_t)n))return;
+    char next_text[8];n=snprintf(next_text,sizeof(next_text),"%u\n",next);
+    if(n>0 && (size_t)n<sizeof(next_text))
+        storage_write("session-archive-next.txt",next_text,(size_t)n);
 }
 
 /* ------------------------------------------------------------ startup */
@@ -485,9 +560,36 @@ static void startup_stage(const char *stage)
 }
 
 extern "C" VOID HalReturnToFirmware(DWORD mode);
+int plat_network_link(void)
+{
+    return console_link_classify(XNetGetEthernetLinkStatus(),XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS);
+}
+int plat_crt_output_status(void)
+{
+    XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
+    if(!mode.dwDisplayWidth || !mode.dwDisplayHeight || mode.RefreshRate<20)return 0;
+    return mode.dwDisplayHeight==480 && mode.dwDisplayWidth<=720 && mode.fIsInterlaced &&
+        mode.RefreshRate>=59 && mode.RefreshRate<=61?1:-1;
+}
+static void write_console_environment(void)
+{
+    XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
+    DWORD link=XNetGetEthernetLinkStatus();int w,h;gfx_backbuffer_size(&w,&h);
+    char text[1024];int n=snprintf(text,sizeof(text),
+        "schema=1\nlink_flags=0x%08x\nactive_mask=0x%08x\nwireless_mask=0x%08x\nconsole_link=%s\nhost_path=unknown\n"
+        "physical_mode_known=%d\nphysical_width=%u\nphysical_height=%u\nphysical_reported_hz=%.5f\ninterlaced=%d\n"
+        "app_backbuffer=%dx%d\ncrt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\ncomponent_cable_and_TV_model=unverified\n"
+        "refresh_scope=XGetVideoMode_report_not_measured_field_cadence\n",
+        (unsigned)link,(unsigned)XNET_ETHERNET_LINK_ACTIVE,(unsigned)XNET_ETHERNET_LINK_WIRELESS,
+        console_link_name(console_link_classify(link,XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS)),
+        gfx_display_known(),(unsigned)mode.dwDisplayWidth,(unsigned)mode.dwDisplayHeight,mode.RefreshRate,mode.fIsInterlaced!=FALSE,
+        w,h,plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available());
+    if(n>0 && (size_t)n<sizeof(text))storage_write("console-environment.txt",text,(size_t)n);
+}
 void plat_display_info(char *out,size_t capacity)
 {
     int w,h,rw,rh;gfx_display_size(&w,&h);gfx_backbuffer_size(&rw,&rh);
+    if(!gfx_display_known()){snprintf(out,capacity,"Physical output UNKNOWN | App %dx%d",rw,rh);return;}
     snprintf(out,capacity,ui_translate("Output %dx%d%s %.2f Hz | App %dx%d"),w,h,gfx_display_interlaced()?"i":"p",gfx_display_hz(),rw,rh);
 }
 int plat_display_refresh_x100(void) {float hz=gfx_display_hz();return hz>=20 && hz<=240?(int)(hz*100+0.5f):6000;}
@@ -555,6 +657,7 @@ void __cdecl main()
         startup_stage("gfx_init failed\n");
         return;   /* nothing to show an error on */
     }
+    write_console_environment();
     /* Optional recovery switch affects menus only; video remains untouched. */
     gfx_system_ui_init();
     ui_draw_enable(GetFileAttributesA("game:\\moonlight\\ui-legacy.flag")==INVALID_FILE_ATTRIBUTES);

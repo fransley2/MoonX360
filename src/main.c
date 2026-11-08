@@ -31,6 +31,8 @@
 #include "platform.h"
 
 void plat_display_info(char *out,size_t capacity) {snprintf(out,capacity,"Physical output is configured in XeLL");}
+int plat_network_link(void){return CONSOLE_LINK_UNKNOWN;}
+int plat_crt_output_status(void){return 0;}
 int plat_display_refresh_x100(void) {return 6000;}
 bool plat_system_ui_active(void) {return false;}
 bool plat_power_available(void) {return false;}

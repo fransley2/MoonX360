@@ -1,6 +1,6 @@
 """Focused desktop evidence for the rebrand, language fixes and permission dialog."""
 from pathlib import Path
-import os, subprocess, sys, zipfile, re, json
+import os, subprocess, sys, zipfile, re, json, importlib.util, shutil
 from PIL import Image, ImageChops
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -13,16 +13,21 @@ for line in r.stdout.splitlines():
  if '=' in line and not line.startswith('='):
   k,v=line.split('=',1);env[k]=v
 cl=next(str(Path(p)/'cl.exe') for p in env['PATH'].split(';') if (Path(p)/'cl.exe').exists())
-flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/I'+str(ROOT/'host-tests')]
+flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/FI'+str(ROOT/'src/performance.h'),'/I'+str(ROOT),'/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/I'+str(ROOT/'host-tests')]
 def run(args):
  r=subprocess.run(list(map(str,args)),env=env,cwd=OUT,capture_output=True,text=True,errors='replace')
  print(r.stdout,r.stderr,flush=True)
  if r.returncode:raise SystemExit(r.returncode)
 def build(name,sources):
- run([cl,*flags,*[('/Tp'+str(p)) if Path(p).suffix in ('.cpp','.c') else str(p) for p in sources],'/Fe'+name+'.exe'])
+ # Each comparison tree includes its own headers. Forcing current performance.h
+ # into the protected tree would define the watchdog types twice.
+ selected_flags=[f for f in flags if not f.startswith('/FI')] if name in ('before','after') else flags
+ run([cl,*selected_flags,*[('/Tp'+str(p)) if Path(p).suffix in ('.cpp','.c') else str(p) for p in sources],'/Fe'+name+'.exe'])
  run([OUT/(name+'.exe')])
 
-fonts=ROOT/'xdk/build/MoonX360/aggressive/gen/fonts_data.c'
+spec=importlib.util.spec_from_file_location('moonx_build',ROOT/'xdk/build.py')
+builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
+fonts=builder.generate_fonts()
 run([cl,*flags,'/TC','/c',fonts,'/Fofonts.obj'])
 ui=[ROOT/'src/ui'/n for n in ('canvas.c','font.c','draw.c','ui.c')]
 for gen,name,sources in [
@@ -39,14 +44,16 @@ fixture='''#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "src/host_compat.h"
 static char last_error[256];
+static gs_error_code last_error_kind;
 static void set_error(const char *fmt,const char *arg){snprintf(last_error,sizeof(last_error),fmt,arg?arg:"");}
 '''+gs[a:b]+r'''
 int main(){
  assert(xml_status_ok("<root status_code=\"200\"/>"));
  assert(!xml_status_ok("<root status_code=\"403\" status_message=\"Permission denied: &quot;Launch applications&quot;\"/>"));
- assert(strstr(last_error,"Client Management") && !strstr(last_error,"&quot;"));
- assert(!xml_status_ok("<root status_code=\"403\"/>"));assert(strstr(last_error,"did not allow"));
+ assert(last_error_kind==GS_ERROR_PERMISSION && strstr(last_error,"Launch Apps") && strstr(last_error,"List Apps") && !strstr(last_error,"&quot;"));
+ assert(!xml_status_ok("<root status_code=\"403\"/>"));assert(last_error_kind==GS_ERROR_PERMISSION && strstr(last_error,"Permission required"));
  assert(!xml_status_ok("<root status_code=\"403\" status_message=\"A paired TLS client identity is required\"/>"));assert(strstr(last_error,"pairing"));
  assert(!xml_status_ok("<root status_code=\"500\" status_message=\"Encoder unavailable\"/>"));assert(strstr(last_error,"Encoder unavailable"));
  assert(!xml_status_ok("<root/>"));assert(strstr(last_error,"Malformed"));
@@ -55,9 +62,14 @@ int main(){
 '''
 (OUT/'host-errors.cpp').write_text(fixture);build('host-errors',[OUT/'host-errors.cpp'])
 
-# Compare identical English UI states with pre-change sources, outside brand bounds.
+# The original rebrand baseline remains the default. Release stabilization can
+# instead compare the protected snapshot captured before its own edits.
 before=OUT/'before'
-with zipfile.ZipFile(ROOT/'evidencias/moonx360-20261028/source-before.zip') as z:
+baseline=os.environ.get('MOONX_UI_BASELINE_ZIP')
+if baseline:
+ shutil.copytree(ROOT/'src',before/'src',dirs_exist_ok=True)
+ shutil.copytree(ROOT/'third_party/stb',before/'third_party/stb',dirs_exist_ok=True)
+with zipfile.ZipFile(baseline or ROOT/'evidencias/moonx360-20261028/source-before.zip') as z:
  for name in z.namelist():
   if name.startswith('src/') or name.startswith('third_party/stb/'):
    z.extract(name,before)
@@ -81,11 +93,12 @@ int main(){
  fixture=fixture.replace('LABEL',label)
  (OUT/(label+'.cpp')).write_text(fixture);build(label,[OUT/(label+'.cpp'),*ui[:3],OUT/'fonts.obj'])
 for state,regions in [('message',[(60,25,285,90)]),('splash',[(575,205,705,340),(280,335,1000,420)])]:
+ if baseline:regions=[] # Stabilization must preserve every pixel, including branding.
  a=Image.open(OUT/f'before-{state}.ppm').convert('RGB');b=Image.open(OUT/f'after-{state}.ppm').convert('RGB')
  diff=ImageChops.difference(a,b)
  for box in regions:diff.paste((0,0,0),box)
  assert diff.getbbox() is None,(state,diff.getbbox())
  b.save(OUT/f'MoonX360-{state}.png')
 Image.open(OUT/'after-permission-pt.ppm').save(OUT/'MoonX360-permission-pt.png')
-print('PASS: unchanged pixels outside the brand in message and startup screens.')
+print('PASS: unchanged message/startup pixels; exact protected-baseline comparison.' if baseline else 'PASS: unchanged pixels outside the brand in message and startup screens.')
 print('PASS: focused MoonX360 desktop verification; no hardware test.')

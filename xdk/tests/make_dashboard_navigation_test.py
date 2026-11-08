@@ -131,6 +131,7 @@ int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}
 void ui_present(){}
 bool ui_focus_tick(uint32_t){return false;}
+void ui_home_cancel_prepare(){}
 bool ui_home_tick(uint32_t){return false;}
 bool ui_home_prepare_cover(const char*,const ui_app*,uint32_t){return false;}
 bool ui_library_tick(uint32_t){return false;}
@@ -160,7 +161,7 @@ static void reset(){
     app_cache.valid=false;
     wake_accept=true;wake_calls=0;
     library_size=1;last_play_id=first_play_id=last_resume_id=last_featured_id=0;add_recent_on_play=false;stream_return_home=false;
-    config_defaults(&cfg);strcpy(cfg.host,"PC");server.paired=true;server.current_game=0;
+    config_defaults(&cfg);config_select_factory(&cfg,CONFIG_PROFILE_SMOOTH);strcpy(cfg.host,"PC");server.paired=true;server.current_game=0;
     server_ok=true;navigation_pending=-1;app_count=0;art_version=0;session_history.count=0;
     plays=details=pauses=library_calls=context_calls=loads=draws=settings_calls=history_calls=0;details_play=false;host_panels=0;hosts.count=0;manual_accept=inject_host=false;manual_calls=0;appearance_calls=config_writes=0;
     next_discovery=99;next_socket_retry=99;discovery_round=3;

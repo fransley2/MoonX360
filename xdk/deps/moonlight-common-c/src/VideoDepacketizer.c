@@ -521,6 +521,7 @@ static void reassembleFrame(int frameNumber, bool frameIsLTR) {
             if ((VideoCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
                 if (LbqOfferQueueItem(&decodeUnitQueue, qdu, &qdu->entry) == LBQ_BOUND_EXCEEDED) {
                     Limelog("Video decode unit queue overflow\n");
+                    perf_count(PERF_C_VIDEO_QUEUE_OVERFLOW,1);
 
                     // RFI recovery is not supported here
                     waitingForIdrFrame = true;

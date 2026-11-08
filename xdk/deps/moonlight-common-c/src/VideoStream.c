@@ -181,6 +181,7 @@ static void VideoReceiveThreadProc(void* context) {
         }
 #endif
 
+        rtpQueue.stats.datagrams++;rtpQueue.stats.datagramBytes+=(uint32_t)err;
         perf_video_packet_seen((uint32_t)err);
         if (err < minSize) {
             // Runt packet

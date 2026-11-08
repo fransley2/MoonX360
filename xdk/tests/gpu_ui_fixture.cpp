@@ -10,6 +10,8 @@
 #include "../src/system_ui.h"
 #include "../src/launch_cover.h"
 #include "../src/ui_layout_geometry.h"
+static int safe_margin;
+static void gfx_ui_viewport(int cw,int ch,int ow,int oh,int *l,int *t,int *r,int *b){ui_layout_safe_viewport(cw,ch,ow,oh,safe_margin,l,t,r,b);}
 typedef unsigned DWORD,UINT;typedef unsigned char BYTE;typedef int HRESULT,LONG;
 static DWORD tick;
 static DWORD GetTickCount(){return tick;}
@@ -187,7 +189,11 @@ int main() {
     const ui_draw_command *steady=ui_draw_commands(&count);std::vector<ui_draw_command> steady_commands(steady,steady+count);
     assert(ui_focus_tick(0));unsigned before_motion=presents,before_motion_uploads=uploads;ui_present();assert(presents==before_motion); // pending prior fence
     assert(ui_focus_tick(120));guide=true;pending=false;ui_present();assert(presents==before_motion);
-    assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1 && !ui_focus_tick(176));
+    assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1);
+    assert(ui_focus_tick(176)); // cover fade still advances after focus has settled
+    assert(ui_focus_tick(220));ui_present();
+    for(unsigned ms=236;ms<1200 && ui_focus_tick(ms);ms+=40){pending=false;ui_present();}
+    assert(!ui_focus_tick(1200));
     assert(uploads==before_motion_uploads);
     steady=ui_draw_commands(&count);assert(!memcmp(steady_commands.data(),steady,count*sizeof(*steady)));
 

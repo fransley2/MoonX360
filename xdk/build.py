@@ -57,14 +57,26 @@ LOW_LATENCY_INPUT=os.environ.get('XDK_LOW_LATENCY_INPUT','0')
 if LOW_LATENCY_INPUT not in ('0','1'):raise SystemExit('XDK_LOW_LATENCY_INPUT must be 0 or 1')
 OPTIMIZED_YUV_COPY=os.environ.get('XDK_OPTIMIZED_YUV_COPY','0')
 if OPTIMIZED_YUV_COPY not in ('0','1'):raise SystemExit('XDK_OPTIMIZED_YUV_COPY must be 0 or 1')
+DIAGNOSTIC_LEGACY_UPLOAD=os.environ.get('XDK_DIAGNOSTIC_LEGACY_UPLOAD','0')
+if DIAGNOSTIC_LEGACY_UPLOAD not in ('0','1'):raise SystemExit('XDK_DIAGNOSTIC_LEGACY_UPLOAD must be 0 or 1')
 ADAPTIVE_FAST_DECODE=os.environ.get('XDK_ADAPTIVE_FAST_DECODE','0')
 if ADAPTIVE_FAST_DECODE not in ('0','1'):raise SystemExit('XDK_ADAPTIVE_FAST_DECODE must be 0 or 1')
+H264_REFERENCE_MODE=os.environ.get('XDK_H264_REFERENCE_MODE','0')
+if H264_REFERENCE_MODE not in ('0','1','2'):raise SystemExit('XDK_H264_REFERENCE_MODE must be 0, 1, or 2')
+H264_NO_RFI=os.environ.get('XDK_H264_NO_RFI','0')
+if H264_NO_RFI not in ('0','1'):raise SystemExit('XDK_H264_NO_RFI must be 0 or 1')
+H264_SINGLE_SLICE_REQUEST=os.environ.get('XDK_H264_SINGLE_SLICE_REQUEST','0')
+if H264_SINGLE_SLICE_REQUEST not in ('0','1'):raise SystemExit('XDK_H264_SINGLE_SLICE_REQUEST must be 0 or 1')
 IDENTITY_DEFS=['/D','XDK_WORKER_MAP_PREVIOUS='+str(int(WORKER_MAP=='previous')),
                '/D','XDK_SLICE_DISPATCH_BATCHED='+str(int(SLICE_DISPATCH=='batched')),
                '/D','XDK_OPTIMIZATION_AGGRESSIVE='+str(int(PROFILE=='aggressive')),
                '/D','LOW_LATENCY_INPUT='+LOW_LATENCY_INPUT,
                '/D','OPTIMIZED_YUV_COPY='+OPTIMIZED_YUV_COPY,
-               '/D','ADAPTIVE_FAST_DECODE='+ADAPTIVE_FAST_DECODE]
+               '/D','DIAGNOSTIC_LEGACY_UPLOAD='+DIAGNOSTIC_LEGACY_UPLOAD,
+               '/D','ADAPTIVE_FAST_DECODE='+ADAPTIVE_FAST_DECODE,
+               '/D','XDK_H264_REFERENCE_MODE='+H264_REFERENCE_MODE,
+               '/D','XDK_H264_NO_RFI='+H264_NO_RFI,
+               '/D','XDK_H264_SINGLE_SLICE_REQUEST='+H264_SINGLE_SLICE_REQUEST]
 MBEDTLS_DEFS = ["/I", os.path.join(MBEDTLS, "include"), "/I", XDK_DIR,
                 "/D", 'MBEDTLS_USER_CONFIG_FILE="mbedtls_config_xdk.h"']
 
@@ -319,6 +331,8 @@ def target_xex():
     rc, out = run([TOOLS["link"], "/nologo", "/XEX:NO", "/OUT:" + exe, "/OPT:REF", "/OPT:ICF", "/STACK:524288",
                    "/MAP:" + os.path.join(OUT, "MoonX360.map"),
                    "@" + rsp] + (["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    with open(exe + '.link.log', 'w', encoding='utf-8') as f:
+        f.write('exit=' + str(rc) + '\n' + out)
     if rc != 0:
         print(out)
         return None
@@ -336,6 +350,8 @@ def target_xex():
     config.write(config_path, encoding="utf-8", xml_declaration=True)
     rc, out = run([TOOLS["imagexex"], "/nologo", "/config:" + config_path,
                    "/out:" + xex, exe])
+    with open(xex + '.imagexex.log', 'w', encoding='utf-8') as f:
+        f.write('exit=' + str(rc) + '\n' + out)
     if rc != 0:
         print(out)
         return None
@@ -387,6 +403,7 @@ def target_shortcut_xex(variant="normal"):
     exe=os.path.join(folder,"MoonX360Shortcut.exe")
     rc,out=run([TOOLS["link"],"/nologo","/XEX:NO","/OUT:"+exe,"/OPT:REF","/OPT:ICF"]+objects+
                ["xapilib.lib","xboxkrnl.lib"]+(["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    with open(exe+'.link.log','w',encoding='utf-8') as f:f.write('exit='+str(rc)+'\n'+out)
     if rc!=0:print(out);return None
     tree=ET.parse(os.path.join(XDK_DIR,"MoonX360.xlast"))
     root=tree.getroot()
@@ -407,6 +424,7 @@ def target_shortcut_xex(variant="normal"):
     config.write(config_path,encoding="utf-8",xml_declaration=True)
     xex=os.path.join(folder,"default.xex")
     rc,out=run([TOOLS["imagexex"],"/nologo","/config:"+config_path,"/out:"+xex,exe])
+    with open(xex+'.imagexex.log','w',encoding='utf-8') as f:f.write('exit='+str(rc)+'\n'+out)
     if rc!=0:print(out);return None
     extracted=os.path.join(folder,"MoonX360Shortcut-embedded.spa")
     rc,out=run([TOOLS["imagexex"],"/dump","/sectionname:4D583353","/sectionfile:"+extracted,xex])

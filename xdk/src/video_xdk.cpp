@@ -14,6 +14,8 @@
  */
 #include "xdk.h"
 #include "../../src/video_viewport.h"
+#include "../../src/video_h264_diagnostic.h"
+#include "../../src/h264_reference_policy.h"
 #include "../../src/performance.h"
 
 #include <malloc.h>
@@ -30,6 +32,9 @@
 #include "../../src/launch_cover.h"
 #include "../../src/video_session.h"
 #include "../../src/video_gpu_policy.h"
+#include "../../src/video_picture.h"
+#include "../../src/video_smoothing.h"
+#include "../../src/refresh_trace.h"
 #include "../../src/ui/ui.h"
 #include "../ffmpeg_xbox/xbox_dsp.h"
 #include "../stream_checks.h"
@@ -37,10 +42,23 @@
 #include "../../src/decode_deadline.h"
 #include "../../src/timing.h"
 #include "build_identity.h"
+#ifndef DIAGNOSTIC_LEGACY_UPLOAD
+#define DIAGNOSTIC_LEGACY_UPLOAD 0
+#endif
+#ifndef XDK_H264_REFERENCE_MODE
+#define XDK_H264_REFERENCE_MODE 0
+#endif
+#ifndef XDK_H264_SINGLE_SLICE_REQUEST
+#define XDK_H264_SINGLE_SLICE_REQUEST 0
+#endif
+#ifndef XDK_H264_NO_RFI
+#define XDK_H264_NO_RFI 0
+#endif
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/log.h>
+#include "../ffmpeg_xbox/h264_parallel_diagnostic.h"
 extern AVCodec ff_h264_decoder;
 #if XDK_SLICE_DISPATCH_BATCHED
 int ff_xbox_slice_dispatch_version(void);
@@ -71,9 +89,19 @@ static struct video_options options = { true, RENDERER_GPU, true, false, 60, 300
 static bool first_present_logged,last_present_shown,launch_decode_notified;
 static bool freeze_first_present;
 static int session_slices = 8;
+static struct video_h264_diagnostic h264_diagnostic = {1,0,1,0};
+static bool yuv_captured;
+static bool yuv_upload_compared;
+static int h264_workers(void) { return XDK_H264_SINGLE_SLICE_REQUEST || h264_diagnostic.workers == 1 ? 1 : options.decode_workers == 3 ? 3 : 4; }
 /* MCC passes StreamConfig.fps to setup, not an observed/negotiated rate. */
 static int setup_fps_argument;
 static struct video_stats stats;
+static FFH264ParallelDiagnostic parallel_totals;
+static uint32_t parallel_serial_frames,parallel_parallel_frames,parallel_mixed_frames;
+static uint32_t parallel_forced_serial_frames,parallel_reference_frames,parallel_nonreference_frames;
+struct parallel_trace_entry {uint32_t frame,decode_us,idr;FFH264ParallelDiagnostic d;};
+static parallel_trace_entry parallel_trace[64];
+static uint32_t parallel_trace_next,parallel_trace_count;
 static struct decode_deadline deadline, deadline_overlay;
 static CRITICAL_SECTION telemetry_lock;
 static struct stream_observations observations;
@@ -84,6 +112,7 @@ static uint32_t network_rtt, network_variance;
 static int network_video_queue, network_video_queue_peak, network_audio_ms;
 static bool network_valid;
 static RTP_VIDEO_STATS last_rtp_stats;
+static uint64_t rtp_counter_duration_us;
 static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_late_packets,last_lost_frames;
 static uint32_t last_data_packets,last_fec_packets;
 static volatile bool telemetry_ready;
@@ -98,12 +127,17 @@ static struct staging slots[FRAME_SLOTS];
 static uint64_t legacy_ready_us[FRAME_SLOTS];
 static uint32_t legacy_ready_ms[FRAME_SLOTS];
 static uint32_t legacy_serial[FRAME_SLOTS],publish_serial,last_present_serial,present_duplicates;
+static uint64_t legacy_picture[FRAME_SLOTS];
+static uint32_t idr_present_calls,decode_no_picture;
+static uint32_t smoothing_last_input;static bool smoothing_have_input;
+static struct refresh_trace refresh_trace;
+static struct perf_pressure pressure_at_setup;
 static bool last_present_cached;
 static uint64_t previous_present_start_us,last_present_start_us,last_present_return_us;
 static uint64_t last_decoded_us,last_presented_us;
 static uint32_t present_age_sample_ordinal;
 static uint32_t last_packet_age_stop_ms,last_decode_age_stop_ms,last_present_age_stop_ms;
-struct present_trace_entry {uint64_t start_us,return_us;uint32_t serial;uint8_t cached;};
+struct present_trace_entry {uint64_t start_us,return_us;uint32_t serial,frame;uint8_t cached,idr;};
 static present_trace_entry present_trace[64];
 static uint32_t present_trace_next,present_trace_count;
 static CRITICAL_SECTION mailbox_lock;
@@ -111,6 +145,84 @@ static int slot_pending = -1, slot_rendering = -1;
 static HANDLE frame_event, render_thread;
 static volatile bool running;
 static bool need_idr;
+static volatile LONG refresh_active,refresh_state,refresh_requests,refresh_decoded_idrs;
+static volatile LONG refresh_request_lock;
+static volatile LONG refresh_completed_request;
+/* Never reset at resize/start: delayed pictures must not alias a new session's
+ * request counter after video_start() resets the user-facing statistics. */
+static volatile LONG refresh_generation;
+static uint32_t idr_received,idr_decoded;
+static volatile LONG refresh_last_idr_ms,refresh_requested_ms,refresh_last_request_ms;
+
+static bool request_picture_refresh(DWORD now,DWORD cooldown_ms)
+{
+    if(!InterlockedCompareExchange(&refresh_active,0,0))return false;
+    if(InterlockedCompareExchange(&refresh_request_lock,1,0)!=0)return false;
+    LONG state=InterlockedCompareExchange(&refresh_state,0,0);
+    DWORD last=(DWORD)InterlockedCompareExchange(&refresh_last_request_ms,0,0);
+    if(state==VIDEO_REFRESH_REQUESTED || state==VIDEO_REFRESH_WAITING ||
+       (last && (DWORD)(now-last)<cooldown_ms)){
+        InterlockedExchange(&refresh_request_lock,0);
+        return false;
+    }
+    InterlockedExchange(&refresh_requested_ms,(LONG)now);
+    InterlockedExchange(&refresh_last_request_ms,(LONG)now);
+    InterlockedIncrement(&refresh_generation);
+    InterlockedExchange(&refresh_state,VIDEO_REFRESH_REQUESTED);
+    InterlockedIncrement(&refresh_requests);
+    InterlockedExchange(&refresh_request_lock,0);
+    /* MCC signals its control stream; no FFmpeg state is touched here. */
+    LiRequestIdrFrame();
+    return true;
+}
+bool video_request_picture_refresh(void)
+{
+    return request_picture_refresh(GetTickCount(),3000);
+}
+void video_refresh_tick(uint32_t now_ms)
+{
+    if(!InterlockedCompareExchange(&refresh_active,0,0))return;
+    LONG state=InterlockedCompareExchange(&refresh_state,0,0);
+    DWORD requested=(DWORD)InterlockedCompareExchange(&refresh_requested_ms,0,0);
+    /* Decoder never waits for the request lock. Finish a deferred observation
+     * here on the input owner if request admission overlapped decode output. */
+    if((state==VIDEO_REFRESH_REQUESTED || state==VIDEO_REFRESH_WAITING) &&
+       InterlockedCompareExchange(&refresh_completed_request,0,0)==
+       InterlockedCompareExchange(&refresh_generation,0,0)) {
+        InterlockedCompareExchange(&refresh_state,VIDEO_REFRESH_DECODED,state);
+        state=InterlockedCompareExchange(&refresh_state,0,0);
+    }
+    if(state==VIDEO_REFRESH_REQUESTED && (DWORD)(now_ms-requested)>=150)
+        InterlockedCompareExchange(&refresh_state,VIDEO_REFRESH_WAITING,VIDEO_REFRESH_REQUESTED);
+    else if(state==VIDEO_REFRESH_WAITING && (DWORD)(now_ms-requested)>=4000)
+        InterlockedCompareExchange(&refresh_state,VIDEO_REFRESH_UNAVAILABLE,VIDEO_REFRESH_WAITING);
+    DWORD last=(DWORD)InterlockedCompareExchange(&refresh_last_request_ms,0,0);
+    if(options.refresh_interval_ms>0 && state!=VIDEO_REFRESH_REQUESTED &&
+       state!=VIDEO_REFRESH_WAITING &&
+       (DWORD)(now_ms-last)>=(DWORD)options.refresh_interval_ms)
+        request_picture_refresh(now_ms,0);
+}
+void video_get_refresh_snapshot(struct video_refresh_snapshot *out)
+{
+    out->state=(int)InterlockedCompareExchange(&refresh_state,0,0);
+    out->requests=(uint32_t)InterlockedCompareExchange(&refresh_requests,0,0);
+    out->decoded_idrs=(uint32_t)InterlockedCompareExchange(&refresh_decoded_idrs,0,0);
+    out->last_idr_ms=(uint32_t)InterlockedCompareExchange(&refresh_last_idr_ms,0,0);
+}
+static void video_refresh_decoded_idr(uint32_t now_ms,uint32_t request)
+{
+    InterlockedIncrement(&refresh_decoded_idrs);
+    InterlockedExchange(&refresh_last_idr_ms,(LONG)now_ms);
+    InterlockedExchange(&refresh_completed_request,(LONG)request);
+    /* A delayed pre-request picture must not complete a newer refresh. Never
+     * wait on the input thread: if it is admitting a request, leave it pending. */
+    if(InterlockedCompareExchange(&refresh_request_lock,1,0)!=0)return;
+    LONG state=InterlockedCompareExchange(&refresh_state,0,0);
+    if(request==(uint32_t)InterlockedCompareExchange(&refresh_generation,0,0) &&
+       (state==VIDEO_REFRESH_REQUESTED || state==VIDEO_REFRESH_WAITING))
+        InterlockedCompareExchange(&refresh_state,VIDEO_REFRESH_DECODED,state);
+    InterlockedExchange(&refresh_request_lock,0);
+}
 static volatile LONG decoder_reset_requested;
 static volatile LONG stream_error;
 int video_get_stream_error(void) { return InterlockedCompareExchange(&stream_error,0,0); }
@@ -262,6 +374,14 @@ void video_set_options(const struct video_options *opts)
     options = *opts;
     xdk_set_thread_layout(opts->thread_layout);
     session_slices = video_session_slices(opts);
+    /* Isolated reference-safe experiment. The current host emits IDC 0, so
+     * this decoder has already been forced to serial reconstruction. Request
+     * one encoded slice and avoid unused slice workers without changing the
+     * normative filter. The host may ignore the request; reports record the
+     * actual parsed slice count. */
+#if XDK_H264_SINGLE_SLICE_REQUEST
+    session_slices = 1;
+#endif
 }
 
 int video_colorspace(int width, int height)
@@ -277,6 +397,23 @@ void video_get_display_size(int *w, int *h)
 void video_get_stats(struct video_stats *out)
 {
     *out = stats;
+}
+void video_get_quick_info(struct video_quick_info *out)
+{
+    memset(out,0,sizeof(*out));
+    out->requested_w=options.width;out->requested_h=options.height;
+    out->requested_fps=options.target_fps;out->bitrate_kbps=options.bitrate_kbps;
+    out->slices=session_slices;out->renderer=options.renderer;
+    out->fast_decode=options.fast_decode;
+    out->shader_mode=gpu_shader_fast(requested_shader,gfx_quality_available(),&quality_policy)?1:2;
+    out->decode_workers=stats.decode_threads;
+    snprintf(out->host_name,sizeof(out->host_name),"%s",options.host_name);
+    snprintf(out->pipeline,sizeof(out->pipeline),"%s",pipeline_name(current_pipeline()));
+    EnterCriticalSection(&telemetry_lock);
+    out->network_valid=network_valid;out->rtt_ms=network_rtt;
+    out->variance_ms=network_variance;
+    out->queue_age_ms=deadline_overlay.queue_valid?deadline_overlay.queue_us/1000:0;
+    LeaveCriticalSection(&telemetry_lock);
 }
 
 void video_set_network_stats(uint32_t rtt, uint32_t variance, bool valid,
@@ -364,7 +501,13 @@ static AVCodecContext *open_h264(int width, int height, int threads, bool fast_d
     if (c == NULL)
         return NULL;
     c->flags |= CODEC_FLAG_LOW_DELAY;
-    c->flags2 |= CODEC_FLAG2_FAST;
+    if (h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,fast_decode))
+        c->flags2 |= CODEC_FLAG2_FAST;
+    else c->flags2 &= ~CODEC_FLAG2_FAST;
+    /* This fork only tracks incomplete macroblocks when error recognition is on. */
+    c->err_recognition = AV_EF_CAREFUL;
+    c->skip_frame = AVDISCARD_DEFAULT;
+    c->skip_idct = AVDISCARD_DEFAULT;
     /* The host receives a session-specific slice request (see capabilities),
      * which the worker threads decode in parallel. No added latency. */
     c->thread_type = FF_THREAD_SLICE;
@@ -372,8 +515,8 @@ static AVCodecContext *open_h264(int width, int height, int threads, bool fast_d
     c->width = width;
     c->height = height;
     c->pix_fmt = AV_PIX_FMT_YUV420P;
-    if (fast_decode)
-        c->skip_loop_filter = AVDISCARD_ALL;
+    c->skip_loop_filter = (enum AVDiscard)h264_reference_filter(XDK_H264_REFERENCE_MODE,fast_decode,false,
+                                                AVDISCARD_DEFAULT,AVDISCARD_NONREF,AVDISCARD_ALL);
     if (avcodec_open2(c, &ff_h264_decoder, NULL) < 0) {
         av_free(c);
         return NULL;
@@ -434,12 +577,15 @@ static bool overlay_text(char *out,size_t capacity)
         stats.avg_decode_us/1000.0>budget?"Decoder overloaded":
         (d.queue_valid && d.queue_us>budget*1000.0) || video_queue>1?"Video is waiting":
         rates.shown+1.0<options.target_fps?"Below target FPS":"Keeping up";
-    const char *filter=options.fast_decode?"Fast":d.recovery?"Reduced (recovery)":"Full";
+    const char *filter;
+    const char *fast_status;
+    filter=options.fast_decode ? "Fast" : d.recovery ? "Reduced (recovery)" : "Full";
+    fast_status=fast_decode_name(options.fast_decode);
     out[0]=0;
     overlay_line(out,capacity,"Stream: %dx%d | %.1f / %d FPS",vid_w,vid_h,rates.shown,options.target_fps);
     overlay_line(out,capacity,"Bitrate: %.2f / %.2f Mbps (actual / set)",rates.payload_mbps,options.bitrate_kbps/1000.0);
     overlay_line(out,capacity,"Status: %s",ui_translate(status));
-    overlay_line(out,capacity,"H.264 filter: %s | Fast Decode: %s",ui_translate(filter),ui_translate(options.fast_decode?"On":"Off"));
+    overlay_line(out,capacity,"H.264 filter: %s | Fast Decode: %s",ui_translate(filter),ui_translate(fast_status));
     overlay_line(out,capacity,"GPU image: %s | Active: %s%s",
         ui_translate(options.shader_mode==1?"Fast":options.shader_mode==2?"Quality":"Auto Quality"),
         ui_translate(gpu_shader_fast(requested_shader,gfx_quality_available(),&quality_policy)?"Fast":"Quality"),
@@ -489,16 +635,25 @@ static void activate_legacy_fallback(void)
 }
 
 static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
-                           const char *text,bool update,uint64_t ready_us,uint32_t serial)
+                           const char *text,bool update,uint64_t ready_us,uint32_t serial,uint64_t picture=0)
 {
     last_present_shown=false;
     bool available=gfx_quality_available();
-    bool control=requested_shader==0 && available && !quality_policy.tested;
+    bool clarity=options.crt_clarity && vid_h<=480 && gfx_crt_clarity_available();
+    bool control=requested_shader==0 && available && !quality_policy.tested && !clarity && !options.refresh_smoothing;
     bool measure=options.stats_overlay || control || perf_enabled();
     uint64_t t=measure?now_us():0;
-    int i;
+    int i;D3DTexture *history[3]={NULL,NULL,NULL};float previous_weight=0;int smoothing_history=-1;
+    if(options.refresh_smoothing && (launch_active() || gfx_launch_pending()))cached_video_invalidate_history();
+    if(options.refresh_smoothing && cached_slot>=0 && gfx_smoothing_available(clarity))
+        smoothing_history=cached_video_prepare_smoothing(cached_slot,options.smoothing_strength,history,&previous_weight);
+    bool temporal=previous_weight>0 && history[0] && history[0]!=planes[0];
     bool fast=gpu_shader_fast(requested_shader,available,&quality_policy);
     for (i=0;i<3;i++) d->SetTexture(i,planes[i]);
+    if(temporal) {
+        for(i=0;i<3;i++)d->SetTexture(i+3,history[i]);
+        float transition[4];smoothing_constants(previous_weight,transition);d->SetPixelShaderConstantF(2,transition,1);
+    }
     /* Rebind constants with the shader: RGB UI/overlay shares this device. */
     float coefficients[4],texel[4]={1.0f/vid_w,1.0f/vid_h,0,0};
     video_yuv_coefficients(options.color_space,coefficients);
@@ -508,10 +663,14 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
     video_fit_rect(vid_w,vid_h,bw,bh,&left,&top,&right,&bottom);
     if(left || top || right!=bw || bottom!=bh)
         d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
-    gfx_draw_rect(d,fast?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY,
+    int shader=clarity?GFX_SHADER_CRT_CLARITY:fast?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY;
+    if(options.refresh_smoothing)shader=temporal?(clarity?GFX_SHADER_YUV_SMOOTH_CRT:GFX_SHADER_YUV_SMOOTH):
+        smoothing_history==-2 && clarity?GFX_SHADER_CRT_CLARITY:GFX_SHADER_YUV_FAST;
+    gfx_draw_rect(d,shader,
                   (float)left*GFX_WIDTH/bw,(float)top*GFX_HEIGHT/bh,
                   (float)right*GFX_WIDTH/bw,(float)bottom*GFX_HEIGHT/bh);
-    for (i=0;i<3;i++) d->SetTexture(i,NULL);
+    if(temporal)cached_video_smoothing_drawn();
+    for (i=0;i<(temporal?6:3);i++) d->SetTexture(i,NULL);
     if (measure) {
         uint64_t submit=now_us()-t;
         pipeline_sample(TIME_GPU_SUBMIT,submit);
@@ -547,6 +706,7 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
             plat_diagnostics_checkpoint("[FREEZE] first video Present entered\n");
         video_progress_note(VP_PRESENT_CALLED);
         d->Present(NULL,NULL,NULL,NULL);
+        if(picture & 1)idr_present_calls++; /* CPU Present call, not scanout proof */
         /* Every call consumed a newly selected slot, even when a resize or
          * cached-to-legacy switch restarted that slot's local serial. */
         video_progress_new_present();
@@ -562,13 +722,14 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
             perf_record(PERF_PRESENT_CALL,last_present_return_us-present_started);
             present_trace_entry *entry=&present_trace[present_trace_next];
             entry->start_us=present_started;entry->return_us=last_present_return_us;
-            entry->serial=serial;entry->cached=cached_slot>=0;
+            entry->serial=serial;entry->cached=cached_slot>=0;entry->frame=(uint32_t)picture>>1;entry->idr=(uint8_t)(picture&1);
             present_trace_next=(present_trace_next+1)%64;
             if(present_trace_count<64)present_trace_count++;
         }
         last_present_shown=true;
         if(!first_present_logged && !launch_active()){first_present_logged=true;perf_mark(PERF_FIRST_PRESENTED);vlog("[NET] total start-to-video: %u ms\n",GetTickCount()-options.connection_started_ms);}
     }
+    if(cached_slot>=0)cached_video_presented(cached_slot,last_present_shown);
     if (options.stats_overlay) pipeline_sample(TIME_PRESENT_WAIT,now_us()-t);
     return fence;
 }
@@ -576,14 +737,22 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
 static int draw_cached_frame(void)
 {
     if(gfx_system_ui_active())return 0;
+    /* A timeout is not a frame. Avoid taking D3D ownership (and preparing the
+     * overlay) when nothing can be drawn. A later publish leaves frame_event
+     * signalled for the next wait; latest-frame selection still happens only
+     * after acquiring D3D, so this peek never pins an older frame. */
+    if(!cached_video_has_ready())return 0;
     char text[1536];
     bool update=options.stats_overlay && telemetry_ready && !overlay_failed && overlay_text(text,sizeof(text));
-    D3DDevice *d=gfx_begin();D3DTexture *planes[3];unsigned discarded=0;
+    uint64_t acquire_start=perf_enabled()?perf_clock():0;
+    D3DDevice *d=gfx_begin();
+    if(acquire_start)perf_record(PERF_D3D_ACQUIRE,perf_clock()-acquire_start);
+    D3DTexture *planes[3];unsigned discarded=0;
     int slot=cached_video_take(planes,&discarded);
     if (discarded) { InterlockedExchangeAdd((volatile LONG*)&stats.dropped,discarded);stats.render_superseded+=discarded; }
     if (slot<0) { gfx_end();return 0; }
     video_progress_note(VP_SELECTED);
-    present_video(d,planes,slot,text,update,cached_video_ready_time(slot),cached_video_frame_serial(slot));gfx_end();return last_present_shown?1:0;
+    present_video(d,planes,slot,text,update,cached_video_ready_time(slot),cached_video_frame_serial(slot),cached_video_picture(slot));gfx_end();return last_present_shown?1:0;
 }
 
 static bool draw_frame(int slot)
@@ -636,6 +805,10 @@ static bool draw_frame(int slot)
     if (options.stats_overlay)
         stats.avg_upload_us = stream_smooth(stats.avg_upload_us, (uint32_t)(now_us() - timing));
 
+    /* Snapshot metadata before releasing producer ownership. The producer may
+     * immediately reuse this staging slot while we submit independent textures. */
+    uint64_t ready_us=legacy_ready_us[slot],picture=legacy_picture[slot];
+    uint32_t serial=legacy_serial[slot];
     /* The staging slot can be refilled now. */
     EnterCriticalSection(&mailbox_lock);
     slot_rendering = -1;
@@ -648,7 +821,7 @@ static bool draw_frame(int slot)
     video_progress_note(VP_UPLOADED);
 
     legacy_fence_submitted_ms[k]=GetTickCount();
-    tex_fence[k]=present_video(d,tex[k],-1,text,update,legacy_ready_us[slot],legacy_serial[slot]);
+    tex_fence[k]=present_video(d,tex[k],-1,text,update,ready_us,serial,picture);
     gfx_end();
     return last_present_shown;
 }
@@ -659,6 +832,7 @@ static void render_tick(DWORD wake)
 {
     video_progress_note(VP_RENDER_ITERATION);
     if(gfx_system_ui_active()) {
+        if(options.refresh_smoothing)cached_video_invalidate_history();
         /* Guide heartbeat stays on the established D3D owner. */
         gfx_present_system_ui();return;
     }
@@ -730,6 +904,33 @@ static void copy_plane(uint8_t *dst, int w, int h, const uint8_t *src, int pitch
         XMemCpy(dst + y * w, src + y * pitch, w);
 }
 
+/* Opt-in, one raw planar YUV420 picture per stream for PC reconstruction.
+ * Copy before publishing so it can identify decoder output independently
+ * from the GPU path. The 4 MiB limit bounds both RAM and disk use. */
+static void capture_decoded_yuv_once(const AVFrame *f, int frame_number)
+{
+    if (!h264_diagnostic.capture_yuv || yuv_captured || !storage_dir()) return;
+    yuv_captured = true;
+    size_t y=(size_t)vid_w*vid_h, uv=(size_t)chroma_w*chroma_h;
+    size_t bytes=y+2*uv;
+    if (bytes>4u*1024u*1024u) return;
+    uint8_t *raw=(uint8_t *)malloc(bytes);
+    if (!raw) return;
+    copy_plane(raw,vid_w,vid_h,f->data[0],f->linesize[0]);
+    copy_plane(raw+y,chroma_w,chroma_h,f->data[1],f->linesize[1]);
+    copy_plane(raw+y+uv,chroma_w,chroma_h,f->data[2],f->linesize[2]);
+    bool saved=storage_write("video-decoded.yuv",raw,bytes);
+    free(raw);
+    if (saved) {
+        char info[160];
+        int n=snprintf(info,sizeof(info),"format=yuv420p\nwidth=%d\nheight=%d\nframe=%d\nbytes=%u\n",
+                       vid_w,vid_h,frame_number,(unsigned)bytes);
+        if (n>0 && (size_t)n<sizeof(info))storage_write("video-decoded.txt",info,(size_t)n);
+    }
+    vlog("[H264 DIAG] decoded YUV capture %s frame=%d size=%u\n",
+         saved?"saved":"failed",frame_number,(unsigned)bytes);
+}
+
 static void publish(const AVFrame *f)
 {
     int s;
@@ -762,6 +963,8 @@ static void publish(const AVFrame *f)
     legacy_ready_us[s]=perf_enabled()?perf_clock():0;
     legacy_ready_ms[s]=GetTickCount();
     legacy_serial[s]=++publish_serial;
+    legacy_picture[s]=(uint64_t)f->reordered_opaque;
+    if(!video_picture_idr(legacy_picture[s],f->key_frame!=0))legacy_picture[s]&=~(uint64_t)1;
     LeaveCriticalSection(&mailbox_lock);
     SetEvent(frame_event);
     if (options.stats_overlay)
@@ -781,7 +984,15 @@ static void publish_frame(const AVFrame *f)
     int pitches[3]={f->linesize[0],f->linesize[1],f->linesize[2]};
     struct gfx_copy_cost cost={0,0};
     uint64_t t=options.stats_overlay?now_us():0;
-    int result=cached_video_publish(planes,pitches,options.stats_overlay?&cost:NULL);
+    cost.verify=h264_diagnostic.capture_yuv && !yuv_upload_compared;
+    uint64_t picture=(uint64_t)f->reordered_opaque;
+    if(!video_picture_idr(picture,f->key_frame!=0))picture&=~(uint64_t)1;
+    int result=cached_video_publish_picture(planes,pitches,(options.stats_overlay || cost.verify)?&cost:NULL,picture);
+    if (cost.verify && result!=0) {
+        yuv_upload_compared=true;
+        vlog("[H264 DIAG] cached YUV upload comparison %s mismatched_rows=%u callback=%u\n",
+             result>0?"equal":"failed",cost.mismatch_rows,stats.received);
+    }
     if (result>0) {
         video_progress_note(VP_QUEUED);
         if (options.stats_overlay) {
@@ -927,10 +1138,17 @@ static void free_resources(void)
     free_video_buffers();
 }
 
+static void configure_smoothing_history(bool cached,int height)
+{
+    bool crt=options.crt_clarity && height<=480 && gfx_crt_clarity_available();
+    if(cached && options.refresh_smoothing && gfx_smoothing_available(crt))cached_video_enable_history();
+}
+
 static int video_setup(int format, int width, int height, int fps, void *ctx, int dr_flags)
 {
     bool ok = true;
     setup_fps_argument=fps;
+    cached_video_reset_smoothing_diagnostics();
     (void)ctx;
     (void)dr_flags;
 
@@ -947,7 +1165,16 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     plat_diagnostics_checkpoint(freeze_stage);
 
     memset(&stats, 0, sizeof(stats));
-    memset(&last_rtp_stats,0,sizeof(last_rtp_stats));
+    memset(&parallel_totals,0,sizeof(parallel_totals));
+    parallel_serial_frames=parallel_parallel_frames=parallel_mixed_frames=0;
+    parallel_forced_serial_frames=parallel_reference_frames=parallel_nonreference_frames=0;
+    parallel_trace_next=parallel_trace_count=0;
+    idr_received=idr_decoded=0;
+    idr_present_calls=decode_no_picture=0;smoothing_have_input=false;smoothing_last_input=0;memset(&refresh_trace,0,sizeof(refresh_trace));
+    perf_pressure_read(&pressure_at_setup);
+    yuv_captured = false;
+    yuv_upload_compared = false;
+    memset(&last_rtp_stats,0,sizeof(last_rtp_stats));rtp_counter_duration_us=0;
     last_complete_frames=last_video_packets=last_video_bytes=last_late_packets=last_lost_frames=0;
     last_data_packets=last_fec_packets=0;
     memset(legacy_ready_us,0,sizeof(legacy_ready_us));memset(legacy_serial,0,sizeof(legacy_serial));
@@ -984,7 +1211,7 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     vlog("video: setup %dx%d, format 0x%x, vmx flags %d, loopfilter selection %02x\n",
          width, height, format, ff_xbox_vmx_flags, ff_xbox_loopfilter_mask);
     plat_diagnostics_checkpoint("[FREEZE] H264 decoder initialization entered\n");
-    codec_ctx = open_h264(width, height, options.decode_workers==3?3:4, options.fast_decode);
+    codec_ctx = open_h264(width, height, h264_workers(), options.fast_decode);
     dec_frame = avcodec_alloc_frame();
     if (codec_ctx == NULL || dec_frame == NULL) {
         vlog("video: couldn't open the decoder\n");
@@ -1008,8 +1235,10 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     if (gpu_config) {
         free(gpu_config);
     }
+    if (DIAGNOSTIC_LEGACY_UPLOAD) requested_pipeline=PIPE_LEGACY;
     plat_diagnostics_checkpoint("[FREEZE] texture creation entered\n");
     bool use_cached=requested_pipeline!=PIPE_LEGACY && cached_video_init(width,height);
+    configure_smoothing_history(use_cached,height);
     if (!use_cached) {
         if (requested_pipeline!=PIPE_LEGACY) cached_failovers++;
         ok=create_legacy_video();
@@ -1017,6 +1246,7 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     InterlockedExchange(&active_pipeline,use_cached?PIPE_CACHED:PIPE_LEGACY);
     vlog("video: pipeline %s, shader %s, cached row footprint %I64u bytes\n",use_cached?"CPU_CACHED_TEXTURE":"LEGACY_UPLOAD",
          requested_shader==1?"FAST":requested_shader==2?"QUALITY":"AUTO QUALITY",(unsigned long long)cached_video_memory());
+    if (DIAGNOSTIC_LEGACY_UPLOAD) vlog("[H264 DIAG] Legacy Upload forced by diagnostic build\n");
     vlog("video: image menu=%d shader request=%d diagnostic override=%d; independent of Fast Decode=%d\n",
          options.shader_mode,requested_shader,shader_diagnostic_override,options.fast_decode);
     if (!ok || pkt_buf == NULL) {
@@ -1043,6 +1273,13 @@ static void video_start(void)
 {
     plat_diagnostics_checkpoint("[FREEZE] video renderer start entered\n");
     streaming_start_us=now_us();streaming_end_us=0;
+    InterlockedExchange(&refresh_active,1);
+    InterlockedExchange(&refresh_state,VIDEO_REFRESH_IDLE);
+    InterlockedExchange(&refresh_requests,0);
+    InterlockedExchange(&refresh_decoded_idrs,0);
+    InterlockedExchange(&refresh_completed_request,-1);
+    InterlockedExchange(&refresh_last_idr_ms,0);
+    InterlockedExchange(&refresh_last_request_ms,(LONG)GetTickCount());
     running = true;
     render_thread = CreateThread(NULL, 512 * 1024, render_main, NULL, CREATE_SUSPENDED, NULL);
     if (render_thread) {
@@ -1053,6 +1290,8 @@ static void video_start(void)
 
 static void video_stop(void)
 {
+    InterlockedExchange(&refresh_active,0);
+    InterlockedExchange(&refresh_state,VIDEO_REFRESH_UNAVAILABLE);
     running = false;
     if (render_thread) {
         SetEvent(frame_event);
@@ -1086,6 +1325,7 @@ static bool resize_video(int width,int height)
     free_video_buffers();
     vid_w=width;vid_h=height;chroma_w=(width+1)/2;chroma_h=(height+1)/2;
     bool cached=requested_pipeline!=PIPE_LEGACY && cached_video_init(width,height);
+    configure_smoothing_history(cached,height);
     bool ok=cached || create_legacy_video();
     InterlockedExchange(&active_pipeline,cached?PIPE_CACHED:ok?PIPE_LEGACY:PIPE_DISABLED);
     tex_next=0;
@@ -1105,8 +1345,91 @@ static uint32_t video_stage_age_ms(uint64_t now,uint64_t last)
     uint64_t age=(now-last)/1000;
     return age<UINT32_MAX?(uint32_t)age:UINT32_MAX;
 }
+/* Cold, bounded report, also available when per-frame timing is disabled. */
+static void write_seamless_report(void)
+{
+    char text[768];
+    int n=snprintf(text,sizeof(text),
+        "schema=1\npresentation=seamless_direct\ntemporal_blend=see_smoothing-session.txt\n"
+        "extra_gpu_history_bytes=see_smoothing-session.txt\nextra_gpu_samples=see_smoothing-session.txt\nrefresh_requests=%u\n"
+        "idr_received=%u\nidr_valid_decoded=%u\nidr_present_calls=%u\ndecode_no_picture=%u\n"
+        "present_scope=CPU_calls_not_scanout\nnewest_frame_selection=unchanged\n",
+        (uint32_t)refresh_requests,idr_received,idr_decoded,idr_present_calls,decode_no_picture);
+    if(n>0 && (size_t)n<sizeof(text))storage_write("seamless-session.txt",text,(size_t)n);
+}
+static void write_smoothing_report(void)
+{
+    struct smoothing_diagnostics m;cached_video_smoothing_snapshot(&m);
+    bool crt=options.crt_clarity && vid_h<=480 && gfx_crt_clarity_available();
+    bool created=gfx_smoothing_available(crt);
+    char text[2048];int n=snprintf(text,sizeof(text),
+        "schema=1\nmode=GPU_Smooth_Experimental\ngpu_smoothing_requested=%d\ngpu_smoothing_enabled=%d\n"
+        "smoothing_shader_created=%d\nsmoothing_strength=%s\nprevious_frame_available=%d\n"
+        "history_slot_pinned=%u\nhistory_currently_pinned=%d\nhistory_slot_bypassed=%u\n"
+        "idr_transition_started=%u\nidr_transition_applied=%u\nactual_blended_present_calls=%u\n"
+        "transition_bypassed_motion=%u\ntransition_bypassed_invalid_history=%u\nhistory_allocation_failed=%u\n"
+        "additional_gpu_history_bytes=%I64u\nadditional_history_row_bytes=%I64u\ngpu_slot_starvation=%u\n"
+        "normal_cached_producer_slot_capacity=3\nhistory_pool_slots=%d\n"
+        "blend_counter_scope=Present_calls_with_two_distinct_raw_images_and_temporal_shader_not_scanout_or_nonzero_pixel_proof\n"
+        "motion_counter_scope=sparse_CPU_gate;per_pixel_shader_gate_hits_unmeasured\n"
+        "history_memory_scope=last_successful_XGGetTextureLayout_base_plus_mips;allocator_header_overhead_unmeasured\n"
+        "gpu_execution_time=unmeasured;CPU_submit_and_Present_times_are_not_GPU_timestamps\n",
+        options.refresh_smoothing,options.refresh_smoothing && m.enabled && created,created,options.smoothing_strength==1?"Medium":"Low",
+        m.previous_frame_available,m.history_slot_pinned,m.history_currently_pinned,m.history_slot_bypassed,
+        m.idr_transition_started,m.idr_transition_applied,m.actual_blended_present_calls,m.transition_bypassed_motion,
+        m.transition_bypassed_invalid_history,m.history_allocation_failed,
+        (unsigned long long)m.additional_gpu_history_bytes,(unsigned long long)m.additional_history_row_bytes,gpu_slot_starvation,m.enabled?4:current_pipeline()==PIPE_CACHED?3:0);
+    if(n>0 && (size_t)n<sizeof(text))storage_write("smoothing-session.txt",text,(size_t)n);
+}
+static void write_refresh_network_reports(void)
+{
+    char text[16384];
+    const RTP_VIDEO_STATS *net=LiGetRTPVideoStats();
+    struct perf_pressure pressure_end;perf_pressure_read(&pressure_end);
+    uint64_t duration=streaming_end_us>streaming_start_us?streaming_end_us-streaming_start_us:0;
+    int n=snprintf(text,sizeof(text),
+        "schema=1\nlink=%s\nlink_scope=console_only_host_path_unknown\npacket_size=%d\npacket_loss_exact=unavailable\nIP_fragmentation=unavailable\n"
+        "duration_us=%I64u\nudp_datagrams=%u\nudp_bytes=%I64u\nudp_packets_per_second=%.3f\n"
+        "expected_data_shards=%u\nexpected_parity_shards=%u\naccepted_data_packets=%u\naccepted_parity_packets=%u\n"
+        "fec_recovered_data_shards=%u\nincomplete_block_data_deficit=%u\nrtp_oos=%u\nrtp_invalid=%u\ndecode_queue_overflows=%I64u\n"
+        "physical_crt_output_status=%d\ncrt_clarity_requested=%d\ncrt_clarity_active=%d\n"
+        "frame_samples=diagnostic_only_modulo_64;accepted_before_FEC_not_all_wire_packets\n"
+        "columns=frame,expected_data,expected_fec,accepted_data,accepted_fec,accepted_bytes,first_us,last_us,max_gap_us\n",
+        console_link_name(plat_network_link()),options.packet_size,(unsigned long long)duration,
+        net?net->datagrams:0,(unsigned long long)(net?net->datagramBytes:0),duration && net?net->datagrams*1000000.0/duration:0,
+        net?net->packetCountVideo:0,net?net->packetCountFec:0,net?net->acceptedData:0,net?net->acceptedFec:0,
+        net?net->packetCountFecRecovered:0,net?net->packetCountFecFailed:0,net?net->packetCountOOS:0,net?net->packetCountInvalid:0,
+        (unsigned long long)(pressure_end.overflows-pressure_at_setup.overflows),plat_crt_output_status(),options.crt_clarity,
+        options.crt_clarity && vid_h<=480 && gfx_crt_clarity_available());
+    for(unsigned i=0;net && i<RTP_VIDEO_FRAME_SAMPLES && n>0 && (size_t)n<sizeof(text);i++) {
+        const RTP_VIDEO_FRAME_STATS *f=&net->frames[i];if(!f->valid)continue;
+        n+=snprintf(text+n,sizeof(text)-n,"%u,%u,%u,%u,%u,%u,%I64u,%I64u,%u\n",f->frame,f->expectedData,f->expectedFec,
+            f->acceptedData,f->acceptedFec,f->bytes,(unsigned long long)f->firstUs,(unsigned long long)f->lastUs,f->maxGapUs);
+    }
+    if(n>0 && (size_t)n<sizeof(text))storage_write("network-session.txt",text,(size_t)n);
+    n=snprintf(text,sizeof(text),
+        "schema=1\nmeasurement=diagnostic_only;last_64_callbacks;size_percentiles_last_256\n"
+        "frames_sampled=%u\nidr_inputs_sampled=%u\nidr_callbacks_received=%u\nall_payload_bytes=%I64u\nidr_payload_bytes=%I64u\nidr_inputs_per_second=%.3f\n"
+        "frame_bytes_p50_p95_p99=%u,%u,%u\nidr_bytes_p50_p95_p99=%u,%u,%u\n"
+        "luma=8x8_point_grid_not_full_frame_or_quantization_proof\n"
+        "columns=input_frame,output_frame,input_idr,bytes,start_us,predecode_queue_age_us,decode_us,got,ret,decode_flags,validated,mean_y,min_y,max_y\n",
+        refresh_trace.frames,refresh_trace.idrs,idr_received,(unsigned long long)refresh_trace.all_bytes,(unsigned long long)refresh_trace.idr_bytes,
+        duration?idr_received*1000000.0/duration:0,
+        gpu_time_percentile(&refresh_trace.frame_sizes,50),gpu_time_percentile(&refresh_trace.frame_sizes,95),gpu_time_percentile(&refresh_trace.frame_sizes,99),
+        gpu_time_percentile(&refresh_trace.idr_sizes,50),gpu_time_percentile(&refresh_trace.idr_sizes,95),gpu_time_percentile(&refresh_trace.idr_sizes,99));
+    for(unsigned i=0;i<refresh_trace.count && n>0 && (size_t)n<sizeof(text);i++) {
+        const refresh_trace_frame *f=&refresh_trace.frame[(refresh_trace.next+REFRESH_TRACE_FRAMES-refresh_trace.count+i)%REFRESH_TRACE_FRAMES];
+        n+=snprintf(text+n,sizeof(text)-n,"%u,%u,%u,%u,%I64u,%u,%u,%d,%d,%d,%u,%u,%u,%u\n",
+            f->input,f->output,f->input_idr,f->bytes,(unsigned long long)f->start_us,f->queue_us,f->decode_us,f->got,f->ret,
+            f->flags,f->valid,f->mean_y,f->min_y,f->max_y);
+    }
+    if(n>0 && (size_t)n<sizeof(text))storage_write("refresh-frame-trace.txt",text,(size_t)n);
+}
 static void video_cleanup(void)
 {
+    write_seamless_report();
+    write_smoothing_report();
+    write_refresh_network_reports();
     uint64_t stopped_at=now_us();
     last_packet_age_stop_ms=perf_last_video_packet_age_ms();
     last_decode_age_stop_ms=video_stage_age_ms(stopped_at,last_decoded_us);
@@ -1116,31 +1439,108 @@ static void video_cleanup(void)
     capture_finish();
     const RTP_VIDEO_STATS *rtp=LiGetRTPVideoStats();
     if(rtp)last_rtp_stats=*rtp;
-    last_complete_frames=(uint32_t)perf_counter_read(PERF_C_VIDEO_FRAMES_COMPLETE);
-    last_video_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_PACKETS);
-    last_video_bytes=(uint32_t)perf_counter_read(PERF_C_VIDEO_BYTES);
-    last_late_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_LATE);
-    last_lost_frames=(uint32_t)perf_counter_read(PERF_C_VIDEO_FRAMES_LOST);
-    last_data_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_DATA_ACCEPTED);
-    last_fec_packets=(uint32_t)perf_counter_read(PERF_C_VIDEO_FEC_ACCEPTED);
+    rtp_counter_duration_us=perf_window_duration_us();
+    last_complete_frames=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_FRAMES_COMPLETE);
+    last_video_packets=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_PACKETS);
+    last_video_bytes=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_BYTES);
+    last_late_packets=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_LATE);
+    last_lost_frames=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_FRAMES_LOST);
+    last_data_packets=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_DATA_ACCEPTED);
+    last_fec_packets=(uint32_t)perf_window_counter_read(PERF_C_VIDEO_FEC_ACCEPTED);
     if(present_trace_count && storage_dir()) {
         char trace[8192];size_t used=0;
-        int n=snprintf(trace,sizeof(trace),"local_present_trace_last=%u\nclock=qpc_us_local_only\ncolumns=serial,cached,start_us,return_us\n",present_trace_count);
+        int n=snprintf(trace,sizeof(trace),"local_present_trace_last=%u\nclock=qpc_us_local_only\ncolumns=serial,cached,start_us,return_us,input_frame,idr\n",present_trace_count);
         if(n>0 && (size_t)n<sizeof(trace))used=(size_t)n;
         for(uint32_t i=0;i<present_trace_count && used<sizeof(trace);i++) {
             const present_trace_entry *e=&present_trace[(present_trace_next+64-present_trace_count+i)%64];
-            n=snprintf(trace+used,sizeof(trace)-used,"%u,%u,%I64u,%I64u\n",e->serial,(unsigned)e->cached,
-                       (unsigned long long)e->start_us,(unsigned long long)e->return_us);
+            n=snprintf(trace+used,sizeof(trace)-used,"%u,%u,%I64u,%I64u,%u,%u\n",e->serial,(unsigned)e->cached,
+                       (unsigned long long)e->start_us,(unsigned long long)e->return_us,e->frame,(unsigned)e->idr);
             if(n<0 || (size_t)n>=sizeof(trace)-used)break;
             used+=(size_t)n;
         }
         if(used)storage_write("present-trace.txt",trace,used);
     }
+    if (parallel_trace_count && storage_dir()) {
+        uint64_t duration=streaming_end_us>streaming_start_us?streaming_end_us-streaming_start_us:0;
+        char summary[2048];
+        int n=snprintf(summary,sizeof(summary),
+            "reference_mode=%d\nconfigured_slice_workers=%d\n"
+            "frames_serial_only=%u\nframes_parallel_only=%u\nframes_mixed=%u\n"
+            "frames_forced_serial_by_deblock=%u\nreference_frames=%u\nnonreference_frames=%u\nfast_decode_active=%s\n"
+            "parsed_slices=%u\nraw_deblocking_idc_0_1_2=%u,%u,%u\n"
+            "effective_filter_off_across_within=%u,%u,%u\n"
+            "reference_slices=%u\ncabac_slices=%u\ncavlc_slices=%u\n"
+            "serial_dispatches=%u\nparallel_dispatches=%u\n"
+            "max_dispatch_contexts=%u\nmax_worker_participants=%u\nmax_concurrent_workers=%u\n"
+            "decode_avg_us=%.3f\ndecode_p95_us=%u\ndecode_p99_us=%u\n"
+            "completed_counter=%u\ndecoded_counter=%u\npresented_counter=%u\n"
+            "completed_counter_scope=performance_window\ncompleted_counter_duration_us=%I64u\n"
+            "completed_fps=%.3f\ndecoded_fps=%.3f\npresented_fps=%.3f\n"
+            "percentiles=rolling_256; worker_participants=distinct_workers_per_dispatch; concurrent=peak_simultaneous_jobs\n",
+            XDK_H264_REFERENCE_MODE,stats.decode_threads,
+            parallel_serial_frames,parallel_parallel_frames,parallel_mixed_frames,
+            parallel_forced_serial_frames,parallel_reference_frames,parallel_nonreference_frames,fast_decode_name(options.fast_decode),
+            parallel_totals.slices,parallel_totals.raw_idc[0],parallel_totals.raw_idc[1],parallel_totals.raw_idc[2],
+            parallel_totals.effective_filter[0],parallel_totals.effective_filter[1],parallel_totals.effective_filter[2],
+            parallel_totals.reference_slices,parallel_totals.cabac_slices,
+            parallel_totals.slices-parallel_totals.cabac_slices,
+            parallel_totals.serial_dispatches,parallel_totals.parallel_dispatches,
+            parallel_totals.max_dispatch_contexts,parallel_totals.max_worker_participants,
+            parallel_totals.max_concurrent_workers,
+            pipeline_calls[TIME_DECODE]?(double)pipeline_total[TIME_DECODE]/pipeline_calls[TIME_DECODE]:0.0,
+            gpu_time_percentile(&pipeline_times[TIME_DECODE],95),
+            gpu_time_percentile(&pipeline_times[TIME_DECODE],99),
+            last_complete_frames,stats.decoded,stats.rendered,
+            (unsigned long long)rtp_counter_duration_us,
+            stream_rate_per_second(last_complete_frames,rtp_counter_duration_us),
+            stream_rate_per_second(stats.decoded,duration),
+            stream_rate_per_second(stats.rendered,duration));
+        if(n>0 && (size_t)n<sizeof(summary))storage_write("h264-parallel-session.txt",summary,(size_t)n);
+        if (parallel_totals.slice_calls) {
+            LARGE_INTEGER frequency;
+            QueryPerformanceFrequency(&frequency);
+            double scale=frequency.QuadPart>0?1000000.0/(double)frequency.QuadPart:0.0;
+            char stage[1024];
+            int sn=snprintf(stage,sizeof(stage),
+                "schema=1\nclock=qpc_ticks\nqpc_frequency=%I64u\n"
+                "slice_calls=%u\nslice_total_us=%.3f\n"
+                "loopfilter_calls=%u\nloopfilter_total_us=%.3f\n"
+                "entropy_samples=%u\nentropy_sampled_total_us=%.3f\n"
+                "entropy_sample_mean_us=%.3f\n"
+                "scope=profiled_decoder_only; entropy_sample_1_in_32_macroblocks; timings_include_probe_cost\n",
+                (unsigned long long)frequency.QuadPart,
+                parallel_totals.slice_calls,parallel_totals.slice_ticks*scale,
+                parallel_totals.loopfilter_calls,parallel_totals.loopfilter_ticks*scale,
+                parallel_totals.entropy_samples,parallel_totals.entropy_sample_ticks*scale,
+                parallel_totals.entropy_samples?parallel_totals.entropy_sample_ticks*scale/parallel_totals.entropy_samples:0.0);
+            if(sn>0 && (size_t)sn<sizeof(stage))storage_write("h264-stage-session.txt",stage,(size_t)sn);
+        }
+        char trace[16384];size_t used=0;
+        n=snprintf(trace,sizeof(trace),"last_frames=%u\ncolumns=frame,decode_us,idr,slices,idc0,idc1,idc2,filter_off,filter_across,filter_within,ref_slices,cabac_slices,contexts_requested,contexts_effective,serial_dispatches,parallel_dispatches,max_dispatch_contexts,worker_participants,concurrent_workers,forced_serial,slice_ticks,loopfilter_ticks,entropy_sample_ticks,entropy_samples\n",parallel_trace_count);
+        if(n>0 && (size_t)n<sizeof(trace))used=(size_t)n;
+        for(uint32_t i=0;i<parallel_trace_count;i++) {
+            const parallel_trace_entry *e=&parallel_trace[(parallel_trace_next+64-parallel_trace_count+i)%64];
+            const FFH264ParallelDiagnostic *d=&e->d;
+            n=snprintf(trace+used,sizeof(trace)-used,
+                "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%I64u,%I64u,%I64u,%u\n",
+                e->frame,e->decode_us,e->idr,d->slices,d->raw_idc[0],d->raw_idc[1],d->raw_idc[2],
+                d->effective_filter[0],d->effective_filter[1],d->effective_filter[2],
+                d->reference_slices,d->cabac_slices,d->contexts_requested,d->contexts_effective,
+                d->serial_dispatches,d->parallel_dispatches,d->max_dispatch_contexts,
+                d->max_worker_participants,d->max_concurrent_workers,d->forced_serial,
+                (unsigned long long)d->slice_ticks,(unsigned long long)d->loopfilter_ticks,
+                (unsigned long long)d->entropy_sample_ticks,d->entropy_samples);
+            if(n<0 || (size_t)n>=sizeof(trace)-used)break;
+            used+=(size_t)n;
+        }
+        if(used)storage_write("h264-parallel-trace.txt",trace,used);
+    }
     if (options.stats_overlay && storage_dir()) {
         char report[8192];
         int n = snprintf(report, sizeof(report),
             "telemetry_schema=4\nbuild_profile=%s\nworker_map=%s\nworkers_requested=%d\nworkers_active=%d\nthread_layout=%s\n"
-            "video=%dx%d@%d\nbitrate_kbps=%d\nfast_decode_config=%d\n"
+            "video=%dx%d@%d\nbitrate_kbps=%d\nfast_decode_config=%d\nfast_decode_active=%s\nfast_decode_change=next_session\n"
+            "h264_fast_flag=%d\nh264_rfi=%d\nh264_workers_effective=%d\nh264_reference_mode=%d\n"
             "frame_budget_us=%u\ndecode_current_us=%u\ndecode_ema_us=%u\n"
             "decode_max_session_us=%u\nqueue_age_valid=%d\nqueue_age_us=%u\n"
             "queue_age_max_session_us=%u\nfilter=%s\nrecovery_count=%u\n"
@@ -1153,10 +1553,15 @@ static void video_cleanup(void)
             "pipeline_percentiles=rolling_256_samples; CPU_wall_times; overlay_required\n",
             XDK_BUILD_PROFILE_LABEL,XDK_WORKER_MAP_LABEL,options.decode_workers==3?3:4,stats.decode_threads,
             options.thread_layout?"balanced":"legacy_aux",
-            vid_w, vid_h, options.target_fps, options.bitrate_kbps, options.fast_decode,
+            vid_w, vid_h, options.target_fps, options.bitrate_kbps, options.fast_decode,fast_decode_name(options.fast_decode),
+            h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
+            h264_diagnostic.rfi && !XDK_H264_NO_RFI,h264_workers(),XDK_H264_REFERENCE_MODE,
             deadline.budget_us, deadline.decode_us, stats.avg_decode_us,
             deadline.session_max_decode_us, deadline.queue_valid, deadline.queue_us,
-            deadline.session_max_queue_us, options.fast_decode ? "FAST" : deadline.recovery ? "RECOVERY" : "FULL",
+            deadline.session_max_queue_us,
+            XDK_H264_REFERENCE_MODE==1 ? "FULL_REFERENCE_SAFE" :
+            XDK_H264_REFERENCE_MODE==2 ? (options.fast_decode || deadline.recovery ? "NONREF_ONLY" : "FULL") :
+            options.fast_decode ? "FAST" : deadline.recovery ? "RECOVERY" : "FULL",
             deadline.recoveries, deadline.full_frames, deadline.fast_frames, stats.avg_render_us,
             stats.received, stats.decoded, stats.rendered, stats.dropped, stats.decode_errors,
             ff_xbox_vmx_flags, ff_xbox_loopfilter_mask, session_slices,
@@ -1184,7 +1589,7 @@ static void video_cleanup(void)
                 "slice_dispatch=legacy\nslice_dispatch_version=0\n"
 #endif
                 "received_counter=backend_decode_callbacks_not_network_arrivals\n"
-                "rtp_completed_frames=%u\nvideo_udp_packets=%u\nvideo_udp_bytes=%u\n"
+                "rtp_completed_frames=%u\nrtp_counter_scope=performance_window\nrtp_counter_duration_us=%I64u\nvideo_udp_packets=%u\nvideo_udp_bytes=%u\n"
                 "rtp_expected_video_data_packets=%u\nrtp_expected_fec_packets=%u\n"
                 "rtp_accepted_video_data_packets=%u\nrtp_accepted_fec_packets=%u\n"
                 "rtp_oos_packets=%u\nrtp_late_packets=%u\nrtp_invalid_packets=%u\n"
@@ -1199,7 +1604,7 @@ static void video_cleanup(void)
                 "packet_assembly_ema_us=%u\ndu_queue_ema_us=%u\n"
                 "network_queue_last_sample=%d\nnetwork_queue_peak_sampled_1Hz=%d\n"
                 "network_rtt_valid=%d\nnetwork_rtt_last_ms=%u\nnetwork_variance_last_ms=%u\n",
-                last_complete_frames,last_video_packets,last_video_bytes,
+                last_complete_frames,(unsigned long long)rtp_counter_duration_us,last_video_packets,last_video_bytes,
                 last_rtp_stats.packetCountVideo,last_rtp_stats.packetCountFec,last_data_packets,last_fec_packets,
                 last_rtp_stats.packetCountOOS,last_late_packets,last_rtp_stats.packetCountInvalid,
                 last_rtp_stats.packetCountFecRecovered,last_rtp_stats.packetCountFecFailed,last_lost_frames,
@@ -1217,13 +1622,14 @@ static void video_cleanup(void)
                 "vsync_enabled=%d\npresented_counter=video_Present_calls_not_scanout_or_visible_frames\n"
                 "callback_fps=%.3f\npresented_fps=%.3f\n"
                 "stream_duration_us=%I64u\nshown_fps=%.3f\nreceived_callback_fps=%.3f\ndecoded_fps=%.3f\n"
-                "rtp_complete_fps=see_latency-capture_for_bounded_window\nidr_received=unavailable\nidr_requests=unavailable\n"
+                "rtp_complete_fps=see_latency-capture_for_bounded_window\nidr_received=%u\nidr_decoded=%u\nperiodic_refresh_requests=%u\nidr_requests_total=unavailable\n"
                 "packet_loss_exact=unavailable\n"
                 "audio_input_latency_ms=unavailable\ndecode_average_scope=all_timed_decode_calls_in_session\n",
                 options.target_fps,setup_fps_argument,options.vsync,
                 stream_rate_per_second(stats.received,duration),stream_rate_per_second(stats.rendered,duration),
                 (unsigned long long)duration,duration?stats.rendered*1000000.0/duration:0.0,
-                duration?stats.received*1000000.0/duration:0.0,duration?stats.decoded*1000000.0/duration:0.0);
+                duration?stats.received*1000000.0/duration:0.0,duration?stats.decoded*1000000.0/duration:0.0,
+                idr_received,idr_decoded,(uint32_t)refresh_requests);
             for (int metric=0;metric<TIME_COUNT && n>0 && (size_t)n<sizeof(report);metric++) {
                 const struct gpu_time_window *w=&pipeline_times[metric];
                 n+=snprintf(report+n,sizeof(report)-n,"%s_avg_us=%.3f\n%s_max_session_us=%u\n",
@@ -1241,6 +1647,46 @@ static void video_cleanup(void)
     free_resources();
 }
 
+static void parallel_observe(uint32_t frame_number,uint64_t decode_us,bool idr)
+{
+    FFH264ParallelDiagnostic d;
+    if (!options.stats_overlay || !ff_h264_xbox_parallel_diagnostic(codec_ctx,&d) || !d.slices)
+        return;
+    parallel_trace_entry *entry=&parallel_trace[parallel_trace_next];
+    entry->frame=frame_number;
+    entry->decode_us=decode_us>UINT_MAX?UINT_MAX:(uint32_t)decode_us;
+    entry->idr=idr;
+    entry->d=d;
+    parallel_trace_next=(parallel_trace_next+1)%64;
+    if(parallel_trace_count<64)parallel_trace_count++;
+    parallel_totals.slices+=d.slices;
+    for(int i=0;i<3;i++) {
+        parallel_totals.raw_idc[i]+=d.raw_idc[i];
+        parallel_totals.effective_filter[i]+=d.effective_filter[i];
+    }
+    parallel_totals.reference_slices+=d.reference_slices;
+    parallel_totals.cabac_slices+=d.cabac_slices;
+    parallel_totals.serial_dispatches+=d.serial_dispatches;
+    parallel_totals.parallel_dispatches+=d.parallel_dispatches;
+    parallel_totals.slice_ticks+=d.slice_ticks;
+    parallel_totals.loopfilter_ticks+=d.loopfilter_ticks;
+    parallel_totals.entropy_sample_ticks+=d.entropy_sample_ticks;
+    parallel_totals.slice_calls+=d.slice_calls;
+    parallel_totals.loopfilter_calls+=d.loopfilter_calls;
+    parallel_totals.entropy_samples+=d.entropy_samples;
+    if(d.forced_serial)parallel_forced_serial_frames++;
+    if(d.reference_slices)parallel_reference_frames++;else parallel_nonreference_frames++;
+    if(d.serial_dispatches && d.parallel_dispatches)parallel_mixed_frames++;
+    else if(d.parallel_dispatches)parallel_parallel_frames++;
+    else if(d.serial_dispatches)parallel_serial_frames++;
+    if(d.max_dispatch_contexts>parallel_totals.max_dispatch_contexts)
+        parallel_totals.max_dispatch_contexts=d.max_dispatch_contexts;
+    if(d.max_worker_participants>parallel_totals.max_worker_participants)
+        parallel_totals.max_worker_participants=d.max_worker_participants;
+    if(d.max_concurrent_workers>parallel_totals.max_concurrent_workers)
+        parallel_totals.max_concurrent_workers=d.max_concurrent_workers;
+}
+
 static int video_submit(PDECODE_UNIT du)
 {
     submit_timing_scope timing;
@@ -1248,7 +1694,7 @@ static int video_submit(PDECODE_UNIT du)
     PLENTRY e;
     uint64_t t0, dt;
     int off = 0, got = 0, ret;
-    bool skipped;
+    struct refresh_trace_frame *trace=NULL;
 
     if(video_get_stream_error()!=VIDEO_STREAM_OK)return DR_OK;
 
@@ -1256,7 +1702,7 @@ static int video_submit(PDECODE_UNIT du)
         /* Only this callback owns FFmpeg; slice workers have completed the
          * previous synchronous decode. Do not touch the renderer or audio. */
         close_h264(&codec_ctx);
-        codec_ctx=open_h264(vid_w,vid_h,options.decode_workers==3?3:4,options.fast_decode);
+        codec_ctx=open_h264(vid_w,vid_h,h264_workers(),options.fast_decode);
         if(!codec_ctx) {
             InterlockedExchange(&stream_error,VIDEO_STREAM_RESOURCE_ERROR);
             return DR_OK;
@@ -1267,7 +1713,7 @@ static int video_submit(PDECODE_UNIT du)
             InterlockedExchange(&stream_error,VIDEO_STREAM_RESOURCE_ERROR);
             return DR_OK;
         }
-        need_idr=true;
+        need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
         video_progress_note(VP_DECODER_RESET);
         plat_log("[VIDEO] FFmpeg decoder reset on callback thread; requesting IDR\n");
         return DR_NEED_IDR;
@@ -1277,7 +1723,13 @@ static int video_submit(PDECODE_UNIT du)
         xdk_audit_thread("VideoDec/dispatch");
         plat_diagnostics_checkpoint("[FREEZE] first decoder callback\n");
     }
+    if(options.refresh_smoothing) {
+        uint32_t frame=(uint32_t)du->frameNumber;
+        if(smoothing_have_input && frame-smoothing_last_input!=1)cached_video_invalidate_history();
+        smoothing_last_input=frame;smoothing_have_input=true;
+    }
     stats.received++;
+    if(du->frameType==FRAME_TYPE_IDR)idr_received++;
     if(du->frameHostProcessingLatency)perf_record(PERF_HOST_PROCESSING,(uint32_t)du->frameHostProcessingLatency*100);
     if (options.stats_overlay) {
         uint64_t submitted = LiGetMicroseconds();
@@ -1296,19 +1748,19 @@ static int video_submit(PDECODE_UNIT du)
         /* Skip broken P-frames after a decode error so we never draw corrupted
          * macroblocks or waste CPU while waiting for the recovery frame. */
         InterlockedIncrement((volatile LONG *)&stats.dropped);
-        return DR_NEED_IDR;
+        return DR_OK; /* requestDecoderRefresh() already requested an IDR */
     }
 
     uint64_t prepare_start=options.stats_overlay?now_us():0;
     if (du->fullLength <= 0 || du->fullLength > INT_MAX - FF_INPUT_BUFFER_PADDING_SIZE) {
         stats.decode_errors++;
-        need_idr = true;
+        need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
         return DR_NEED_IDR;
     }
     if (du->fullLength > pkt_cap) {
         uint8_t *n = (uint8_t *)_aligned_realloc(pkt_buf, du->fullLength + FF_INPUT_BUFFER_PADDING_SIZE, 128);
         if (n == NULL) {
-            need_idr = true;
+            need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
             return DR_NEED_IDR;
         }
         pkt_buf = n;
@@ -1317,7 +1769,7 @@ static int video_submit(PDECODE_UNIT du)
     for (e = du->bufferList; e != NULL; e = e->next) {
         if (!e->data || !xdk_fragment_fits(du->fullLength, off, e->length)) {
             stats.decode_errors++;
-            need_idr = true;
+            need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
             return DR_NEED_IDR;
         }
         /* Network fragments need not be aligned; only decoded planes use XMemCpy. */
@@ -1326,7 +1778,7 @@ static int video_submit(PDECODE_UNIT du)
     }
     if (off != du->fullLength) {
         stats.decode_errors++;
-        need_idr = true;
+        need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
         return DR_NEED_IDR;
     }
     memset(pkt_buf + off, 0, FF_INPUT_BUFFER_PADDING_SIZE);
@@ -1337,25 +1789,37 @@ static int video_submit(PDECODE_UNIT du)
     pkt.data = pkt_buf;
     pkt.size = off;
     pkt.flags = du->frameType == FRAME_TYPE_IDR ? AV_PKT_FLAG_KEY : 0;
+    /* FFmpeg get_buffer() stores this on the picture; output may belong to an
+     * earlier call. Do not infer output identity from the current decode unit. */
+    codec_ctx->reordered_opaque=(int64_t)video_picture_tag((uint32_t)du->frameNumber,
+        (uint32_t)InterlockedCompareExchange(&refresh_generation,0,0),du->frameType==FRAME_TYPE_IDR);
     video_progress_note(VP_SUBMITTED);
     if (options.stats_overlay) {
         uint64_t prepared=now_us();
         if (prepared>=prepare_start) pipeline_sample(TIME_PACKET_PREPARE,prepared-prepare_start);
     }
 
-    skipped = decode_deadline_before(&deadline, options.fast_decode, options.target_fps,
+    bool skipped=decode_deadline_before(&deadline, options.fast_decode!=0, options.target_fps,
                                      du->enqueueTimeUs, LiGetMicroseconds(), stats.avg_decode_us);
-    /* Slice workers share this context. Mutate only outside the synchronous
-     * decode call; never request an IDR merely because the policy changed. */
-    codec_ctx->skip_loop_filter = options.fast_decode ? AVDISCARD_ALL :
-        skipped ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+    /* Restore the original decoder-thread-only overload policy between calls. */
+    codec_ctx->skip_loop_filter=(enum AVDiscard)h264_reference_filter(XDK_H264_REFERENCE_MODE,
+        options.fast_decode!=0,skipped,AVDISCARD_DEFAULT,AVDISCARD_NONREF,AVDISCARD_ALL);
+    if(options.stats_overlay || perf_enabled()) {
+        uint64_t now=LiGetMicroseconds(),age=now>=du->enqueueTimeUs?now-du->enqueueTimeUs:0;
+        trace=refresh_trace_begin(&refresh_trace,(uint32_t)du->frameNumber,(uint32_t)off,
+            du->frameType==FRAME_TYPE_IDR,now,age>UINT32_MAX?UINT32_MAX:(uint32_t)age);
+    }
     t0 = now_us();
     ret = avcodec_decode_video2(codec_ctx, dec_frame, &got, &pkt);
     dt = now_us() - t0;
+    if(trace){trace->decode_us=(uint32_t)dt;trace->got=got;trace->ret=ret;
+        trace->flags=got?av_frame_get_decode_error_flags(dec_frame):0;trace->output=got?(uint32_t)dec_frame->reordered_opaque>>1:0;}
+    parallel_observe((uint32_t)du->frameNumber,dt,du->frameType==FRAME_TYPE_IDR);
     perf_record(PERF_H264_DECODE,dt);
     uint64_t post_decode_start=perf_enabled()?perf_clock():0;
     pipeline_sample(TIME_DECODE,dt);
-    decode_deadline_after(&deadline, skipped, ret >= 0 && got, dt > UINT_MAX ? UINT_MAX : (uint32_t)dt);
+    decode_deadline_after(&deadline, codec_ctx->skip_loop_filter != AVDISCARD_DEFAULT,
+                          ret >= 0 && got, dt > UINT_MAX ? UINT_MAX : (uint32_t)dt);
     stats.avg_decode_us = deadline.decode_samples == 1 ? deadline.decode_us :
                          stream_smooth(stats.avg_decode_us, deadline.decode_us);
     if (options.stats_overlay) {
@@ -1366,13 +1830,21 @@ static int video_submit(PDECODE_UNIT du)
     if (ret < 0) {
         if (stats.decode_errors++ < 5)
             vlog("video: decode error %d on frame %d\n", ret, du->frameNumber);
-        need_idr = true;
+        need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
         return DR_NEED_IDR;
     }
     if (got) {
+        int decode_flags = av_frame_get_decode_error_flags(dec_frame);
+        if (decode_flags) {
+            if (stats.decode_errors++ < 20)
+                vlog("[H264 CORRUPT] frame=%d flags=0x%x bytes=%d got=%d ret=%d workers=%d fast=%d\n",
+                     du->frameNumber,decode_flags,off,got,ret,stats.decode_threads,h264_diagnostic.fast_flag);
+            need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
+            return DR_NEED_IDR;
+        }
         if (!dec_frame->data[0] || !dec_frame->data[1] || !dec_frame->data[2]) {
             stats.decode_errors++;
-            need_idr = true;
+            need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
             return DR_NEED_IDR;
         }
         if ((dec_frame->width!=vid_w || dec_frame->height!=vid_h) &&
@@ -1380,12 +1852,18 @@ static int video_submit(PDECODE_UNIT du)
         /* Both upload paths read these many bytes per row. Reject malformed
          * output before either path copies from the decoder's allocation. */
         if(dec_frame->linesize[0]<vid_w || dec_frame->linesize[1]<chroma_w || dec_frame->linesize[2]<chroma_w) {
-            stats.decode_errors++;need_idr=true;return DR_NEED_IDR;
+            stats.decode_errors++;need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();return DR_NEED_IDR;
         }
         if (dec_frame->format != AV_PIX_FMT_YUV420P && dec_frame->format != AV_PIX_FMT_YUVJ420P) {
-            stats.decode_errors++;need_idr=true;return DR_NEED_IDR;
+            stats.decode_errors++;need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();return DR_NEED_IDR;
         }
         stats.decoded++;
+        if(trace)refresh_trace_luma(trace,dec_frame->data[0],dec_frame->linesize[0],vid_w,vid_h);
+        bool decoded_idr=video_picture_idr((uint64_t)dec_frame->reordered_opaque,dec_frame->key_frame!=0);
+        if(decoded_idr)idr_decoded++;
+        stats.actual_w=dec_frame->width;stats.actual_h=dec_frame->height;
+        if(decoded_idr)
+            video_refresh_decoded_idr(GetTickCount(),video_picture_request((uint64_t)dec_frame->reordered_opaque));
         video_progress_note(VP_DECODED);
         last_decoded_us=t0+dt;
         if(stats.decoded==1) {
@@ -1400,13 +1878,14 @@ static int video_submit(PDECODE_UNIT du)
         decode_us_sum += dt;
         if(!launch_decode_notified){launch_decoded();launch_decode_notified=true;}
         if(stats.decoded==1)plat_diagnostics_checkpoint("[FREEZE] first frame upload entered\n");
+        capture_decoded_yuv_once(dec_frame,du->frameNumber);
         publish_frame(dec_frame);
         if(stats.decoded==1)plat_diagnostics_checkpoint("[FREEZE] first frame upload returned\n");
-    }
+    } else decode_no_picture++;
     if(post_decode_start)perf_record(PERF_POST_DECODE,perf_clock()-post_decode_start);
     log_stats();
     if (decode_deadline_needs_refresh(&deadline)) {
-        need_idr = true;
+        need_idr=true;if(options.refresh_smoothing)cached_video_invalidate_history();
         return DR_NEED_IDR;
     }
     return DR_OK;
@@ -1422,7 +1901,15 @@ void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
     cb->submitDecodeUnit = video_submit;
     /* No direct submit: Moonlight's own decoder thread calls video_submit.
      * Reference frame invalidation recovers from lost packets without huge IDR bursts. */
-    cb->capabilities = CAPABILITY_SLICES_PER_FRAME(session_slices) | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC;
+    char *diagnostic_text = storage_read("video-h264.ini",NULL);
+    video_h264_diagnostic_parse(diagnostic_text,&h264_diagnostic);
+    free(diagnostic_text);
+    cb->capabilities = CAPABILITY_SLICES_PER_FRAME(session_slices) |
+                       (h264_diagnostic.rfi && !XDK_H264_NO_RFI ? CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC:0);
+    vlog("[H264 DIAG] reference_mode=%d fast_flag=%d workers=%d rfi=%d capture_yuv=%d requested_slices=%d\n",
+         XDK_H264_REFERENCE_MODE,h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
+         h264_workers(),h264_diagnostic.rfi && !XDK_H264_NO_RFI,
+         h264_diagnostic.capture_yuv,session_slices);
 }
 
 /* ---------------------------------------------------- benchmark */
@@ -1463,6 +1950,7 @@ struct bench {
     int captured_fps,captured_bitrate,captured_slices; /* 0=unknown, sidecar validated */
     size_t size;
     uint32_t *ref_hash;         /* reused by each filtering group's C reference */
+    uint32_t plane_hash[600][3]; /* C full, stable bytewise Y/U/V for PC comparison */
     volatile int run;           /* configuration in progress */
     volatile int frame;
     double ms[BENCH_RUNS], worst_ms[BENCH_RUNS];
@@ -1489,6 +1977,17 @@ static uint32_t frame_hash(const AVFrame *f, int w, int h)
             for (; x < pw; x++)
                 hash = (hash ^ row[x]) * 16777619u;
         }
+    }
+    return hash;
+}
+
+static uint32_t frame_plane_hash(const AVFrame *f, int w, int h, int plane)
+{
+    uint32_t hash=2166136261u;
+    int pw=plane?(w+1)/2:w,ph=plane?(h+1)/2:h;
+    for(int y=0;y<ph;y++) {
+        const uint8_t *row=f->data[plane]+y*f->linesize[plane];
+        for(int x=0;x<pw;x++)hash=(hash^row[x])*16777619u;
     }
     return hash;
 }
@@ -1554,6 +2053,9 @@ static void bench_run(struct bench *b, int run)
         if (ret < 0) { b->failed[run] = true; break; }
         if (got) {
             uint32_t hsh = frame_hash(frame, b->w, b->h);
+            if (run==0 && out<600)
+                for(int plane=0;plane<3;plane++)
+                    b->plane_hash[out][plane]=frame_plane_hash(frame,b->w,b->h,plane);
             if (reference)
                 b->ref_hash[out] = hsh;
             else if (out >= b->reference_count || hsh != b->ref_hash[out])
@@ -1575,7 +2077,10 @@ static void bench_run(struct bench *b, int run)
     b->ms[run] = calls ? total / 1000.0 / calls : 0;
     b->worst_ms[run] = worst / 1000.0;
     vlog("bench: %s T%d filter=%s avg %.2f worst %.2f p50 %.2f p95 %.2f p99 %.2f ms, decoded %u, mismatches %u, failed %d\n",
-         bench_configs[run].name, bench_configs[run].threads, bench_configs[run].fast_decode ? "FAST" : "FULL",
+         bench_configs[run].name, bench_configs[run].threads,
+         XDK_H264_REFERENCE_MODE==1 ? "FULL_REFERENCE_SAFE" :
+         XDK_H264_REFERENCE_MODE==2 ? (bench_configs[run].fast_decode ? "NONREF_ONLY" : "FULL") :
+         bench_configs[run].fast_decode ? "FAST" : "FULL",
          b->ms[run], b->worst_ms[run], b->p50[run], b->p95[run], b->p99[run], out, b->mismatches[run], b->failed[run]);
     free(times);
 
@@ -1688,16 +2193,21 @@ void plat_run_benchmark(void)
     CloseHandle(th);
 
     report_used=(size_t)snprintf(report,sizeof(report),"capture=%ux%u frames=%u requested_fps=%d bitrate_kbps=%d slices_requested=%d\n"
+        "reference_mode=%d fast_flag_effective=%d\n"
         "provenance=%s; encoded_slice_count=NOT_ANALYZED; thread tests reuse identical bitstream\n"
         "streaming_default_threads=4; selection_does_not_change_configuration\n",
         b.w,b.h,b.frames,b.captured_fps,b.captured_bitrate,b.captured_slices,
+        XDK_H264_REFERENCE_MODE,h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
         b.captured_slices?"bound capture-info sidecar":"UNKNOWN (legacy/missing/stale sidecar)");
     /* Offline benchmark only. Keep actual native results outside the short
      * RAM log ring, and never write a report per streaming frame. */
     for (i = 0; i < (int)BENCH_RUNS; i++) {
         int written = snprintf(report + report_used, sizeof(report) - report_used,
             "%s threads=%d filter=%s avg=%.3f p50=%.3f p95=%.3f p99=%.3f max=%.3f ms frames=%u mismatches=%u failed=%d\n",
-            bench_configs[i].name, bench_configs[i].threads, bench_configs[i].fast_decode ? "FAST" : "FULL",
+            bench_configs[i].name, bench_configs[i].threads,
+            XDK_H264_REFERENCE_MODE==1 ? "FULL_REFERENCE_SAFE" :
+            XDK_H264_REFERENCE_MODE==2 ? (bench_configs[i].fast_decode ? "NONREF_ONLY" : "FULL") :
+            bench_configs[i].fast_decode ? "FAST" : "FULL",
             b.ms[i], b.p50[i], b.p95[i], b.p99[i], b.worst_ms[i], b.decoded[i], b.mismatches[i], b.failed[i]);
         if (written < 0 || (size_t)written >= sizeof(report) - report_used) break;
         report_used += written;
@@ -1707,6 +2217,23 @@ void plat_run_benchmark(void)
     if(tail>0 && (size_t)tail<sizeof(report)-report_used) report_used+=tail;
     if (!storage_write("decoder-benchmark.txt", report, report_used))
         vlog("Benchmark report could not be saved\n");
+    if(!b.failed[0] && b.decoded[0]==b.frames) {
+        char *hashes=(char*)malloc(32768);
+        if(hashes) {
+            size_t used=0;
+            int written=snprintf(hashes,32768,"capture_bytes=%u\ncapture_fingerprint=%08x\nwidth=%u\nheight=%u\nframes=%u\ncolumns=frame,Y,U,V (FNV1a32 visible bytes)\n",
+                (unsigned)len,xdk_capture_fingerprint(b.data,len),b.w,b.h,b.frames);
+            if(written>0 && written<32768)used=(size_t)written;
+            for(uint32_t frame=0;frame<b.frames && used<32768;frame++) {
+                written=snprintf(hashes+used,32768-used,"%u,%08x,%08x,%08x\n",frame,
+                    b.plane_hash[frame][0],b.plane_hash[frame][1],b.plane_hash[frame][2]);
+                if(written<0 || (size_t)written>=32768-used)break;
+                used+=(size_t)written;
+            }
+            if(used)storage_write("decoder-frame-hashes.txt",hashes,used);
+            free(hashes);
+        }
+    }
 
     for (i = 0; i < (int)BENCH_RUNS; i++) {
         rows[n].label = bench_configs[i].name;
@@ -1766,7 +2293,7 @@ void video_get_session_performance(struct performance_sample *out)
     out->decoded_fps=stream_rate_per_second(stats.decoded,duration);
     out->presented_fps=stream_rate_per_second(stats.rendered,duration);
     out->complete_frames=last_complete_frames;
-    out->complete_frame_fps=stream_rate_per_second(last_complete_frames,duration);
+    out->complete_frame_fps=stream_rate_per_second(last_complete_frames,rtp_counter_duration_us);
     out->video_packets=last_video_packets;out->video_bytes=last_video_bytes;
     out->expected_video_data_packets=last_rtp_stats.packetCountVideo;
     out->expected_fec_packets=last_rtp_stats.packetCountFec;

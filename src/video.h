@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "fast_decode.h"
 #include <stdint.h>
 #include <Limelight.h>
 #include "performance_advisor.h"
@@ -14,7 +15,7 @@ enum video_renderer {
 };
 
 struct video_options {
-    bool fast_decode;   /* skip the H.264 deblocking filter (big speedup) */
+    bool fast_decode;   /* On/Off; fixed for this streaming session */
     int renderer;       /* enum video_renderer */
     bool vsync;         /* GPU renderer: flip on vertical blank (no tearing) */
     bool stats_overlay; /* SDK panel; updated at 1 Hz, disabled by default */
@@ -27,6 +28,11 @@ struct video_options {
     int shader_mode;   /* existing shader policy: 0 Auto, 1 Fast, 2 Quality */
     int decode_workers;
     int thread_layout;
+    int refresh_interval_ms; /* 0 Off; 125, 250, 1000..60000 ms */
+    int packet_size; /* negotiated request, diagnostic identity */
+    int refresh_smoothing,smoothing_strength;
+    bool crt_clarity; /* opt-in spatial interlace filter, hardware/output-gated */
+    char host_name[64]; /* selected host label, copied before connection */
     uint32_t connection_started_ms; /* cold trace origin, before host launch */
 };
 
@@ -46,10 +52,30 @@ struct video_stats {
     uint32_t avg_publish_us, avg_upload_us, avg_gpu_wait_us;
     uint32_t render_superseded; /* already-decoded pictures replaced before upload */
     int display_w, display_h;
+    int actual_w, actual_h; /* valid decoded picture, never requested geometry */
     int decode_threads;     /* FFmpeg threads actually active */
     int renderer;           /* renderer actually used */
 };
 void video_get_stats(struct video_stats *out);
+struct video_quick_info {
+    int requested_w,requested_h,requested_fps,bitrate_kbps,slices;
+    int renderer,fast_decode,shader_mode,decode_workers;
+    char host_name[64];
+    char pipeline[32]; /* active GPU upload path, not requested renderer */
+    bool network_valid;
+    uint32_t rtt_ms,variance_ms,queue_age_ms;
+};
+void video_get_quick_info(struct video_quick_info *out);
+enum video_refresh_state { VIDEO_REFRESH_IDLE, VIDEO_REFRESH_REQUESTED,
+    VIDEO_REFRESH_WAITING, VIDEO_REFRESH_DECODED, VIDEO_REFRESH_UNAVAILABLE };
+struct video_refresh_snapshot {
+    int state;
+    uint32_t requests, decoded_idrs, last_idr_ms;
+};
+/* Input thread only requests transport IDRs. Decoder callback owns completion. */
+bool video_request_picture_refresh(void);
+void video_refresh_tick(uint32_t now_ms);
+void video_get_refresh_snapshot(struct video_refresh_snapshot *out);
 enum video_stream_error { VIDEO_STREAM_OK, VIDEO_STREAM_UNSUPPORTED_SIZE, VIDEO_STREAM_RESOURCE_ERROR };
 /* Polled by the app; decoder callbacks must never stop their own transport. */
 int video_get_stream_error(void);

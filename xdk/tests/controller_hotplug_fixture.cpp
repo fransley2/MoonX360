@@ -79,6 +79,10 @@ int LiSendMouseButtonEvent(char,int){return 0;}
 int LiSendScrollEvent(signed char){return 0;}
 int LiSendKeyboardEvent(short k,char action,char){assert(k=='A');if(action==KEY_ACTION_DOWN)keyboard_down++;else keyboard_up++;return 0;}
 void audio_set_volume(int){}
+static bool video_request_picture_refresh(){return false;}
+static void video_refresh_tick(uint32_t){}
+static bool ui_transition_active(){return false;}
+static void audio_menu_play(int){}
 static volatile LONG mouse_mode;
 static bool launch_active(){return false;}
 static void launch_command(bool,bool){}

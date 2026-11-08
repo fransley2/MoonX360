@@ -96,7 +96,7 @@ int aurora_browser_list(const char *folder,int mode,struct aurora_browser_entry 
     do {
         const char *name=data.cFileName;int is_folder=(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?1:0;
         if(!strcmp(name,".") || !strcmp(name,"..") || (!is_folder && mode==AURORA_BROWSER_FOLDER) ||
-           (!is_folder && !aurora_path_xex_name(name)) || strlen(name)>=sizeof(items[0].name))continue;
+           (!is_folder && !(mode==AURORA_BROWSER_IMAGE?aurora_path_image_name(name):aurora_path_xex_name(name))) || strlen(name)>=sizeof(items[0].name))continue;
         char path[160];if(!aurora_path_join(path,sizeof(path),folder,name))continue;
         if(n==capacity){overflow=1;continue;}
         int at=n++;

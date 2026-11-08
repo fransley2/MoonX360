@@ -18,6 +18,7 @@
 #include "../../../src/ui/ui.h"
 static struct config cfg;
 static bool aurora_direct_active;
+static bool stream_return_home;
 static struct moonx_launch_data aurora_direct_data;
 static struct host_cache hosts;
 static struct game_bindings game_bindings;
@@ -42,6 +43,7 @@ void ui_present(){}
 const char *ui_translate(const char *text){return text;}
 int ui_location_enter(const char*){return 0;}void ui_location_restore(int){}
 static bool edit_profile_name(char *text){if(accept_edit)strcpy(text,"My PC");return accept_edit;}
+static bool edit_search_query(char text[64]){if(accept_edit)strcpy(text,"My PC");return accept_edit;}
 static void clear_apps(){app_count=0;}
 static bool wake_host(){wakes++;return true;}
 static void edit_host_mac(){}
@@ -70,7 +72,7 @@ int main(){
     keys={A_FLAG};game_profile_menu(42);assert(!strcmp(game_bindings.items[0].profile,"factory:2"));assert(keys.empty());
     config current=cfg;config profile=cfg;profile.width=1920;profile.height=1080;profile.fps=60;profile.audio_mode=1;profile.stream_profile=0;
     user_profiles saved={};saved.slot=-1;assert(config_profiles_create(&saved,&profile,"TV"));
-    keys={DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,A_FLAG};game_profile_menu(42);assert(keys.empty());
+    keys.clear();for(int i=2;i<CONFIG_PROFILE_COUNT;i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);game_profile_menu(42);assert(keys.empty());
     assert(!strcmp(game_bindings.items[0].profile,"user:TV"));stream(42,"Game");assert(stream_calls==1 && used_width==1920 && used_audio==1 && !memcmp(&cfg,&current,sizeof(cfg)));
     files.erase("profiles-a.tsv");files.erase("profiles-b.tsv");int notices=messages;stream(42,"Game");assert(used_width==current.width && messages==notices+1 && !memcmp(&cfg,&current,sizeof(cfg)));
     puts("PASS: actual controller per-game factory/saved selection, next-launch apply, missing profile fallback and global restoration");

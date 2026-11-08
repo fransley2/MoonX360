@@ -57,7 +57,7 @@ int main(){
     assert(!config_profiles_create(&loaded,&c,"Full"));
     files[loaded.slot?"profiles-b.tsv":"profiles-a.tsv"]+="junk";
     user_profiles fallback={};assert(config_profiles_load(&fallback) && fallback.count==CONFIG_USER_PROFILE_MAX-1);
-    files["profiles-a.tsv"]="XENON_PROFILES 3 90 0\n";assert(!config_profiles_load(&fallback) && fallback.read_only);
+    files["profiles-a.tsv"]="XENON_PROFILES 99 90 0\n";assert(!config_profiles_load(&fallback) && fallback.read_only);
     assert(!config_profiles_create(&fallback,&c,"Unknown version"));
     // Explicit factory presets retain their four parameters and effective Fast overrides.
     for(int i=1;i<CONFIG_PROFILE_COUNT;i++) {config factory=c;config_apply_preset(&factory,i);config_profile_capture(&actual,&factory);
@@ -129,17 +129,17 @@ int main(){
         assert(i<CONFIG_PROFILE_COUNT?config_match_factory(&c)==i:config_profiles_selected(&choices,&c)==i-CONFIG_PROFILE_COUNT);
     }
     choices.items[0].options.fps=90;memset(choices.items[1].name,'x',sizeof(choices.items[1].name));
-    config_select_factory(&c,CONFIG_PROFILE_1080_SMOOTH);assert(config_cycle_profile(&choices,&c,1));
+    config_select_factory(&c,CONFIG_PROFILE_CRT_QUALITY);assert(config_cycle_profile(&choices,&c,1));
     assert(config_profiles_selected(&choices,&c)==2);
     config invalid_before=c;assert(!config_profiles_apply(&choices,1,&c) && !memcmp(&c,&invalid_before,sizeof(c)));
     choices.count=CONFIG_USER_PROFILE_MAX+1;assert(config_profiles_selected(&choices,&c)==-1);
     assert(!config_profiles_apply(&choices,0,&c));c.bitrate_kbps=12345;config_customize_stream(&c);
-    assert(config_cycle_profile(&choices,&c,-1) && config_match_factory(&c)==CONFIG_PROFILE_1080_SMOOTH);
+    assert(config_cycle_profile(&choices,&c,-1) && config_match_factory(&c)==CONFIG_PROFILE_CRT_QUALITY);
     user_profiles empty={};c.bitrate_kbps=12345;config_customize_stream(&c);
     assert(config_cycle_profile(&empty,&c,1) && config_match_factory(&c)==CONFIG_PROFILE_SMOOTH);
     config_customize_stream(&c);assert(config_match_factory(&c)==CONFIG_PROFILE_SMOOTH);
     c.vsync=false;assert(!config_match_factory(&c));
-    assert(config_cycle_profile(&empty,&c,-1) && config_match_factory(&c)==CONFIG_PROFILE_1080_SMOOTH);
+    assert(config_cycle_profile(&empty,&c,-1) && config_match_factory(&c)==CONFIG_PROFILE_CRT_QUALITY);
     puts("PASS: inline cycle 0/8 saved, full effective matching, invalid entries, canonical factory/global isolation and FPS restart persistence");
     // Failure at every durable write boundary: memory unchanged, intent recovers
     // renamed profile, current selection and ALL per-game references together.

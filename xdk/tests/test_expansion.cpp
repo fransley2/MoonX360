@@ -28,7 +28,7 @@ int main(){
     assert(wake_identity_valid("{ABC-123}") && !wake_identity_valid("pc\nhost_uuid=other") && !wake_identity_valid("pc\tother"));
     assert(feature_search("Grand Theft Auto","THEFT") && feature_search("Desktop","") && !feature_search("Desktop","Xbox"));
     game_bindings b={};assert(binding_set(&b,"uuid:server",42,"factory:2"));assert(binding_set(&b,"uuid:server",43,"user:TV"));
-    assert(!binding_set(&b,"uuid:server",44,"factory:9") && !binding_set(&b,"uuid:server",44,"unknown"));
+    assert(!binding_set(&b,"uuid:server",44,"factory:11") && !binding_set(&b,"uuid:server",44,"unknown"));
     char text[8192];size_t bytes=bindings_encode(&b,text,sizeof(text));assert(bytes);
     game_bindings decoded;assert(bindings_decode(&decoded,text) && decoded.count==2);
     assert(binding_find(&decoded,"uuid:server",43)==1 && binding_find(&decoded,"uuid:other",43)<0);
@@ -37,8 +37,9 @@ int main(){
     assert(!bindings_decode(&decoded,"MOONX_BINDINGS 2\n") && decoded.read_only);
     assert(binding_set(&b,"uuid:server",42,"") && b.count==1);
     config cfg;config_defaults(&cfg);assert(cfg.mouse_speed==100 && cfg.mouse_scroll_ms==100 && !cfg.mouse_acceleration);
-    cfg.mouse_speed=175;cfg.mouse_acceleration=1;cfg.mouse_scroll_ms=250;assert(config_save(&cfg));config loaded;config_load(&loaded);
-    assert(loaded.mouse_speed==175 && loaded.mouse_acceleration==1 && loaded.mouse_scroll_ms==250);
+    cfg.mouse_speed=175;cfg.mouse_acceleration=1;cfg.mouse_scroll_ms=250;cfg.refresh_interval_ms=10000;
+    assert(config_save(&cfg));config loaded;config_load(&loaded);
+    assert(loaded.mouse_speed==175 && loaded.mouse_acceleration==1 && loaded.mouse_scroll_ms==250 && loaded.refresh_interval_ms==10000);
     puts("PASS: filtered search, per-game identity/assignment/removal, version/checksum fail-closed, pointer settings restart");
 
     host_cache cache={};cached_host host={};strcpy(host.uuid,"stable");strcpy(host.name,"Server");strcpy(host.ip,"10.1.2.3");host.port=47989;host_cache_upsert(&cache,&host);
@@ -54,7 +55,17 @@ int main(){
     assert(press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,0) && q.open);
     quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(q.open); // held chord toggles once
     press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,0);assert(q.row==1);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,0);assert(q.refresh_request && q.open);
+    press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,0);assert(q.row==2);
     press(&q,pads,LEFT_FLAG,exit,&quit,&exit_app,&action,0);assert(q.volume==95);
+    unsigned packed=quick_pack(&q);assert(((packed>>QUICK_ROW_SHIFT)&QUICK_ROW_MASK)==2);
+    assert(((packed>>QUICK_VOLUME_SHIFT)&QUICK_VOLUME_MASK)==95);
+    quick_menu bits={};bits.open=true;bits.row=7;bits.page=QUICK_CONFIRM;bits.volume=100;bits.muted=bits.stats=true;
+    packed=quick_pack(&bits);
+    assert((packed&QUICK_OPEN) && ((packed>>QUICK_ROW_SHIFT)&QUICK_ROW_MASK)==7 &&
+           ((packed>>QUICK_VOLUME_SHIFT)&QUICK_VOLUME_MASK)==100 &&
+           (packed&QUICK_MUTED) && (packed&QUICK_STATS) &&
+           ((packed>>QUICK_PAGE_SHIFT)&QUICK_PAGE_MASK)==QUICK_CONFIRM);
     press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,0);assert(q.muted);quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(q.muted);
     press(&q,pads,B_FLAG,exit,&quit,&exit_app,&action,0);assert(!q.open && q.neutral);
     pads[0].buttons=A_FLAG;assert(quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0));pads[0].buttons=0;quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0);assert(!q.neutral);
@@ -64,10 +75,14 @@ int main(){
     for(int choice=0;choice<2;choice++){q={};pads[0].buttons=input_exit_mask(choice);assert(!quick_step(&q,pads,false,input_exit_mask(choice),&quit,&exit_app,&action,0));}
     q={};q.volume=100;pads[0].buttons=0;quit=exit_app=false;
     press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,100);
-    for(int row=0;row<5;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,104+row*8);
-    assert(q.row==5 && !quit && !exit_app);
+    for(int row=0;row<7;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,104+row*8);
+    assert(q.row==7 && !quit && !exit_app);
     press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,160);
-    assert(quit && exit_app); // closes the PC app after the local session stops
+    assert(q.page==QUICK_CONFIRM && !quit && !exit_app);
+    press(&q,pads,B_FLAG,exit,&quit,&exit_app,&action,164);assert(q.page==QUICK_MAIN);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,168);assert(q.page==QUICK_CONFIRM);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,172);
+    assert(quit && exit_app); // confirmation closes only the PC app
     q={};q.volume=100;quit=exit_app=false;
     press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,200);
     for(int row=0;row<6;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,204+row*8);
@@ -77,7 +92,16 @@ int main(){
     q={};q.volume=100;quit=exit_app=false;
     press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,280);
     for(int row=0;row<7;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,284+row*8);
-    assert(q.row==0 && !quit && !exit_app); // removed eighth option
+    assert(q.row==7 && !quit && !exit_app);
+    press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,344);
+    assert(q.row==0);
+    q={};q.volume=100;press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,360);
+    for(int row=0;row<5;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,364+row*8);
+    assert(q.row==QUICK_SESSION_DETAILS);
+    press(&q,pads,A_FLAG,exit,&quit,&exit_app,&action,410);assert(q.page==QUICK_DETAILS);
+    press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,414);assert(q.details_section==1);
+    press(&q,pads,B_FLAG,exit,&quit,&exit_app,&action,418);assert(q.page==QUICK_MAIN && q.open);
+    press(&q,pads,B_FLAG,exit,&quit,&exit_app,&action,422);assert(!q.open);
     q={};q.volume=100;press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,0);pads[0].present=false;assert(quick_step(&q,pads,false,exit,&quit,&exit_app,&action,0) && !q.open);
     q={};q.volume=100;pads[0].present=true;pads[0].lx=pads[0].ly=0;
     for(unsigned cycle=0;cycle<100;cycle++) {

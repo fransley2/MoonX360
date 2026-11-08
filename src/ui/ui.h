@@ -80,6 +80,7 @@ void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms);
 void ui_draw_busy(const char *title, const char *message, uint32_t t_ms);
 void ui_draw_host_failure(const char *title,const char *reason);
 void ui_draw_confirm(const char *title,const char *message,const char *confirm);
+void ui_draw_switch_confirm(int selected);
 void ui_draw_profiles(const struct ui_setting *rows,int n,int selected,int factory_count);
 void ui_draw_message(int icon, const char *title, const char *text);
 void ui_draw_stats(const char *title, const struct ui_stat *stats, int n, const char *note);
@@ -138,6 +139,7 @@ int ui_mouse_hud_mode(void);
 void ui_launch_begin(const struct ui_app *app,uint32_t now,bool motion);
 void ui_launch_pair_pin(const char *pin);
 void ui_launch_session(const char *profile,int width,int height,int fps,int bitrate_kbps);
+void ui_launch_crt_note(bool show); /* Prepared once in the existing loading atlas. */
 
 void ui_launch_origin(float *x,float *y,float *w,float *h);
 void ui_launch_text(uint32_t *pixels,int width,int height);

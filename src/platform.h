@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "config.h"
+#include "console_link.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ uint32_t *plat_decode_art(const unsigned char *data, size_t len, int tw, int th)
 
 /* The console's IP address for display, e.g. "192.168.1.99". */
 const char *plat_console_ip(void);
+int plat_network_link(void); /* console's local link only, not the complete host path */
+int plat_crt_output_status(void); /* 1 SD interlaced NTSC-class, -1 incompatible, 0 unknown */
 
 /* Adjusts loaded settings to what this build supports (e.g. renderer). */
 void plat_fixup_config(struct config *cfg);
@@ -52,6 +55,10 @@ bool plat_has_diagnostics(void);
 void plat_diagnostics_configure(bool enabled);
 void plat_diagnostics_checkpoint(const char *phase);
 void plat_diagnostics_flush(void);
+#ifdef _XBOX
+/* Cold, bounded copies of the last five completed diagnostic sessions. */
+void plat_archive_session_reports(void);
+#endif
 /* A bounded textual snapshot for the in-app viewer. */
 void plat_diagnostics_read(char *out, size_t capacity, bool previous);
 /* Once the connecting UI is finished, release its GPU-only textures. */

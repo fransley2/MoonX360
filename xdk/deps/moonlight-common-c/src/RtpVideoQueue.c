@@ -1,5 +1,6 @@
 #include "Limelight-internal.h"
 #include "../../../../src/performance.h"
+#include "../../../../src/rtp_diagnostics.h"
 
 #include <rs.h>
 
@@ -606,8 +607,8 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             queue->multiFecCurrentBlockNumber != fecCurrentBlockNumber) {
         if (queue->pendingFecBlockList.count != 0) {
             if(queue->perfGapStartUs)perf_count(PERF_C_VIDEO_WAIT_LOST,1);
-            if(queue->receivedDataPackets<queue->bufferDataPackets && queue->receivedParityPackets) {
-                uint32_t deficit=queue->bufferDataPackets-queue->receivedDataPackets;
+            if(queue->receivedDataPackets<queue->bufferDataPackets) {
+                uint32_t deficit=rtp_diagnostic_deficit(queue->bufferDataPackets,queue->receivedDataPackets);
                 queue->stats.packetCountFecFailed+=deficit;
                 perf_count(PERF_C_VIDEO_FEC_FAILED,deficit);
             }
@@ -732,8 +733,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
         queue->multiFecCurrentBlockNumber = fecCurrentBlockNumber;
         queue->multiFecLastBlockNumber = (nvPacket->multiFecBlocks >> 6) & 0x3;
 
-        queue->stats.packetCountVideo += queue->bufferDataPackets;
-        queue->stats.packetCountFec += queue->bufferParityPackets;
+        rtp_diagnostic_expected(&queue->stats,queue->currentFrameNumber,queue->bufferDataPackets,queue->bufferParityPackets,perf_enabled());
     }
 
     // Reject packets above our FEC queue valid sequence number range
@@ -795,6 +795,8 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             LC_ASSERT(queue->receivedParityPackets <= queue->bufferParityPackets);
         }
 
+        rtp_diagnostic_accepted(&queue->stats,queue->currentFrameNumber,packetEntry->isParity,(uint32_t)length,
+            perf_enabled()?PltGetMicroseconds():0,perf_enabled());
         // Try to submit this frame. If we haven't received enough packets,
         // this will fail and we'll keep waiting.
         if (reconstructFrame(queue) == 0) {

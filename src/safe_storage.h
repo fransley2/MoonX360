@@ -4,7 +4,7 @@
 /* Cold-path recoverable replacement. A verified temporary is promoted; retain
  * the preceding file as .bak. No claim of power-loss atomicity on untested FATX. */
 static bool storage_recoverable_name(const char *name)
-{return !strcmp(name,"moonlight.ini") || !strcmp(name,"hosts.tsv") || !strcmp(name,"sessions.tsv") || !strcmp(name,"favorites.tsv") || !strcmp(name,"game-bindings.tsv") || !strcmp(name,"launch-settings.tsv") || !strcmp(name,"profile-link-pending.tsv") || !strcmp(name,"aurora-shortcuts.dat") ||
+{return !strcmp(name,"home-wallpaper.png") || !strcmp(name,"moonlight.ini") || !strcmp(name,"hosts.tsv") || !strcmp(name,"sessions.tsv") || !strcmp(name,"favorites.tsv") || !strcmp(name,"game-bindings.tsv") || !strcmp(name,"launch-settings.tsv") || !strcmp(name,"profile-link-pending.tsv") || !strcmp(name,"aurora-shortcuts.dat") ||
     (!strncmp(name,"app-catalog-",12) && strlen(name)==32 && !strcmp(name+28,".bin"));}
 
 #include <errno.h>

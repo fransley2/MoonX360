@@ -18,7 +18,7 @@ static gs_error_code last_error_kind;static void plat_log(const char*){}
 struct gs_server {gs_host_metadata metadata;char uuid[80];int current_game;bool launch_resumed,is_nvidia;char *rtsp_session_url;SERVER_INFORMATION info;};
 struct http_response {char *body;};
 static char sent[2048];static bool reject,changed;
-static bool load_serverinfo(gs_server *s,bool){if(changed)strcpy(s->uuid,"different-pc");return !reject;}
+static bool load_serverinfo(gs_server *s,bool){if(changed)strcpy(s->uuid,"different-pc");else if(!s->uuid[0])strcpy(s->uuid,"selected-pc");return !reject;}
 static void set_error(const char*,const char*){}
 static void crypto_random(void *p,size_t n){memset(p,1,n);}
 static void bytes_to_hex(const unsigned char*,char *out,size_t n){memset(out,'1',n*2);out[n*2]=0;}
@@ -36,7 +36,7 @@ int main(){
         config c;config_defaults(&c);config_apply_preset(&c,mode);
         STREAM_CONFIGURATION sc={};sc.width=c.width;sc.height=c.height;sc.fps=c.fps;sc.bitrate=c.bitrate_kbps;
         sc.audioConfiguration=AUDIO_CONFIGURATION_STEREO;sc.supportedVideoFormats=VIDEO_FORMAT_H264;
-        gs_server host={};host.current_game=resume?42:0;
+        gs_server host={};strcpy(host.uuid,"selected-pc");host.current_game=resume?42:0;
         assert(gs_launch(&host,&sc,42,sops!=0,false));assert(host.launch_resumed==(resume!=0));
         char expected[80];snprintf(expected,sizeof(expected),"mode=%dx%dx%d",c.width,c.height,c.fps);assert(strstr(sent,expected));
         snprintf(expected,sizeof(expected),"&sops=%d",sops);assert(strstr(sent,expected));
@@ -48,7 +48,12 @@ int main(){
     assert(!gs_launch(&host,&sc,42,true,false) && !sent[0]);reject=true;host.current_game=0;
     assert(!gs_launch(&host,&sc,42,true,false));
     reject=false;changed=true;strcpy(host.uuid,"selected-pc");sent[0]=0;assert(!gs_launch(&host,&sc,42,true,false) && !sent[0]);
-    puts("PASS: actual GameStream launch/resume, exact profile mode, sops 0/1, bitrate retained for RTSP, H264 only and stale-session rejection.");
+    changed=false;strcpy(host.uuid,"selected-pc");host.current_game=0;
+    assert(gs_launch(&host,&sc,42,true,false));free(host.rtsp_session_url);
+    host.rtsp_session_url=NULL;host.current_game=0;sent[0]=0;
+    assert(gs_launch(&host,&sc,42,true,false) && strstr(sent,"/launch?")==sent);free(host.rtsp_session_url);host.rtsp_session_url=NULL;
+    host.current_game=42;assert(gs_launch(&host,&sc,42,true,false));assert(strstr(sent,"/resume?")==sent);free(host.rtsp_session_url);
+    puts("PASS: actual GameStream launch/resume, exact profile mode, sops 0/1, bitrate retained for RTSP, H264 only and fresh idle relaunch and identity guards.");
 }
 '''
 Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',s[a:b]))

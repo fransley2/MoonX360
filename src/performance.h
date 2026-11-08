@@ -24,12 +24,13 @@ enum perf_metric {PERF_TCP,PERF_TLS,PERF_RTSP,PERF_NEGOTIATION,PERF_COVER_HTTP,P
     PERF_VIDEO_DU_AGE,PERF_HOST_PROCESSING,PERF_AUDIO_BUFFERS,PERF_AUDIO_QUEUED_MS,
     PERF_Y_TRANSFER,PERF_U_TRANSFER,PERF_V_TRANSFER,PERF_YUV_TRANSFER,
     PERF_CACHED_FREE_SLOTS,PERF_LEGACY_TEXTURE_UPLOAD,PERF_FRAME_READY_PRESENT,PERF_PRESENT_INTERVAL,
-    PERF_PRESENT_CALL,PERF_H264_DECODE,PERF_POST_DECODE,PERF_CPU_SUBMIT,PERF_COUNT};
+    PERF_PRESENT_CALL,PERF_H264_DECODE,PERF_POST_DECODE,PERF_CPU_SUBMIT,PERF_D3D_ACQUIRE,PERF_COUNT};
 enum perf_counter {PERF_C_INPUT_COALESCED,PERF_C_INPUT_QUEUE_FULL,PERF_C_VIDEO_PACKETS,
     PERF_C_VIDEO_BYTES,PERF_C_VIDEO_FRAMES_COMPLETE,PERF_C_VIDEO_LATE,
     PERF_C_VIDEO_OOS,PERF_C_VIDEO_FEC_RECOVERED,PERF_C_VIDEO_FEC_FAILED,
     PERF_C_VIDEO_FRAMES_LOST,PERF_C_VIDEO_INVALID,PERF_C_VIDEO_WAIT_RECOVERED,
-    PERF_C_VIDEO_WAIT_LOST,PERF_C_VIDEO_DATA_ACCEPTED,PERF_C_VIDEO_FEC_ACCEPTED,PERF_C_COUNT};
+    PERF_C_VIDEO_WAIT_LOST,PERF_C_VIDEO_DATA_ACCEPTED,PERF_C_VIDEO_FEC_ACCEPTED,PERF_C_VIDEO_QUEUE_OVERFLOW,PERF_C_COUNT};
+struct perf_pressure {uint32_t recovered,missing,lost,overflows;bool valid;};
 struct perf_summary {uint32_t current,ema,p50,p95,p99,max,count;uint64_t total;};
 enum perf_event {PERF_CONNECT_BEGIN,PERF_LAUNCH_RESPONSE,PERF_CONNECTED,PERF_FIRST_PACKET,PERF_FIRST_DECODED,PERF_FIRST_PRESENTED,PERF_STOP_BEGIN,PERF_RETURN_MENU,PERF_EVENT_COUNT};
 enum perf_fps_stage {PERF_FPS_PROFILE,PERF_FPS_STREAM_CONFIG,PERF_FPS_LAUNCH_REQUEST,
@@ -39,6 +40,7 @@ extern "C" {
 #endif
 #ifdef _XBOX
 extern volatile int perf_active;
+void perf_pressure_read(struct perf_pressure *out);
 static inline bool perf_enabled(void){return perf_active!=0;}
 uint64_t perf_clock(void);
 void perf_begin(bool enabled);
@@ -55,6 +57,9 @@ bool perf_video_tracking_enabled(void);
 void perf_request_fps(int stage,int fps,int client_refresh_x100);
 void perf_frame_complete(uint32_t frame_number);
 uint64_t perf_counter_read(int counter); /* after worker join */
+/* Current window, before perf_flush publishes last-session snapshots. Cold only. */
+uint64_t perf_window_counter_read(int counter);
+uint64_t perf_window_duration_us(void);
 uint64_t perf_last_counter_read(int counter); /* capture window, or full session when unbounded */
 void perf_get_summary(int metric,struct perf_summary *out); /* after worker join */
 void perf_input_sample(int controller,uint64_t detected_us);
@@ -69,6 +74,7 @@ void perf_flush_menu(void);
 void perf_ui_begin(void);
 void perf_ui_end(void);
 #else
+static inline void perf_pressure_read(struct perf_pressure *out){memset(out,0,sizeof(*out));}
 static inline bool perf_enabled(void){return false;}
 static inline uint64_t perf_clock(void){return 0;}
 static inline void perf_begin(bool enabled){(void)enabled;}
@@ -85,6 +91,8 @@ static inline bool perf_video_tracking_enabled(void){return false;}
 static inline void perf_request_fps(int stage,int fps,int client_refresh_x100){(void)stage;(void)fps;(void)client_refresh_x100;}
 static inline void perf_frame_complete(uint32_t frame_number){(void)frame_number;}
 static inline uint64_t perf_counter_read(int counter){(void)counter;return 0;}
+static inline uint64_t perf_window_counter_read(int counter){(void)counter;return 0;}
+static inline uint64_t perf_window_duration_us(void){return 0;}
 static inline uint64_t perf_last_counter_read(int counter){(void)counter;return 0;}
 static inline void perf_get_summary(int metric,struct perf_summary *out){(void)metric;memset(out,0,sizeof(*out));}
 static inline void perf_input_sample(int controller,uint64_t detected_us){(void)controller;(void)detected_us;}

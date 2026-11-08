@@ -14,7 +14,7 @@ struct performance_sample {
     int requested_fps, setup_fps_argument, negotiated_fps;
     bool negotiated_fps_known; /* setup_fps_argument is a copy of the request in MCC */
     double callback_fps, decoded_fps, presented_fps; /* backend stages, not scanout */
-    double complete_frame_fps; /* completed by RTP/FEC, independently counted */
+    double complete_frame_fps; /* RTP/FEC count over its own performance window */
     uint32_t complete_frames,video_packets,video_bytes,fec_recovered,fec_failed,oos,late_packets,invalid_packets,lost_frames;
     uint32_t expected_video_data_packets,expected_fec_packets,accepted_data_packets,accepted_fec_packets;
     uint32_t present_duplicate_local_sequence;

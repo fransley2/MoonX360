@@ -13,16 +13,20 @@ out = r'''
 #include <assert.h>
 #include <stdio.h>
 #include "../xdk/ffmpeg_xbox/xbox_dsp.h"
+#include "../src/h264_reference_policy.h"
+#define XDK_H264_REFERENCE_MODE 0
 int ff_xbox_vmx_flags;
 unsigned ff_xbox_loopfilter_mask;
 #define DECODE_THREADS 4
 #define FF_THREAD_SLICE 2
 #define CODEC_FLAG_LOW_DELAY 1
 #define CODEC_FLAG2_FAST 1
+#define AV_EF_CAREFUL (1<<16)
 #define AV_PIX_FMT_YUV420P 0
-#define AVDISCARD_ALL 48
+enum AVDiscard { AVDISCARD_DEFAULT=0, AVDISCARD_NONREF=8, AVDISCARD_ALL=48 };
 #define FF_INPUT_BUFFER_PADDING_SIZE 32
-struct AVCodecContext { int flags, flags2, thread_type, thread_count, width, height, pix_fmt, skip_loop_filter; };
+struct AVCodecContext { int flags, flags2, thread_type, thread_count, width, height, pix_fmt, skip_loop_filter, skip_frame, skip_idct, err_recognition; };
+struct { int fast_flag; } h264_diagnostic={1};
 struct AVFrame { uint8_t *data[3]; int linesize[3]; };
 struct AVPacket { uint8_t *data; int size; };
 static int ff_h264_decoder, call_number, opened_threads;
@@ -58,6 +62,20 @@ out += source[source.index('static const struct {', source.index('/* -----------
               source.index('static DWORD WINAPI bench_main(')]
 out += r'''
 int main() {
+    AVCodecContext *diagnostic=open_h264(4,4,1,true);
+    assert(diagnostic && (diagnostic->flags2 & CODEC_FLAG2_FAST) && diagnostic->err_recognition==AV_EF_CAREFUL);
+    assert(diagnostic->skip_loop_filter==AVDISCARD_ALL && diagnostic->thread_type==FF_THREAD_SLICE && diagnostic->thread_count==1);
+    assert(diagnostic->skip_frame==AVDISCARD_DEFAULT && diagnostic->skip_idct==AVDISCARD_DEFAULT);
+    close_h264(&diagnostic);
+    diagnostic=open_h264(4,4,1,false);
+    assert(diagnostic && !(diagnostic->flags2 & CODEC_FLAG2_FAST));
+    assert(diagnostic->skip_loop_filter==AVDISCARD_DEFAULT);
+    close_h264(&diagnostic);
+    h264_diagnostic.fast_flag=0;
+    diagnostic=open_h264(4,4,1,true);
+    assert(diagnostic && !(diagnostic->flags2 & CODEC_FLAG2_FAST));
+    close_h264(&diagnostic);
+    h264_diagnostic.fast_flag=1;
 #if XDK_SLICE_DISPATCH_BATCHED
     dispatch_version=0;assert(open_h264(4,4,4,false)==NULL);dispatch_version=2;
 #endif

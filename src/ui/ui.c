@@ -64,6 +64,7 @@ static canvas_t main_cache;
 static bool main_cache_valid,main_cache_gpu;
 static uint64_t main_cache_key;
 static int ui_language;
+#include "quick_translations.h"
 const char *ui_translate(const char *english)
 {
     if(!english)return "";
@@ -73,6 +74,9 @@ const char *ui_translate(const char *english)
         if(!c){const char *translated=ui_language==CONFIG_LANGUAGE_PT_BR?ui_translations[m].pt_br:ui_translations[m].es;
             return translated && *translated?translated:english;}
         if(c<0)hi=m-1;else lo=m+1;}
+    for(size_t i=0;i<sizeof(quick_translations)/sizeof(quick_translations[0]);i++)
+        if(!strcmp(english,quick_translations[i].en))
+            return ui_language==CONFIG_LANGUAGE_PT_BR?quick_translations[i].pt_br:quick_translations[i].es;
     return english;
 }
 void ui_set_language(int language)
@@ -644,8 +648,14 @@ static struct {const uint32_t *source;uint32_t generation;char host[96];int row,
 void ui_home_cancel_prepare(void){home_wall_pending.active=false;}
 static uint32_t wall_sample(const uint32_t *source,int sw,int sh,int x,int y,int dw,int dh,bool cover)
 {
-    int sx=x*sw/dw, sy=cover?sh/4+y*(sh/2)/dh:y*sh/dh;
-    int fx=(x*sw*256/dw)&255,fy=((cover?y*(sh/2):y*sh)*256/dh)&255;
+    int crop_w=sw,crop_h=sh,ox=0,oy=0;
+    if(cover) {
+        if((int64_t)sw*dh>(int64_t)sh*dw){crop_w=(int)((int64_t)sh*dw/dh);ox=(sw-crop_w)/2;}
+        else {crop_h=(int)((int64_t)sw*dh/dw);oy=(sh-crop_h)/2;}
+        if(crop_w<1)crop_w=1;if(crop_h<1)crop_h=1;
+    }
+    int sx=ox+x*crop_w/dw,sy=oy+y*crop_h/dh;
+    int fx=(x*crop_w*256/dw)&255,fy=(y*crop_h*256/dh)&255;
     if(sx>=sw)sx=sw-1;if(sy>=sh)sy=sh-1;
     int sx1=sx+1<sw?sx+1:sx,sy1=sy+1<sh?sy+1:sy;
     uint32_t p[4]={source[sy*sw+sx],source[sy*sw+sx1],source[sy1*sw+sx],source[sy1*sw+sx1]};
@@ -662,7 +672,7 @@ static void home_wall_resample_rows(uint32_t *out,const uint32_t *source,int sw,
 {
     for(int y=first;y<end;y++)for(int x=0;x<HOME_WALL_W;x++) {
         uint32_t color=cover?wall_sample(home_wall_small,160,90,x,y,HOME_WALL_W,HOME_WALL_H,false):
-            wall_sample(source,sw,sh,x,y,HOME_WALL_W,HOME_WALL_H,false);
+            wall_sample(source,sw,sh,x,y,HOME_WALL_W,HOME_WALL_H,true);
         int shade=cover?(y<HOME_WALL_H/2?78:61):90;
         for(int shift=0;shift<24;shift+=8){int v=(int)((color>>shift)&255);
             color=(color&~(255u<<shift))|((uint32_t)(v*shade/100)<<shift);}
@@ -688,7 +698,7 @@ bool ui_home_prepare_cover(const char *host,const struct ui_app *app,uint32_t no
     home_wall_resample_rows(home_wall[home_wall_pending.slot],home_wall_small,160,90,true,home_wall_pending.row,next);
     home_wall_pending.row=next;
     if(next<HOME_WALL_H)return false;
-    home_wall_previous=home_wall_current;home_wall_current=home_wall_pending.slot;home_wall_started=now;
+    home_wall_previous=ui_motion_enabled()?home_wall_current:-1;home_wall_current=home_wall_pending.slot;home_wall_started=now;
     home_wall_source=app->art;home_wall_source_generation=app->generation;
     snprintf(home_wall_host,sizeof(home_wall_host),"%s",host?host:"");
     home_wall_pending.active=false;
@@ -999,6 +1009,10 @@ void ui_draw_settings(const struct ui_setting *rows, int n, int sel)
     ui_draw_settings_page("Settings", rows, n, sel);
 }
 
+static bool toggle_enabled(const char *value)
+{
+    return value && (!strcmp(value,"On") || !strncmp(value,"On (",4) || !strcmp(value,"Limited"));
+}
 static int option_kind(const char *title,const struct ui_setting *row,int index,bool adjustable)
 {
     if(!adjustable || !strcmp(title,"Settings") || !strcmp(title,"Developer / Advanced"))return UI_OPTION_OPEN;
@@ -1008,7 +1022,7 @@ static int option_kind(const char *title,const struct ui_setting *row,int index,
     if(!strcmp(title,"Stream Profile"))return UI_OPTION_ACTION;
     if(!strcmp(row->label,"Saved profile") || !strcmp(row->label,"Factory profile"))return UI_OPTION_ACTION;
     if(!strcmp(row->label,"Name"))return UI_OPTION_INFO;
-    if(!strcmp(row->value,"On") || !strcmp(row->value,"Off"))return UI_OPTION_TOGGLE;
+    if(toggle_enabled(row->value) || !strcmp(row->value,"Off"))return UI_OPTION_TOGGLE;
     if(!strcmp(row->value,"Open") || !strcmp(row->value,"Manage") || !strcmp(row->value,"Press A"))return UI_OPTION_OPEN;
     return UI_OPTION_CYCLE;
 }
@@ -1058,7 +1072,7 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
             const char *value=kind==UI_OPTION_OPEN && (!strcmp(rows[i].value,"Open") || !strcmp(rows[i].value,"Manage") || !strcmp(rows[i].value,"Press A"))?"Open  >":rows[i].value;
             bool raw=literal_value || (!strcmp(title,"Host settings") && (i==0 || i==3 || i==4 || i==5)) || (!strcmp(title,"Game stream profile") && i>=CONFIG_PROFILE_COUNT) || (!strcmp(title,"Host details") && i==1) || ((!strcmp(title,"Delete profile?") || !strcmp(title,"Delete profile")) && i==1) || !strcmp(title,"Rename profile");
             if(kind==UI_OPTION_TOGGLE) {
-                bool enabled=!strcmp(rows[i].value,"On");
+                bool enabled=toggle_enabled(rows[i].value);
                 rrect(x+w-82,ry+17,48,24,12,enabled?C_ACCENT:C_BORDER);
                 cv_circle(&cv,S(x+w-(enabled?46:70)),S(ry+29),S(8),enabled?C_BG_BOTTOM:C_TEXT);
                 text_fit(FONT_REGULAR,18,value_x,ry+34,value_width-80,C_TEXT_DIM,literal_value?value:ui_translate(value));
@@ -1082,7 +1096,7 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
     int kind=sel>=0 && sel<n?(kinds?kinds[sel]:option_kind(title,rows+sel,sel,adjustable)):UI_OPTION_INFO;
     bool details=sel>=0 && sel<n && (!strcmp(rows[sel].label,"Stream Profile") || !strcmp(rows[sel].label,"Launch coverage")) && !strcmp(title,"Stream");
     const char *action=!strcmp(title,"Rename profile")?"Save":!strcmp(title,"Stream Profile")?"Select":kind==UI_OPTION_OPEN?"Open":kind==UI_OPTION_CYCLE?(details?"Details":"Next value"):
-        kind==UI_OPTION_TOGGLE?(sel>=0 && sel<n && !strcmp(rows[sel].value,"On")?"Turn off":"Turn on"):
+        kind==UI_OPTION_TOGGLE?(sel>=0 && sel<n && toggle_enabled(rows[sel].value)?"Turn off":"Turn on"):
         (sel>=0 && sel<n?rows[sel].label:"Run action");
     struct hint hints[]={{"A",action},{"Left / Right","Change"},{"B","Back"}};
     if(!strcmp(title,"Appearance and display")) {
@@ -1137,6 +1151,21 @@ void ui_draw_confirm(const char *title,const char *message,const char *confirm)
     rrect(312,405,184,48,4,C_RED);float width;keycap(328,436,"A",&width);
     text(FONT_BOLD,20,366,436,C_TEXT,ui_translate(confirm));
     keycap(542,436,"B",&width);text(FONT_REGULAR,20,580,436,C_TEXT,ui_translate("Cancel"));
+}
+void ui_draw_switch_confirm(int selected)
+{
+    begin_frame();header(NULL);tabs();
+    cv_unclip(&cv);cv_fill(&cv,0,0,cv.w,cv.h,ARGB(170,0,0,0));
+    card(240,214,800,300,UI_CORNER,false);
+    text(FONT_BOLD,28,272,260,C_TEXT,"Switch Application?");
+    wrapped(FONT_REGULAR,21,272,304,736,28,C_TEXT_DIM,
+        "Are you sure you want to launch this app? This will terminate the currently running app.");
+    text(FONT_REGULAR,21,272,390,C_TEXT,"Any unsaved progress may be lost.");
+    card(272,428,280,58,4,selected==0);
+    card(584,428,424,58,4,selected==1);
+    text(FONT_BOLD,22,300,466,C_TEXT,"Cancel");
+    text(FONT_BOLD,22,612,466,C_TEXT,"Switch App");
+    static const struct hint hints[]={{"A","Select"},{"B","Cancel"}};footer(hints,2,NULL);
 }
 void ui_draw_list(const char *title,const struct ui_setting *rows,int n,int sel)
 {
@@ -1385,6 +1414,8 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
 #include "../launch_cover.h"
 static float launch_x,launch_y,launch_w,launch_h;
 static char launch_name[192],launch_profile[128],launch_mode[96];
+static bool launch_crt_note;
+void ui_launch_crt_note(bool show){launch_crt_note=show;}
 static char launch_pair_label[80];
 void ui_launch_pair_pin(const char *pin){snprintf(launch_pair_label,sizeof(launch_pair_label),ui_translate("Pairing PIN: %s"),pin);}
 static const char *launch_labels[LAUNCH_STATUS_COUNT]={
@@ -1419,7 +1450,7 @@ void ui_launch_begin(const struct ui_app *app,uint32_t now,bool motion)
     snprintf(launch_name,sizeof(launch_name),"%s",app->name);
     ui_draw_hide_image(app->art,S(launch_x),S(launch_y),S(launch_w),S(launch_h));
     (void)now;(void)motion;
-    launch_profile[0]=launch_mode[0]=0;
+    launch_profile[0]=launch_mode[0]=0;launch_crt_note=false;
 }
 void ui_launch_origin(float *x,float *y,float *w,float *h)
 {*x=launch_x;*y=launch_y;*w=launch_w;*h=launch_h;}
@@ -1442,9 +1473,14 @@ void ui_launch_text(uint32_t *pixels,int width,int height)
     memset(pixels,0,(size_t)width*height*4);font_set_sink(&panel,launch_text_glyph);
     const char *labels[]={launch_name,launch_profile,launch_mode};
     for(int i=0;i<3;i++) {
-        int size=i==0?28:19,face=i==0?FONT_BOLD:FONT_REGULAR;
+        int size=i==0?28:launch_crt_note?16:19,face=i==0?FONT_BOLD:FONT_REGULAR;
         int tw=font_text_width(face,(float)size,labels[i]);if(tw>480)tw=480;
-        font_draw_fit(&panel,face,(float)size,(width-tw)/2,i==0?34:i==1?66:88,480,i==0?C_TEXT:C_TEXT_DIM,labels[i]);
+        font_draw_fit(&panel,face,(float)size,(width-tw)/2,i==0?34:i==1?(launch_crt_note?62:66):(launch_crt_note?78:88),480,i==0?C_TEXT:C_TEXT_DIM,labels[i]);
+    }
+    if(launch_crt_note) {
+        const char *note="Compatible CRT resolution not detected. Using selected settings.";
+        int tw=font_text_width(FONT_REGULAR,12,note);if(tw>480)tw=480;
+        font_draw_fit(&panel,FONT_REGULAR,12,(width-tw)/2,92,480,C_TEXT_DIM,note);
     }
     for(int i=0;i<LAUNCH_STATUS_COUNT+3;i++) {
         const char *label=i<LAUNCH_STATUS_COUNT?launch_labels[i]:i==LAUNCH_STATUS_COUNT?"B: Cancel":i==LAUNCH_STATUS_COUNT+1?"B: Cancel | X: Reveal video":"MoonX360";

@@ -13,7 +13,8 @@ for marker,path,sigs in [
  ('RENDER_PUMP','xdk/src/video_xdk.cpp',['static void render_tick(', 'static DWORD WINAPI render_main(']),
  ('RESIZE','xdk/src/video_xdk.cpp',['static bool resize_video(']),
  ('LAUNCH','src/gamestream.c',['static char *xml_get_from(', 'static char *xml_get(', 'bool gs_launch('])]:
- fixture=fixture.replace('/* '+marker+' */',''.join(fn(path,s) for s in sigs))
+ code=''.join(fn(path,s) for s in sigs)
+ fixture=fixture.replace('/* '+marker+' */',code)
 # Full pairing depends on crypto. Check the already-paired path cannot enter the
 # unpair-on-failure cleanup and failed cleanup retains the original error.
 s=(root/'src/gamestream.c').read_text();pair=s[s.index('bool gs_pair('):s.index('bool gs_unpair(')]

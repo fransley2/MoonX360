@@ -32,6 +32,19 @@ int main(void)
     assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000 && c.ui_layout==0);
     assert(c.artwork_cache_enabled && c.artwork_cache_mb==128);
     assert(writes == 0 && c.ui_motion && c.menu_sounds && c.menu_volume==18);
+    const int refresh_values[]={0,125,250,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,30000,45000,60000};
+    for(int i=0;i<18;i++){
+        assert(config_refresh_interval_supported(refresh_values[i]));
+        assert(config_cycle_refresh_interval(refresh_values[i],1)==refresh_values[(i+1)%18]);
+        assert(config_cycle_refresh_interval(refresh_values[i],-1)==refresh_values[(i+17)%18]);
+        ini="video_refresh_interval_ms="+std::to_string(refresh_values[i])+"\n";
+        config_load(&loaded);assert(loaded.refresh_interval_ms==refresh_values[i]);
+    }
+    ini="video_refresh_interval=5\n";config_load(&loaded);assert(loaded.refresh_interval_ms==5000);
+    ini="video_refresh_interval_ms=125\nvideo_refresh_interval=5\n";
+    config_load(&loaded);assert(loaded.refresh_interval_ms==125);
+    ini="video_refresh_interval=11\n";config_load(&loaded);assert(loaded.refresh_interval_ms==0);
+    ini.clear();
     ini="width=640\nheight=480\nfps=60\nbitrate=8000\ndisplay_mode=4\nui_layout=1\n";
     config_load(&c);
     assert(c.width==640 && c.height==480 && c.display_mode==4 && c.ui_layout==1);
@@ -109,7 +122,7 @@ int main(void)
         assert(loaded.mouse_hud==hud && loaded.stream_menu_style==style);
     }
     int packet = c.packet_size;
-    for (int i=1; i<CONFIG_PROFILE_COUNT; i++) {
+    for (int i=1; i<CONFIG_PROFILE_WIRELESS; i++) {
         config_apply_preset(&c, i);
         assert(config_video_preset(&c) == i);
         assert(c.quit_combo == 1 && c.stick_deadzone == 13 && c.session_report);
@@ -155,9 +168,18 @@ int main(void)
     assert(config_save(&c));config_load(&loaded);assert(loaded.fps==60 && loaded.stream_profile==CONFIG_PROFILE_SMOOTH);
     ini.clear(); config_load(&c);
     assert(config_video_preset(&c) == CONFIG_PROFILE_SMOOTH);
+    ini="width=1280\nheight=720\nfps=60\nbitrate=35000\nstream_profile=maximum_quality\n";
+    config_load(&c);
+    assert(c.bitrate_kbps==18000 && config_video_preset(&c)==CONFIG_PROFILE_QUALITY);
+    assert(config_save(&c));config_load(&loaded);
+    assert(loaded.bitrate_kbps==18000 && config_video_preset(&loaded)==CONFIG_PROFILE_QUALITY);
+    ini="width=1280\nheight=720\nfps=60\nbitrate=35000\nstream_profile=custom\n";
+    config_load(&c);
+    assert(c.bitrate_kbps==35000 && config_video_preset(&c)==0);
+    ini.clear();config_load(&c);
     assert(c.fast_decode && c.renderer == 0 && c.vsync && c.slice_count == 0);
-    static const int modes[6][4]={{0,0,0,0},{1280,720,60,12000},{854,480,60,25000},{1280,720,60,35000},{1280,720,30,12000},{1920,1080,24,8000}};
-    for (int preset=1;preset<CONFIG_PROFILE_COUNT;preset++) {
+    static const int modes[6][4]={{0,0,0,0},{1280,720,60,12000},{854,480,60,25000},{1280,720,60,18000},{1280,720,30,12000},{1920,1080,24,8000}};
+    for (int preset=1;preset<CONFIG_PROFILE_WIRELESS;preset++) {
         c.fast_decode=false;c.renderer=2;c.vsync=false;c.image_quality=2;c.slice_count=16;
         config expected=c;
         config_apply_preset(&c,preset);
