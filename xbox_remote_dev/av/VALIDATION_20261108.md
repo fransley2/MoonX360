@@ -55,6 +55,15 @@ unverified; see [the source audit](360STREAM_ANALYSIS_20261108.md).
 
 ## Remaining physical work
 
+The console user reported having no known module loader. A fresh read-only
+XBDM preflight returned `Aurora.xex`, debugger `start`, and a `help` command
+list with no advertised `loadmodule` or `unloadmodule` command. No 360Stream
+or XBGuard module was observed in the module list. This does not prove that
+no unloaded loader exists on storage; it establishes that this session has
+no verified in-game load/unload path. No unknown extension command was
+invoked, and no loader or plugin was installed. The physical capture test
+remains gated on establishing that path.
+
 - Identify an existing in-game module loader and a local recovery procedure.
 - Open a game and manually load the original capture module as a temporary
   experiment, then receive complete video and PCM in `RemoteAV.exe`.
