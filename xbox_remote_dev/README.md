@@ -14,6 +14,12 @@ plugin. The Windows desktop project currently exposes read-only XBDM status,
 modules, directory listing and an allowlisted terminal. The remote input
 proof of concept is a local state model with a disconnect watchdog.
 
+The separate [game A/V capture experiment](av/README.md) now includes a small
+HY37-compatible Windows receiver and a source/architecture audit of the
+user-provided 360Stream package. The available capture XEX is the original
+third-party binary, not a newly compiled capture module. Physical game video,
+audio and unload behavior remain unverified.
+
 ```powershell
 py -B -m unittest discover -s xbox_remote_dev/tests -v
 py -B xbox_remote_dev/host/diagnose.py 192.168.15.10 evidence/new-run
