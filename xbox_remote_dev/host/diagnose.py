@@ -26,6 +26,17 @@ def record_error(error):
     return value
 
 
+def resume_if_capture_stopped(host, result):
+    before = result["commands"].get("getexecstate", {}).get("message", "").strip()
+    after = result["exec_state_after_screenshot"].get("message", "").strip()
+    if before == "start" and after == "stop":
+        try:
+            result["screenshot_resume_reply"] = request(host, "go")
+            result["exec_state_after_resume"] = request(host, "getexecstate")
+        except (OSError, ValueError) as exc:
+            result["screenshot_resume_error"] = record_error(exc)
+
+
 def diagnose(host: str, output: Path, capture: bool = False):
     output.mkdir(parents=True, exist_ok=False)
     result = {"host": host, "collected_utc": datetime.now(timezone.utc).isoformat(),
@@ -59,6 +70,7 @@ def diagnose(host: str, output: Path, capture: bool = False):
             result["exec_state_after_screenshot"] = request(host, "getexecstate")
         except (OSError, ValueError) as exc:
             result["exec_state_after_screenshot"] = record_error(exc)
+        resume_if_capture_stopped(host, result)
     (output / "diagnosis.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
