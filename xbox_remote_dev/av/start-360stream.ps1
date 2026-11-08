@@ -4,8 +4,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $viewer = (Resolve-Path -LiteralPath $ViewerPath).Path
-$expectedHash = '7be4cf4c559b698480d5192591cf97463e89e88dbb1d6efe02bcef41a937a48b'
-if ((Get-FileHash -LiteralPath $viewer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+$supportedHashes = @('7be4cf4c559b698480d5192591cf97463e89e88dbb1d6efe02bcef41a937a48b',
+                     'f5530813079b892217a1c39469d1ac4a8ca562964fbcd1bf66b6954f6be669ab')
+$viewerHash = (Get-FileHash -LiteralPath $viewer -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($viewerHash -notin $supportedHashes) {
     throw 'Viewer differs from the audited file; inspect it before executing'
 }
 $occupied = @(Get-NetTCPConnection -LocalPort 36000 -State Listen -ErrorAction SilentlyContinue)
@@ -41,7 +43,7 @@ for ($attempt=0; $attempt -lt 20; $attempt++) {
     if ($listeners.Count) { break }
 }
 # Do not connect a probe client: this original receiver accepts one connection.
-$result = @{ viewer_sha256=$expectedHash; python=$python; process_id=$process.Id;
+$result = @{ viewer_sha256=$viewerHash; python=$python; process_id=$process.Id;
     listener_verified=[bool]$listeners.Count; listener_process_ids=@($listeners.OwningProcess); logs=$logs;
     xbox_module_state='not queried by this launcher'; hardware_capture_verified=$false;
     dependency_versions=@(Get-Content -LiteralPath (Join-Path $runtime 'requirements-installed.txt') -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ }) }

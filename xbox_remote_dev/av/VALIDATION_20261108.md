@@ -1,5 +1,9 @@
 # A/V receiver validation - 2026-11-08
 
+Later user setup and USB IP corrections are recorded separately in
+[SETUP_DIAGNOSTIC_20261108.md](SETUP_DIAGNOSTIC_20261108.md). The host build
+and earlier validation results below retain their original scope.
+
 The selected task is capture of a running game's picture and sound. This
 stage implements the PC receiver and prepares a user-provided third-party
 capture XEX for a manual experiment. It does not implement a new from-source

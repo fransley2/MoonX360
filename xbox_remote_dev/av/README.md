@@ -13,6 +13,48 @@ loader and lifecycle work described in [the architecture audit](360STREAM_ANALYS
 The existing RemoteTest and RemoteAgent builds cannot capture a running game.
 The standalone launch failure and agent export warnings remain unresolved.
 
+Setup follow-up: the original capture DLL was observed loaded under Aurora
+after the user's restart. The USB media INI was subsequently repaired from
+the WARP address to `192.168.15.8`. A further restart and actual media capture
+were deferred by the user. See [the setup diagnosis](SETUP_DIAGNOSTIC_20261108.md)
+for observed state, hashes and recovery material.
+
+## Start the supplied Python viewer reliably
+
+For the user-provided copy at `xbox_remote_dev/360Stream/PC`, use
+`av/Start-360Stream.cmd`, or:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File xbox_remote_dev/av/start-360stream.ps1
+```
+
+The dedicated Python 3.12 environment is outside OneDrive at
+`%LOCALAPPDATA%\XboxRemoteDev\360stream-viewer\venv`. On a machine without
+that environment, run the launcher once with `-Setup` to install Pillow and
+sounddevice there. Package versions and startup logs are saved below
+`%LOCALAPPDATA%\XboxRemoteDev\360stream-viewer`. The starter verifies the
+viewer hash, refuses an occupied port, and checks the actual listener,
+including the Windows venv child interpreter. Do not run this viewer
+and `RemoteAV.exe` on port 36000 simultaneously.
+
+The original viewer selected WARP `172.16.0.2` on this PC. The personal copy
+now prefers 192.168/10 candidates before 172.16/12 and selects `192.168.15.8`
+in this configuration. This ranking does not universally identify a physical
+interface. Verify the LAN address again if adapters change.
+
+The minimal local patch is reproducible with:
+
+```powershell
+py -B xbox_remote_dev/av/fix-360stream-ip.py
+```
+
+It verifies the input hash, backs up the original outside OneDrive and tests
+five address-order cases. The user-provided full viewer and Xbox binary
+remain excluded from Git; only the patch utility and launcher are maintained
+here. TCP **36000** receives media; console TCP **21** is FTP and TCP **730**
+is XBDM. The original Python viewer accepts one connection per run; restart
+it after a disconnected session. A listening socket is not proof of media.
+
 ## Build and host tests
 
 ```powershell
