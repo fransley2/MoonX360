@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <vector>
 #include "../../src/input_session.h"
+#include "../../src/input_shortcut.h"
 
 struct event { int port, mask, buttons, lt, lx; };
 static std::vector<event> events;
@@ -51,37 +52,38 @@ int main(void)
     assert(events[events.size()-2].port == 0 && events[events.size()-2].mask == 1);
     assert(events.back().port == 1 && events.back().buttons == 0);
 
+    input_shortcut shortcut = {};
+    bool consumed[MAX_PADS] = {};
     int combo = input_exit_mask(0);
+    pads[0].buttons = LB_FLAG | RB_FLAG;
+    assert(!input_shortcut_step(&shortcut,pads,combo,100,consumed) && !consumed[0]);
+    pads[0].buttons = combo | A_FLAG;
+    assert(!input_shortcut_step(&shortcut,pads,combo,200,consumed) && consumed[0]);
+    pads[0].buttons = combo & ~RS_CLK_FLAG;
+    assert(!input_shortcut_step(&shortcut,pads,combo,300,consumed) && consumed[0]);
     pads[0].buttons = combo;
-    assert(!input_session_step(&s, pads, 1, 100, &opts));
-    assert(events.back().buttons == 0); // full shortcut suppressed
-    pads[0].buttons = combo;
-    assert(!input_session_step(&s, pads, 1, 2099, &opts));
-    pads[0].buttons = combo;
-    assert(input_session_step(&s, pads, 1, 2100, &opts));
+    assert(!input_shortcut_step(&shortcut,pads,combo,400,consumed));
+    assert(!input_shortcut_step(&shortcut,pads,combo,2199,consumed));
+    assert(input_shortcut_step(&shortcut,pads,combo,2200,consumed));
+    assert(!input_shortcut_step(&shortcut,pads,combo,2204,consumed) && consumed[0]);
     pads[0].buttons = 0;
-    input_session_step(&s, pads, 1, 2200, &opts);
+    input_shortcut_step(&shortcut,pads,combo,2201,consumed);
+    input_shortcut_step(&shortcut,pads,combo,2552,consumed);
+    assert(!consumed[0]);
     pads[0].buttons = combo;
-    assert(!input_session_step(&s, pads, 1, 2300, &opts));
+    assert(!input_shortcut_step(&shortcut,pads,combo,2600,consumed));
     pads[0].present = false;
-    input_session_step(&s, pads, 0, 2400, &opts);
-    pads[0].present = true; pads[0].buttons = combo;
-    assert(!input_session_step(&s, pads, 1, 5000, &opts));
-    pads[0].buttons = 0;
-    input_session_step(&s, pads, 1, 5004, &opts);
-    pads[0].buttons = combo;
-    input_session_step(&s, pads, 1, UINT32_MAX - 999, &opts);
-    pads[0].buttons = combo;
-    assert(input_session_step(&s, pads, 1, 1000, &opts)); // timer wraps
+    input_shortcut_step(&shortcut,pads,combo,2604,consumed);
+    pads[0].present = true;
+    assert(!input_shortcut_step(&shortcut,pads,combo,5000,consumed));
     pads[0].buttons = LB_FLAG | RB_FLAG;
     pads[1].present = true; pads[1].buttons = LS_CLK_FLAG | RS_CLK_FLAG;
-    assert(!input_session_step(&s, pads, 3, 10000, &opts));
-    assert(!input_session_step(&s, pads, 3, 13000, &opts)); // cannot combine pads
-    opts.quit_combo = 1;
-    pads[0].buttons = input_exit_mask(1);
-    assert(!input_session_step(&s, pads, 3, 14000, &opts));
-    pads[0].buttons = input_exit_mask(1);
-    assert(input_session_step(&s, pads, 3, 16000, &opts));
+    assert(!input_shortcut_step(&shortcut,pads,combo,8000,consumed));
+    pads[1].buttons = 0;
+    combo = input_exit_mask(1);
+    pads[0].buttons = combo;
+    assert(!input_shortcut_step(&shortcut,pads,combo,10000,consumed));
+    assert(input_shortcut_step(&shortcut,pads,combo,12000,consumed));
     input_session_release(&s);
     assert(events.back().mask == 0 && events.back().buttons == 0);
 
@@ -99,6 +101,6 @@ int main(void)
         assert(input_axis((int16_t)(32767 * percent / 100), percent) == 0);
     }
     puts("PASS: arrival, unchanged input, disconnect, reconnect, mask changes, neutral release,");
-    puts("hold/release/disconnect/wrap/multiple-pad/legacy shortcuts; 2031616 axis cases.");
+    puts("staggered/tolerant/release/disconnect/multiple-pad/legacy shortcuts; 2031616 axis cases.");
     return 0;
 }

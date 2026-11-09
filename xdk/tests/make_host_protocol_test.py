@@ -9,6 +9,7 @@ def fn(sig):
     return source[a:b]
 fixture=r'''
 #include <assert.h>
+#include <initializer_list>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,7 @@ struct gs_app {int id;char name[64],uuid[80];};
 struct http_response {int status;char *body;size_t len;};
 static gs_error_code last_error_kind;static char last_error[256];static const char *wire;static int requests;
 static volatile int *request_cancel;static uint32_t tick;static bool custom_tls;static int tls_calls;
+static void plat_log(const char*){}
 static uint32_t plat_now_ms(){return tick;}
 static int plat_atomic_load(volatile int *p){return *p;}
 void LiInitializeServerInformation(PSERVER_INFORMATION p){memset(p,0,sizeof(*p));}
@@ -55,6 +57,14 @@ int main(){
  memset(&host,0,sizeof(host));custom_tls=true;tick=0;int initial=requests;
  assert(gs_server_info_port(&host,"10.0.0.87",47989,100) && host.paired && host.https_port==48123 && tls_calls==2 && requests-initial==3 && tick<100);
  assert(host.info.address==host.address && host.info.serverInfoAppVersion==host.app_version);
+ for(const char *bad:{"0", "", "-1", "abc", "12x", "2147483648", "4294967296"}) {
+  snprintf(body,sizeof(body),"<root status_code=\"200\"><uniqueid>host-a</uniqueid><appversion>7.1</appversion><state>SUNSHINE_SERVER_BUSY</state><currentgame>%s</currentgame></root>",bad);wire=body;
+  assert(!load_serverinfo(&host,true) && host.current_game==-1 && last_error_kind==GS_ERROR_PROTOCOL);
+ }
+ wire="<root status_code=\"200\"><uniqueid>host-a</uniqueid><appversion>7.1</appversion><state>SUNSHINE_SERVER_BUSY</state><currentgame>42</currentgame></root>";
+ assert(load_serverinfo(&host,true) && host.current_game==42);
+ wire="<root status_code=\"200\"><uniqueid>host-a</uniqueid><appversion>7.1</appversion><state>SUNSHINE_SERVER_FREE</state><currentgame>42</currentgame></root>";
+ assert(!load_serverinfo(&host,true) && host.current_game==-1 && last_error_kind==GS_ERROR_PROTOCOL);
  puts("PASS: advertised nonstandard HTTPS port recovered within shared budget; actual serverinfo/app-list parsing, optional scoped UUID, UUID truncation rejection, missing identity clearing, newer protocol fields and typed permission/pairing/app errors.");
 }
 '''

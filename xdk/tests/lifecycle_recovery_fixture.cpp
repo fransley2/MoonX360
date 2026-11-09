@@ -1,6 +1,8 @@
 #include "../src/wake.h"
 #include "../src/host_compat.h"
 #include <assert.h>
+static void cached_video_invalidate_history(){}
+static void configure_smoothing_history(bool,int){}
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,7 +54,7 @@ enum {PIPE_LEGACY,PIPE_CACHED,PIPE_SWITCHING,PIPE_DISABLED};
 static bool running,guide,owned;
 static unsigned waits,heartbeats,draws,tick;
 static int frame_event,mailbox_lock,slot_pending=-1,slot_rendering=-1;
-static struct {int color_space;bool vsync;} options;
+static struct {int color_space;bool vsync;int refresh_smoothing;} options;
 static struct {unsigned rendered,dropped,avg_render_us;} stats;
 struct D3DDevice {
     void SetPixelShaderConstantF(int,const float*,int){assert(owned);}
@@ -104,6 +106,7 @@ static uint64_t streaming_start_us=123,streaming_end_us;
 static unsigned char *cap_buf;
 static unsigned cap_len,cap_frames;
 static void vlog(const char*,...){}
+static void plat_diagnostics_checkpoint(const char*){}
 static LONG InterlockedExchange(volatile LONG *p,LONG n){LONG old=*p;*p=n;return old;}
 static int video_get_stream_error(){return stream_error;}
 static void video_stop(){joined=true;stops++;streaming_end_us=900;}
@@ -148,7 +151,7 @@ static bool xml_status_ok(const char *s){return strstr(s,"status_code=\"200\"")!
 static void http_response_free(http_response *r){free(r->body);r->body=NULL;}
 /* LAUNCH */
 static void test(){
-    gs_server s={};STREAM_CONFIGURATION cfg={};cfg.width=1280;cfg.height=720;cfg.fps=60;
+    gs_server s={};strcpy(s.uuid,"fixture-host");STREAM_CONFIGURATION cfg={};cfg.width=1280;cfg.height=720;cfg.fps=60;
     // Stale BUSY after the host restarted must launch, not resume.
     s.current_game=42;actual_game=0;assert(gs_launch(&s,&cfg,42,true,false));assert(!strncmp(endpoint,"/launch?",8));
     assert(s.current_game==42&&s.info.rtspSessionUrl==s.rtsp_session_url&&!strcmp(s.rtsp_session_url,"rtsp://new"));

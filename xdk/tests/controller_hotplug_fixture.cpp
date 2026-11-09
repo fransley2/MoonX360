@@ -6,6 +6,7 @@ static void ui_present(){menu_restores++;}
 #include <stdio.h>
 #include <vector>
 #include "../src/input_session.h"
+#include "../src/input_shortcut.h"
 #include "../src/input_hotplug.h"
 #include "../src/remote_input.h"
 #include "../src/quick_menu.h"
@@ -35,7 +36,8 @@ struct XINPUT_GAMEPAD {WORD wButtons;uint8_t bLeftTrigger,bRightTrigger;int16_t 
 struct XINPUT_STATE {DWORD dwPacketNumber;XINPUT_GAMEPAD Gamepad;};
 struct XINPUT_VIBRATION {WORD wLeftMotorSpeed,wRightMotorSpeed;};
 static DWORD tick;static bool connected[4],guide,inject_stop;static XINPUT_STATE samples[4];
-static int probes[4],arrivals[4],rumble_calls,sleep_count,join_count;static WORD motor[4];
+static int probes[4],arrivals[4],rumble_calls,sleep_count,join_count,stop_after=40;static WORD motor[4];
+static DWORD expected_interval_ms=4;
 struct event {short port,mask;int buttons;unsigned lt;int lx;};static std::vector<event> events;
 int LiSendControllerArrivalEvent(uint8_t port,uint16_t,uint8_t,uint32_t,uint16_t){arrivals[port]++;return 0;}
 int LiSendMultiControllerEvent(short port,short mask,int buttons,unsigned char lt,unsigned char,short lx,short,short,short){event e={port,mask,buttons,lt,lx};events.push_back(e);return 0;}
@@ -45,6 +47,7 @@ static LONG InterlockedCompareExchange(volatile LONG *p,LONG n,LONG old){LONG va
 static LONG InterlockedIncrement(volatile LONG *p){return ++*p;}
 static bool gfx_system_ui_active(){return guide;}
 static void xdk_audit_thread(const char*){}
+static void plat_log(const char*){}
 static DWORD XInputGetState(int i,XINPUT_STATE *out){probes[i]++;if(!connected[i])return ERROR_DEVICE_NOT_CONNECTED;*out=samples[i];return ERROR_SUCCESS;}
 static DWORD XInputSetState(int,XINPUT_VIBRATION*);
 static void Sleep(DWORD);
@@ -68,25 +71,29 @@ typedef unsigned char BYTE;
 struct XINPUT_KEYBOARDSTATE { BYTE bModifiers; WORD VKCodes[6]; };
 static int keyboard_calls[4],keyboard_down,keyboard_up;
 static DWORD XInputGetKeyboardState(DWORD user,XINPUT_KEYBOARDSTATE *out){
- keyboard_calls[user]++;memset(out,0,sizeof(*out));if(user || sleep_count>=16)return ERROR_DEVICE_NOT_CONNECTED;
- if(sleep_count>=10)out->VKCodes[0]='A';return ERROR_SUCCESS;
+ keyboard_calls[user]++;memset(out,0,sizeof(*out));if(user || tick>=64)return ERROR_DEVICE_NOT_CONNECTED;
+ if(tick>=40)out->VKCodes[0]='A';return ERROR_SUCCESS;
 }
 int LiSendMouseMoveEvent(short,short){return 0;}
 int LiSendMouseButtonEvent(char,int){return 0;}
 int LiSendScrollEvent(signed char){return 0;}
 int LiSendKeyboardEvent(short k,char action,char){assert(k=='A');if(action==KEY_ACTION_DOWN)keyboard_down++;else keyboard_up++;return 0;}
 void audio_set_volume(int){}
+static bool video_request_picture_refresh(){return false;}
+static void video_refresh_tick(uint32_t){}
+static bool ui_transition_active(){return false;}
+static void audio_menu_play(int){}
 static volatile LONG mouse_mode;
 static bool launch_active(){return false;}
 static void launch_command(bool,bool){}
 /* ACTUAL_INPUT */
 static DWORD XInputSetState(int i,XINPUT_VIBRATION *v){rumble_calls++;if(!connected[i])return ERROR_DEVICE_NOT_CONNECTED;motor[i]=v->wLeftMotorSpeed;
  if(inject_stop){inject_stop=false;InterlockedExchange(&rumble_enabled,0);InterlockedIncrement(&rumble_generation);}return ERROR_SUCCESS;}
-static void Sleep(DWORD ms){assert(ms>=1&&ms<=4);tick+=ms;sleep_count++;
+static void Sleep(DWORD ms){assert(ms==expected_interval_ms);tick+=ms;sleep_count++;
  if(sleep_count==1)guide=true;if(sleep_count==3)connected[0]=false;
  if(sleep_count==8)samples[1].Gamepad.wButtons=0; // release the initial menu button before new keyboard input
- if(sleep_count==10)guide=false;if(sleep_count==12)connected[0]=true;
- if(sleep_count>=40)stream_active=0;}
+ if(sleep_count==10)guide=false;if(sleep_count==24)connected[0]=true;
+ if(sleep_count>=stop_after)stream_active=0;}
 int main(){
  input_hotplug h={};pad p={};p.present=true;p.buttons=A_FLAG;p.lx=32767;p.lt=255;
  assert(input_hotplug_sample(&h,&p,true,UINT32_MAX-5));
@@ -94,11 +101,17 @@ int main(){
  memset(&p,0,sizeof(p));assert(input_hotplug_sample(&h,&p,false,10));assert(p.lx==32767);
  assert(!input_hotplug_sample(&h,&p,false,16));assert(!p.present&&!p.buttons&&!p.lx&&!p.lt);
  connected[0]=connected[1]=true;samples[0].Gamepad.wButtons=XINPUT_GAMEPAD_A;samples[0].Gamepad.sThumbLX=32767;samples[0].Gamepad.bLeftTrigger=255;
- samples[1].Gamepad.wButtons=XINPUT_GAMEPAD_B;input_stream_start();input_stream_main(NULL);
+ samples[1].Gamepad.wButtons=XINPUT_GAMEPAD_B;
+ input_configure_low_latency(false);assert(stream_interval_ms==4);
+ input_configure_low_latency(true);expected_interval_ms=stream_interval_ms;
+ assert(expected_interval_ms==(LOW_LATENCY_INPUT?2u:4u));
+ stop_after=expected_interval_ms==2?80:40;
+ input_stream_start();input_stream_main(NULL);
  assert(arrivals[0]==2 && arrivals[1]==1);bool removal=false,neutral=false;
  for(size_t i=0;i<events.size();i++)if(events[i].port==0 && events[i].mask==2 && !events[i].buttons && !events[i].lt && !events[i].lx)removal=true;
  for(size_t i=0;i<events.size();i++)if(events[i].port==0 && events[i].mask==3 && !events[i].buttons && !events[i].lt && !events[i].lx)neutral=true;
- assert(removal&&neutral && !events.front().buttons);assert(events.back().mask==0);assert(sleep_count==40);assert(keyboard_down==1 && keyboard_up==1 && keyboard_calls[0]<=6 && keyboard_calls[1]<=2);
+ assert(removal&&neutral && !events.front().buttons);assert(events.back().mask==0);assert(sleep_count==stop_after);
+ assert(keyboard_down==1 && keyboard_up==1 && keyboard_calls[0]<=12 && keyboard_calls[1]<=4);
  int before=rumble_calls;input_rumble(2,100,100);assert(rumble_calls==before); // disconnected slot
  input_rumble(1,100,100);assert(motor[1]==100);connected[1]=false;input_rumble(1,200,200);assert(!quit_requested);
  connected[1]=true;guide=true;before=rumble_calls;input_rumble(1,300,300);assert(before==rumble_calls);guide=false;
@@ -106,10 +119,10 @@ int main(){
  input_stream_stop();before=rumble_calls;input_rumble(1,500,500);assert(before==rumble_calls&&join_count==1);
  input_session session={};pad pads[4]={};pads[0].present=true;pads[0].buttons=A_FLAG;
  input_session_step(&session,pads,1,0,&stream_settings);pads[0].present=false;
- input_session_step(&session,pads,0,4,&stream_settings);assert(!session.announced[0]&&!session.last[0].buttons&&!session.held_since[0]);
+ input_session_step(&session,pads,0,4,&stream_settings);assert(!session.announced[0]&&!session.last[0].buttons);
  input_session_release(&session);assert(!session.mask);
  system_ui_state ui={};for(int i=0;i<100;i++){assert(system_ui_change(&ui,true));assert(!system_ui_change(&ui,true));assert(system_ui_change(&ui,false));}
  guide=true;assert(input_menu_pressed()==0&&menu_restores==0);
  guide=false;input_menu_pressed();assert(menu_restores==1);input_menu_pressed();assert(menu_restores==1);
- puts("PASS: actual 4 ms input loop, Guide neutralization, 20 ms debounce/wrap, held button/axis/trigger unplug, masks, two controllers, reconnect arrival, rumble/unplug/stop race and repeated Guide transitions.");
+ puts("PASS: input polling interval, Guide neutralization, debounce/wrap, held button/axis/trigger unplug, masks, two controllers, reconnect arrival, rumble/unplug/stop race and repeated Guide transitions.");
 }

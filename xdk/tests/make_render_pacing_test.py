@@ -24,6 +24,7 @@ else:
 
 fixture = r'''
 #include <assert.h>
+static void cached_video_invalidate_history(){}
 #include <stdint.h>
 #include <stdio.h>
 #include "../src/video.h"
@@ -31,6 +32,7 @@ fixture = r'''
 typedef unsigned DWORD;typedef int32_t LONG;
 enum {WAIT_OBJECT_0=0,WAIT_TIMEOUT=258,PIPE_AUTO,PIPE_CACHED,PIPE_LEGACY,PIPE_SWITCHING,PIPE_DISABLED};
 static video_stats stats;
+static video_options options;
 static int pipeline,slot_pending,slot_rendering,mailbox_lock;
 static unsigned video_presents,idle_presents,guide_presents,fallbacks;
 static bool guide,opening,ready,draw_ok,arrive_during_idle,owned;

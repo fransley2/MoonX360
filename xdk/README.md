@@ -50,6 +50,10 @@ python xdk\build.py                       # mbedtls, opus, compat, moonlight, ap
 Output: `xdk\build\default.xex`. Builds are incremental. To rebuild a library after
 changing a header, delete its folder under `xdk\build`.
 
+The default build also produces `xdk\build\MoonX360\default.xex` and the small
+`xdk\build\MoonX360Shortcut\default.xex`. See `docs/AURORA_DIRECT_LAUNCH.md` for
+Aurora deployment, scan path, profile, cache, and physical test instructions.
+
 C files shared with the libxenon build are compiled as C++ (`/TP`), because the SDK's C
 compiler only accepts C89. If a change there adds a `void *` conversion C++ rejects, this
 adds the casts:

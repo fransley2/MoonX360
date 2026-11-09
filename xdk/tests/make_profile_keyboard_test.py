@@ -1,8 +1,11 @@
 from pathlib import Path
 import sys
-r=Path(__file__).resolve().parents[2];s=(r/'xdk/src/main_xdk.cpp').read_text();a=s.index('int plat_edit_profile_name(');b=s.index('{',a)+1;d=1
-while d:d+=(s[b]=='{')-(s[b]=='}');b+=1
-code=s[a:b]
+r=Path(__file__).resolve().parents[2];s=(r/'xdk/src/main_xdk.cpp').read_text()
+def extract(signature):
+    a=s.index(signature);b=s.index('{',a)+1;d=1
+    while d:d+=(s[b]=='{')-(s[b]=='}');b+=1
+    return s[a:b]
+code=extract('int plat_edit_text(')+'\n'+extract('int plat_edit_profile_name(')
 fixture=r"""
 #include <assert.h>
 #include <stdint.h>

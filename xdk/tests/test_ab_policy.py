@@ -9,7 +9,7 @@ from collect_ab_results import parse_report
 
 class ABPolicyTests(unittest.TestCase):
     def test_both_exact_layouts_and_idempotence(self):
-        original=(ROOT/'xdk/deps/XBMC-360/libraries/ffmpeg/libavcodec/xb_thread.c').read_text()
+        original=(ROOT/'xdk/tests/fixtures/xb_thread_pinned.c').read_text()
         workers.validate(original)
         with tempfile.TemporaryDirectory() as folder:
             p=Path(folder)/'xb_thread.c';p.write_text(original)
@@ -50,5 +50,32 @@ class ABPolicyTests(unittest.TestCase):
             case=Path(folder)/'P720-18-C4B-A1';case.mkdir()
             p=case/'decoder-session.txt';p.write_text('video=1280x720@60\nbitrate_kbps=20000\n')
             self.assertTrue(any('possible stale report' in w for w in parse_report(p)['warnings']))
+
+    def test_release_policy_and_reference_counts_stay_explicit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'decoder-session.txt'
+            p.write_text('stream_duration_us=2000000\nreceived=120\nrtp_completed_frames=110\nrtp_counter_scope=performance_window\nrtp_counter_duration_us=2000000\nfast_decode_active=Partial\ndecode_samples=30\ndecode_p50_us=7000\nfec_recovered_packets=9\nfec_failed_data_deficit=2\nperiodic_refresh_requests=4\n')
+            (p.parent/'h264-parallel-session.txt').write_text('reference_frames=90\nnonreference_frames=20\n')
+            r=parse_report(p)
+            self.assertEqual((r['callback_fps'],r['completed_fps']),(60,55))
+            self.assertEqual((r['fast_decode_active'],r['reference_pictures'],r['nonreference_pictures']),('Partial',90,20))
+            self.assertEqual((r['decode_p50_us'],r['fec_recovered'],r['fec_failed_data_deficit'],r['periodic_idr_requests']),(7000,9,2,4))
+            self.assertIsNone(r['idr_requests'])
+            self.assertIsNone(r['fec_unrecoverable'])
+            p.write_text('received=120\n')
+            (p.parent/'h264-parallel-session.txt').unlink()
+            r=parse_report(p)
+            for key in ('fast_decode_active','completed_fps','nonreference_pictures','reference_pictures','decode_p50_us'):
+                self.assertIsNone(r[key])
+
+    def test_completed_counter_never_uses_longer_session_duration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'decoder-session.txt'
+            p.write_text('stream_duration_us=177045901\nrtp_completed_frames=1214\n')
+            self.assertIsNone(parse_report(p)['completed_fps'])
+            p.write_text(p.read_text()+'rtp_counter_scope=performance_window\nrtp_counter_duration_us=45015823\n')
+            self.assertAlmostEqual(parse_report(p)['completed_fps'],26.9683,places=3)
+            p.write_text(p.read_text().replace('45015823','0'))
+            self.assertIsNone(parse_report(p)['completed_fps'])
 
 if __name__=='__main__':unittest.main()

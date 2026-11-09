@@ -45,9 +45,10 @@ static std::atomic<bool> decoder_allowed(true);
 static std::string disk_dir;
 static const char *storage_dir(){return disk_dir.empty()?NULL:disk_dir.c_str();}
 static bool cover_decode_allowed(const unsigned char*,size_t){return decoder_allowed;}
-static bool gs_app_art(gs_server*,int id,unsigned char **png,size_t *len){
+static bool gs_app_art(gs_server *host,int id,unsigned char **png,size_t *len){
  requests++;int live=++inflight;if(live>max_inflight)max_inflight=live;
- while(hold)Sleep(1);--inflight;if(id==fail_id)return false;
+ while(hold && (!host->cancel || !plat_atomic_load(host->cancel)))Sleep(1);--inflight;
+ if((host->cancel && plat_atomic_load(host->cancel)) || id==fail_id)return false;
  *png=(unsigned char*)fixture_alloc(1);**png=(unsigned char)(id+content);*len=1;return true;
 }
 static uint32_t *plat_decode_art(unsigned char *data,size_t,int w,int h){uint32_t *p=(uint32_t*)fixture_alloc(w*h*4);for(int i=0;i<w*h;i++)p[i]=*data;return p;}
@@ -74,12 +75,20 @@ static void home_art_remember(void*,const char*,int,const uint32_t*,int,int,uint
 #define free fixture_free
 #include "../src/ui/cover_cache.h"
 #include "../src/cover_disk.h"
+static std::atomic<int> hold_write(0),writing(0);static std::atomic<bool> fail_write(false);
+static bool fixture_disk_write(cover_disk_cache *c,const char *dir,const ui_cover_key *key,const uint32_t *p,uint32_t now){
+ writing=1;while(hold_write)Sleep(1);bool ok=!fail_write && cover_disk_write(c,dir,key,p,now);writing=0;return ok;
+}
+#define cover_disk_write fixture_disk_write
 /* ACTUAL_COVER_WORKER */
+#undef cover_disk_write
 #undef free
 #undef malloc
 static void finish(){
  for(int i=0;i<3000 && plat_atomic_load(&art_ready)<0;i++)Sleep(1);
  assert(plat_atomic_load(&art_ready)>=0);art_drain();
+ for(int i=0;i<3000 && plat_atomic_load(&art_request)>=0;i++){art_drain();Sleep(1);}
+ assert(plat_atomic_load(&art_request)<0);
 }
 static ui_cover_key key(int id){ui_cover_key k;art_key(&k,id);return k;}
 int main(){
@@ -126,10 +135,32 @@ int main(){
  assert(art_request_app(50,false,true));finish(); // one disk lookup, HTTP still forbidden
  assert(requests==baseline+13 && !art_request_app(50,false,true));
  tick+=10000;assert(art_request_app(50,false,true));finish();assert(requests==baseline+14);fail_id=-1;
+ // Foreground cancels secondary HTTP, without creating a failure cooldown.
+ hold=1;assert(art_request_app(91,false,true));while(!inflight)Sleep(1);
+ assert(!art_request_app(92,true,true));hold=0;finish();
+ assert(ui_cover_retry(&art_cache,&(other=key(91)),tick));
+ assert(art_request_app(92,true,true));finish();
  // Actual disk warm-up, eviction and restart avoid both HTTP and decode.
  char temp[MAX_PATH];GetTempPathA(MAX_PATH,temp);disk_dir=std::string(temp)+"moonx-art-worker-"+std::to_string(GetCurrentProcessId());
  std::filesystem::create_directories(disk_dir);tick+=UI_COVER_VALID_MS;
  assert(art_request_app(64,false,true));finish();assert(cover_disk_find(&art_disk,&(other=key(64)))>=0);
+ // The UI can display a downloaded cover while slow disk verification is blocked.
+ hold_write=1;assert(art_request_app(93,true,true));
+ for(int i=0;i<3000 && plat_atomic_load(&art_ready)<0;i++)Sleep(1);
+ assert(art_ready>=0);art_drain();
+ for(int i=0;i<3000 && !writing;i++)Sleep(1);
+ assert(writing);int lease=ui_cover_find(&art_cache,&(other=key(93)));
+ assert(lease>=0 && art_cache.items[lease].pixels && art_cache.items[lease].inflight);
+ for(int id=70;id<90;id++){ui_cover_key k=key(id);ui_cover_slot(&art_cache,&k,true);}
+ assert(art_cache.items[lease].pixels && ui_cover_same(&art_cache.items[lease].key,&other));
+ hold_write=0;for(int i=0;i<3000 && !art_finished;i++)Sleep(1);art_drain();
+ assert(!art_cache.items[lease].inflight && cover_disk_find(&art_disk,&other)>=0);
+ uint32_t *unchanged=art_cache.items[lease].pixels;unsigned unchanged_generation=art_cache.items[lease].generation;
+ art_cache.items[lease].refresh=true;assert(art_request_app(93,true,true));finish();
+ assert(art_cache.items[lease].pixels==unchanged && art_cache.items[lease].generation==unchanged_generation);
+
+ fail_write=true;assert(art_request_app(65,true,true));finish();
+ assert(art_cache.items[ui_cover_find(&art_cache,&(other=key(65)))].pixels);fail_write=false;
  baseline=requests;
  for(int id=1;id<14;id++){assert(art_request_app(id,false,true));finish();}
  assert(ui_cover_find(&art_cache,&(other=key(64)))<0);
@@ -140,12 +171,13 @@ int main(){
  // A rejected source is a decode failure and receives the same persistent cooldown.
  assert(art_request_app(30,false,true));finish();assert(!art_cache.items[ui_cover_find(&art_cache,&(other=key(30)))].pixels);
  assert(!ui_cover_retry(&art_cache,&other,tick));decoder_allowed=true;
- // Optional UUID identity survives both a host endpoint change and numeric app ID change.
+ // The required key is host UUID + Sunshine App ID. A changed ID gets a new cover.
  app_count=1;apps[0].id=21;strcpy(apps[0].uuid,"stable-game-uuid");tick+=UI_COVER_VALID_MS;
- assert(art_request_app(21,true,true));assert(art_job.protocol_app==21 && art_job.key.app==1);finish();
+ assert(art_request_app(21,true,true));assert(art_job.protocol_app==21 && art_job.key.app==21);finish();
  assert(app_art[0]);uint32_t *stable=app_art[0];unsigned stable_generation=art_generation[0];
  strcpy(server.address,"10.0.0.87");apps[0].id=22;art_sync_views();baseline=requests;
- assert(app_art[0]==stable && art_generation[0]==stable_generation && !art_request_app(22,true,true) && requests==baseline);
+ assert(!app_art[0] && art_request_app(22,true,true));finish();
+ assert(app_art[0] && app_art[0]!=stable && art_generation[0]!=stable_generation && requests==baseline+1);
  stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);memset(&art_disk,0,sizeof(art_disk));art_pause(false);art_loader_start();
  baseline=requests;assert(art_request_app(22,true,true));finish();assert(requests==baseline && app_art[0]);
  for(int id=0;id<app_count;id++)art_update(map,app_count,id,6);

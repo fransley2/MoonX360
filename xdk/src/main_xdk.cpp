@@ -8,11 +8,13 @@
 #include "../../src/performance.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../../src/config.h"
+#include "../../src/aurora_launch.h"
 #define STORAGE_OS_ERROR() ((unsigned)GetLastError())
 #include "../../src/safe_storage.h"
 #include "../../src/platform.h"
@@ -189,6 +191,46 @@ void plat_log(const char *line)
 /* game: is the folder the .xex was started from. */
 static const char storage_root[] = "game:\\moonlight";
 static bool storage_ok;
+static struct moonx_launch_data direct_launch_data;
+static bool direct_launch_ready;
+typedef char moonx_main_abi_check[(sizeof(moonx_launch_data)==468 &&
+    offsetof(moonx_launch_data,checksum)==464)?1:-1];
+static DWORD direct_trace_started;
+static bool direct_trace_writable;
+static const char direct_trace_path[]="game:\\moonlight\\direct-launch.log";
+
+static void direct_trace_stage(const char *format,...)
+{
+    char detail[256],line[320];va_list args;
+    va_start(args,format);vsnprintf(detail,sizeof(detail),format,args);va_end(args);
+    snprintf(line,sizeof(line),"[%u ms] %s\n",(unsigned)(GetTickCount()-direct_trace_started),detail);
+    OutputDebugStringA(line);
+    if(direct_trace_writable){
+        FILE *f=fopen(direct_trace_path,"ab");
+        if(f){fputs(line,f);fflush(f);fclose(f);}
+        else direct_trace_writable=false;
+    }
+}
+static void direct_trace_begin(void)
+{
+    /* First action at entry: truncate stale evidence, then close after every stage. */
+    FILE *f=fopen(direct_trace_path,"wb");
+    if(!f){CreateDirectoryA("game:\\moonlight",NULL);f=fopen(direct_trace_path,"wb");}
+    direct_trace_writable=f!=NULL;
+    if(f){fflush(f);fclose(f);}
+    direct_trace_started=GetTickCount();
+    direct_trace_stage("[MAIN 01] MoonX360 entry build=%s %s ABI=%u log=%s",
+        __DATE__,__TIME__,(unsigned)sizeof(moonx_launch_data),direct_trace_writable?"open":"unavailable");
+}
+void plat_direct_launch_stage(const char *stage)
+{if(stage)direct_trace_stage("[MAIN] %s",stage);}
+
+bool plat_direct_launch_read(struct moonx_launch_data *out)
+{
+    if(!out || !direct_launch_ready)return false;
+    *out=direct_launch_data;direct_launch_ready=false;
+    return true;
+}
 
 void plat_shutdown_stage(const char *stage)
 {
@@ -303,10 +345,13 @@ char *storage_read(const char *name, size_t *len)
     if(fseek(f,0,SEEK_END)!=0){fclose(f);errno=EIO;return NULL;}
     size = ftell(f);
     if(size<0 || ((!strcmp(name,"profiles-a.tsv") || !strcmp(name,"profiles-b.tsv")) && size>=CONFIG_PROFILES_BYTES) ||
+       (!strcmp(name,"home-wallpaper.png") && size>8*1024*1024) ||
        (!strcmp(name,"sessions.tsv") && size>16384) ||
        ((!strcmp(name,"launch-settings.tsv") || !strcmp(name,"launch-settings.tsv.bak")) && size>8192) ||
        (!strcmp(name,"game-bindings.tsv") && size>8192) ||
-       (!strcmp(name,"profile-link-pending.tsv") && size>34816)) {fclose(f);errno=ERANGE;return NULL;}
+       (!strcmp(name,"profile-link-pending.tsv") && size>34816) ||
+       ((!strcmp(name,"aurora-shortcuts.dat") || !strcmp(name,"aurora-shortcuts.dat.bak")) && size>65536) ||
+       (!strncmp(name,"app-catalog-",12) && size>12288)) {fclose(f);errno=ERANGE;return NULL;}
     if(fseek(f,0,SEEK_SET)!=0){fclose(f);errno=EIO;return NULL;}
     buf = (char *)malloc(size + 1);
     if (buf && fread(buf, 1, size, f) != (size_t)size) {
@@ -354,6 +399,80 @@ bool storage_write(const char *name, const void *data, size_t len)
     return ok;
 }
 
+/* Session reports are otherwise overwritten by the next stream. Keep five
+ * bounded, per-installation snapshots, committed only after all copies work.
+ * This runs after transport and decoder teardown, never on a video worker. */
+void plat_archive_session_reports(void)
+{
+    static const struct {const char *name;bool required;} reports[] = {
+        {"last-session.txt",true}, {"decoder-session.txt",true},
+        {"seamless-session.txt",false}, {"smoothing-session.txt",false}, {"network-session.txt",false}, {"refresh-frame-trace.txt",false},
+        {"performance-session.txt",true}, {"present-trace.txt",true},
+        {"last-log.txt",true}, {"h264-parallel-session.txt",true},
+        {"h264-parallel-trace.txt",true}, {"h264-stage-session.txt",false},
+        {"latency-capture.txt",false}, {"frame-cadence.txt",false},
+    };
+    char *state;size_t state_len=0;
+    unsigned slot=1,next=2,count=0;
+    char manifest_name[64],manifest[2048],entries[1536];size_t used=0;
+    SYSTEMTIME utc;
+    int n;
+    if(!storage_dir())return;
+    state=storage_read("session-archive-next.txt",&state_len);
+    if(state) {
+        unsigned parsed=0;
+        if(state_len<16 && sscanf(state,"%u",&parsed)==1 && parsed>=1 && parsed<=5)
+            slot=parsed;
+        free(state);
+    }
+    next=slot==5?1:slot+1;
+    GetSystemTime(&utc);
+    snprintf(manifest_name,sizeof(manifest_name),"session-archive-%u-index.txt",slot);
+    n=snprintf(manifest,sizeof(manifest),
+        "schema=1\nstatus=writing\nslot=%u\nutc=%04u-%02u-%02uT%02u:%02u:%02uZ\n",
+        slot,utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond);
+    if(n<=0 || (size_t)n>=sizeof(manifest) ||
+       !storage_write(manifest_name,manifest,(size_t)n))return;
+    for(unsigned i=0;i<sizeof(reports)/sizeof(reports[0]);i++) {
+        char source[128],archive[96];FILE *f;long size;char *bytes;
+        n=snprintf(source,sizeof(source),"%s\\%s",storage_root,reports[i].name);
+        if(n<=0 || (size_t)n>=sizeof(source))return;
+        f=fopen(source,"rb");
+        if(!f) {
+            if(!reports[i].required && errno==ENOENT)continue;
+            plat_log("[DIAGNOSTIC] session archive source unavailable\n");
+            return;
+        }
+        if(fseek(f,0,SEEK_END)!=0 || (size=ftell(f))<0 || size>65536 ||
+           fseek(f,0,SEEK_SET)!=0) {
+            fclose(f);plat_log("[DIAGNOSTIC] session archive source invalid\n");return;
+        }
+        bytes=(char*)malloc((size_t)size+1);
+        if(!bytes) {fclose(f);return;}
+        bool read_ok=fread(bytes,1,(size_t)size,f)==(size_t)size;
+        if(fclose(f)!=0)read_ok=false;
+        if(!read_ok) {free(bytes);plat_log("[DIAGNOSTIC] session archive read failed\n");return;}
+        n=snprintf(archive,sizeof(archive),"session-archive-%u-%s",slot,reports[i].name);
+        if(n<=0 || (size_t)n>=sizeof(archive) ||
+           !storage_write(archive,bytes,(size_t)size)) {free(bytes);return;}
+        free(bytes);
+        n=snprintf(entries+used,sizeof(entries)-used,"file=%s,bytes=%u\n",archive,(unsigned)size);
+        if(n<=0 || (size_t)n>=sizeof(entries)-used)return;
+        used+=(size_t)n;count++;
+    }
+    if(count<7)return;
+    n=snprintf(manifest,sizeof(manifest),
+        "schema=1\nstatus=complete\nslot=%u\nutc=%04u-%02u-%02uT%02u:%02u:%02uZ\nreports=%u\n%.*s",
+        slot,utc.wYear,utc.wMonth,utc.wDay,utc.wHour,utc.wMinute,utc.wSecond,count,(int)used,entries);
+    if(n<=0 || (size_t)n>=sizeof(manifest))return;
+    /* The slot manifest commits the snapshot; individual copied reports remain
+     * directly inspectable even if this final write fails. */
+    if(!storage_write(manifest_name,manifest,(size_t)n))return;
+    char next_text[8];n=snprintf(next_text,sizeof(next_text),"%u\n",next);
+    if(n>0 && (size_t)n<sizeof(next_text))
+        storage_write("session-archive-next.txt",next_text,(size_t)n);
+}
+
 /* ------------------------------------------------------------ startup */
 
 static void splash(const char *status)
@@ -387,6 +506,12 @@ static void prepare_video(void)
         plat_sleep_ms(16);
     }
     plat_thread_join(worker);
+}
+static bool video_prepared;
+void plat_prepare_video(void)
+{
+    if(video_prepared)return;
+    prepare_video();video_prepared=true;
 }
 
 /* Starts the network stack and waits (up to 20 s) for an IP address. */
@@ -435,9 +560,36 @@ static void startup_stage(const char *stage)
 }
 
 extern "C" VOID HalReturnToFirmware(DWORD mode);
+int plat_network_link(void)
+{
+    return console_link_classify(XNetGetEthernetLinkStatus(),XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS);
+}
+int plat_crt_output_status(void)
+{
+    XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
+    if(!mode.dwDisplayWidth || !mode.dwDisplayHeight || mode.RefreshRate<20)return 0;
+    return mode.dwDisplayHeight==480 && mode.dwDisplayWidth<=720 && mode.fIsInterlaced &&
+        mode.RefreshRate>=59 && mode.RefreshRate<=61?1:-1;
+}
+static void write_console_environment(void)
+{
+    XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
+    DWORD link=XNetGetEthernetLinkStatus();int w,h;gfx_backbuffer_size(&w,&h);
+    char text[1024];int n=snprintf(text,sizeof(text),
+        "schema=1\nlink_flags=0x%08x\nactive_mask=0x%08x\nwireless_mask=0x%08x\nconsole_link=%s\nhost_path=unknown\n"
+        "physical_mode_known=%d\nphysical_width=%u\nphysical_height=%u\nphysical_reported_hz=%.5f\ninterlaced=%d\n"
+        "app_backbuffer=%dx%d\ncrt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\ncomponent_cable_and_TV_model=unverified\n"
+        "refresh_scope=XGetVideoMode_report_not_measured_field_cadence\n",
+        (unsigned)link,(unsigned)XNET_ETHERNET_LINK_ACTIVE,(unsigned)XNET_ETHERNET_LINK_WIRELESS,
+        console_link_name(console_link_classify(link,XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS)),
+        gfx_display_known(),(unsigned)mode.dwDisplayWidth,(unsigned)mode.dwDisplayHeight,mode.RefreshRate,mode.fIsInterlaced!=FALSE,
+        w,h,plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available());
+    if(n>0 && (size_t)n<sizeof(text))storage_write("console-environment.txt",text,(size_t)n);
+}
 void plat_display_info(char *out,size_t capacity)
 {
     int w,h,rw,rh;gfx_display_size(&w,&h);gfx_backbuffer_size(&rw,&rh);
+    if(!gfx_display_known()){snprintf(out,capacity,"Physical output UNKNOWN | App %dx%d",rw,rh);return;}
     snprintf(out,capacity,ui_translate("Output %dx%d%s %.2f Hz | App %dx%d"),w,h,gfx_display_interlaced()?"i":"p",gfx_display_hz(),rw,rh);
 }
 int plat_display_refresh_x100(void) {float hz=gfx_display_hz();return hz>=20 && hz<=240?(int)(hz*100+0.5f):6000;}
@@ -463,50 +615,84 @@ bool plat_restart_app(void)
     XLaunchNewImage("game:\\default.xex",0);
     return false;
 }
+void plat_exit_to_dashboard(void)
+{
+    plat_log("[APP] Exiting to dashboard\n");
+    plat_diagnostics_flush();
+    XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
+}
 static int balanced_threads=1;
 void xdk_set_thread_layout(int balanced) {balanced_threads=balanced!=0;}
 int xdk_aux_processor(void) {return balanced_threads?0:HW_THREAD_RENDER;}
 
 void __cdecl main()
 {
+    direct_trace_begin();
     XSetThreadProcessor(GetCurrentThread(),0);
-    storage_init();
+    DWORD launch_bytes=0;
+    direct_trace_stage("[MAIN 02] checking launch data");
+    DWORD size_status=XGetLaunchDataSize(&launch_bytes);
+    direct_trace_stage("[MAIN 03] XGetLaunchDataSize status=0x%08lX bytes=%lu",
+        (unsigned long)size_status,(unsigned long)launch_bytes);
+    if(size_status==ERROR_SUCCESS && launch_bytes==sizeof(direct_launch_data)){
+        DWORD read_status=XGetLaunchData(&direct_launch_data,launch_bytes);
+        direct_trace_stage("[MAIN 04] XGetLaunchData status=0x%08lX",(unsigned long)read_status);
+        if(read_status==ERROR_SUCCESS){
+            direct_launch_ready=moonx_launch_valid(&direct_launch_data,launch_bytes)!=0;
+            direct_trace_stage("[MAIN 05] MX36 valid=%s magic=%02X%02X%02X%02X version=%u checksum=%s",
+                direct_launch_ready?"YES":"NO",(unsigned char)direct_launch_data.magic[0],
+                (unsigned char)direct_launch_data.magic[1],(unsigned char)direct_launch_data.magic[2],
+                (unsigned char)direct_launch_data.magic[3],(unsigned)direct_launch_data.version,
+                direct_launch_data.checksum==moonx_launch_checksum(&direct_launch_data)?"OK":"BAD");
+        }
+    }
+    direct_trace_stage("[MAIN 06] mode=%s",direct_launch_ready?"DIRECT":"NORMAL");
+    bool storage_ready=storage_init();
+    direct_trace_stage("[MAIN 07] storage_init=%s",storage_ready?"OK":"FAIL");
     InitializeCriticalSection(&connection_trace_lock);connection_trace_ready=true;
     startup_stage("gfx_init begin\n");
+    direct_trace_stage("[MAIN 08] gfx_init begin");
     if (!gfx_init()) {
+        direct_trace_stage("[MAIN FATAL] gfx_init failed");
         startup_stage("gfx_init failed\n");
         return;   /* nothing to show an error on */
     }
+    write_console_environment();
     /* Optional recovery switch affects menus only; video remains untouched. */
     gfx_system_ui_init();
     ui_draw_enable(GetFileAttributesA("game:\\moonlight\\ui-legacy.flag")==INVALID_FILE_ATTRIBUTES);
     startup_stage("ui_init begin\n");
-    if (!ui_init(GFX_WIDTH, GFX_HEIGHT)) {
+    direct_trace_stage("[MAIN 09] ui_init begin");
+    struct config startup_config;config_load(&startup_config);
+    int ui_width=startup_config.ui_layout?960:UI_LOGICAL_WIDTH;
+    if (!ui_init_layout(ui_width, UI_LOGICAL_HEIGHT, startup_config.ui_layout)) {
+        direct_trace_stage("[MAIN FATAL] ui_init failed");
         startup_stage("ui_init failed\n");
         return;
     }
 
-    struct config startup_config;config_load(&startup_config);ui_set_language(startup_config.language);
+    ui_set_language(startup_config.language);
     startup_stage("network splash begin\n");
     splash("Connecting to the network...");
     startup_stage("network_init begin\n");
+    direct_trace_stage("[MAIN 10] network_init begin");
     if (!network_init())
         fatal("No network",
               "The console has no IP address. Connect a network cable or set up Wi-Fi in the dashboard's "
               "network settings, then start Moonlight again.");
 
     log_init();
+    if(direct_launch_ready){char line[96];snprintf(line,sizeof(line),"[Aurora] LaunchData parsed at %u ms\n",(unsigned)GetTickCount());plat_log(line);}
     xdk_audit_thread("main");
     startup_stage("video_xdk_init begin\n");
     plat_log("Moonlight (Xbox 360 SDK build) started\n");
-    if (!storage_init())
+    if (!storage_ready)
         plat_log("Storage: game:\\moonlight isn't writable; settings won't be saved\n");
-    splash("Preparing video decoder...");
-    prepare_video();
+    if(!direct_launch_ready){splash("Preparing video decoder...");plat_prepare_video();}
     /* One-shot native replay for XBDM monitors without controller automation.
      * Only an explicitly deployed marker enables it; ordinary startup is
      * unchanged. Consume the marker before running to prevent restart loops. */
-    if (GetFileAttributesA("game:\\moonlight\\run-benchmark.once") != INVALID_FILE_ATTRIBUTES) {
+    if (!direct_launch_ready && GetFileAttributesA("game:\\moonlight\\run-benchmark.once") != INVALID_FILE_ATTRIBUTES) {
         if (DeleteFileA("game:\\moonlight\\run-benchmark.once")) {
             startup_stage("native offline benchmark begin\n");
             plat_run_benchmark();
@@ -514,17 +700,20 @@ void __cdecl main()
         }
     }
     startup_stage("app_main begin\n");
+    direct_trace_stage("[MAIN 11] app_main begin");
     app_main();
 }
 
 
-int plat_edit_profile_name(char *name,size_t capacity)
+int plat_edit_text(char *name,size_t capacity,const char *prompt)
 {
     WCHAR initial[64],result[64],title[96],description[160];
     if(video_xdk_is_streaming() || !name || capacity<2 || capacity>64)return -1;
     if(!MultiByteToWideChar(CP_UTF8,0,name,-1,initial,64))return -1;
-    MultiByteToWideChar(CP_UTF8,0,ui_translate("Rename profile"),-1,title,96);
-    MultiByteToWideChar(CP_UTF8,0,ui_translate("Choose a short name. B cancels."),-1,description,160);
+    MultiByteToWideChar(CP_UTF8,0,ui_translate(prompt?prompt:"Rename profile"),-1,title,96);
+    const char *help=prompt && !strcmp(prompt,"Search library")?
+        "Enter a game or app name. B cancels.":"Choose a short name. B cancels.";
+    MultiByteToWideChar(CP_UTF8,0,ui_translate(help),-1,description,160);
     DWORD user=0;XINPUT_STATE state;
     for(DWORD i=0;i<4;i++)if(XInputGetState(i,&state)==ERROR_SUCCESS){user=i;break;}
     XOVERLAPPED pending;ZeroMemory(&pending,sizeof(pending));ZeroMemory(result,sizeof(result));
@@ -543,3 +732,5 @@ int plat_edit_profile_name(char *name,size_t capacity)
     if(!WideCharToMultiByte(CP_UTF8,0,result,-1,utf8,(int)capacity,NULL,NULL) || !config_profile_name_valid(utf8))return -1;
     strcpy(name,utf8);return 1;
 }
+int plat_edit_profile_name(char *name,size_t capacity)
+{return plat_edit_text(name,capacity,"Rename profile");}

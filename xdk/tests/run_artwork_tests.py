@@ -17,12 +17,12 @@ def run(args):
  r=subprocess.run(list(map(str,args)),cwd=OUT,env=env,capture_output=True,text=True,errors='replace')
  print(r.stdout.strip(),flush=True)
  if r.returncode:print(r.stderr);raise SystemExit(r.returncode)
-flags=['/nologo','/std:c++17','/O2','/W3','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/FI'+str(ROOT/'src/performance.h')]
-jobs=[('cover-policy',[ROOT/'xdk/tests/test_cover_policy.cpp']),('cover-disk',[ROOT/'xdk/tests/test_cover_disk.cpp']),('cover-decode',[ROOT/'xdk/tests/test_cover_decode.cpp',ROOT/'src/ui/image.c']),('home-art',[ROOT/'xdk/tests/test_home_art.cpp']),('launch-cover',[ROOT/'xdk/tests/test_launch_cover.cpp'])]
-for gen,name in [('make_cover_cache_test.py','cover-cache'),('make_cover_http_test.py','cover-http'),('make_launch_handoff_test.py','launch-handoff')]:
+flags=['/nologo','/std:c++17','/O2','/W3','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/I'+str(ROOT/'xdk/deps/moonlight-common-c/src'),'/I'+str(ROOT/'xdk/deps/mbedtls-2.16.12/include'),'/FI'+str(ROOT/'src/performance.h')]
+jobs=[('cover-policy',[ROOT/'xdk/tests/test_cover_policy.cpp']),('cover-disk',[ROOT/'xdk/tests/test_cover_disk.cpp']),('app-catalog',[ROOT/'xdk/tests/test_app_catalog.cpp']),('cover-decode',[ROOT/'xdk/tests/test_cover_decode.cpp',ROOT/'src/ui/image.c']),('home-art',[ROOT/'xdk/tests/test_home_art.cpp']),('launch-cover',[ROOT/'xdk/tests/test_launch_cover.cpp'])]
+for gen,name in [('make_wallpaper_browser_test.py','wallpaper-browser'),('make_wallpaper_test.py','wallpaper'),('make_cover_cache_test.py','cover-cache'),('make_cover_http_test.py','cover-http'),('make_launch_handoff_test.py','launch-handoff')]:
  target=OUT/(name+'.cpp');run([sys.executable,ROOT/'xdk/tests'/gen,target])
  target.write_text(target.read_text().replace('../src/',(ROOT/'src').as_posix()+'/'))
- jobs.append((name,[target]))
+ jobs.append((name,[target,ROOT/'src/ui/image.c'] if name=='wallpaper' else [target]))
 for name,sources in jobs:
  print('TEST:',name,flush=True)
  run([cl,*flags,*['/Tp'+str(s) for s in sources],'/Fe'+name+'.exe'])

@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
 
 static SOCKET inputSock = INVALID_SOCKET;
 static unsigned char currentAesIv[16];
@@ -51,6 +52,7 @@ typedef struct _PACKET_HOLDER {
     LINKED_BLOCKING_QUEUE_ENTRY entry;
     uint32_t enetPacketFlags;
     uint8_t channelId;
+    uint64_t perfEnqueueUs, perfSampleUs; // diagnostics only; not transmitted
 
     // The union must be the last member since we abuse the NV_UNICODE_PACKET
     // text field to store variable length data which gets split before being
@@ -212,13 +214,14 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
         // but this is on purpose. It allows us assume we have a full holder even
         // if packetLength < sizeof(*holder) and put this allocation into the free
         // list.
-        return (PPACKET_HOLDER)malloc(sizeof(*holder) + extraLength);
+        holder=(PPACKET_HOLDER)malloc(sizeof(*holder) + extraLength);
+        goto initialized;
     }
 
     // Grab an entry from the free list (if available)
     err = LbqPollQueueElement(&packetHolderFreeList, (void**)&holder);
     if (err == LBQ_SUCCESS) {
-        return holder;
+        goto initialized;
     }
     else if (err == LBQ_INTERRUPTED) {
         // We're shutting down. Don't bother allocating.
@@ -228,8 +231,11 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
         LC_ASSERT(err == LBQ_NO_ELEMENT);
 
         // Otherwise we'll have to allocate
-        return (PPACKET_HOLDER)malloc(sizeof(*holder));
+        holder=(PPACKET_HOLDER)malloc(sizeof(*holder));
     }
+initialized:
+    if(holder){holder->perfEnqueueUs=perf_enabled()?perf_clock():0;holder->perfSampleUs=0;}
+    return holder;
 }
 
 static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
@@ -342,6 +348,16 @@ static void inputSendThreadProc(void* context) {
         err = LbqWaitForQueueElement(&packetQueue, (void**)&holder);
         if (err != LBQ_SUCCESS) {
             return;
+        }
+        if (perf_enabled()) {
+            uint64_t now = perf_clock();
+            perf_record(PERF_INPUT_QUEUE_DEPTH,(uint32_t)LbqGetItemCount(&packetQueue)+1);
+            if(holder->perfEnqueueUs && now>=holder->perfEnqueueUs)
+                perf_record(PERF_INPUT_QUEUE_AGE,now-holder->perfEnqueueUs);
+            PPACKET_HOLDER oldest;
+            if(LbqPeekQueueElement(&packetQueue,(void**)&oldest)==LBQ_SUCCESS && oldest->perfEnqueueUs && now>=oldest->perfEnqueueUs)
+                perf_record(PERF_INPUT_OLDEST_AGE,now-oldest->perfEnqueueUs);
+            else perf_record(PERF_INPUT_OLDEST_AGE,0);
         }
 
         // If it's a multi-controller packet, latch it by clearing currentQueuedControllerPacket.
@@ -606,10 +622,18 @@ static void inputSendThreadProc(void* context) {
         }
 
         // Encrypt and send the input packet
+        uint64_t sendStarted=perf_enabled()?perf_clock():0;
+        if(sendStarted) {
+            if(holder->perfSampleUs && sendStarted>=holder->perfSampleUs)
+                perf_record(PERF_CONTROLLER_LOCAL,sendStarted-holder->perfSampleUs);
+            if(holder->perfEnqueueUs && sendStarted>=holder->perfEnqueueUs && holder->perfSampleUs)
+                perf_record(PERF_CONTROLLER_QUEUE_SEND,sendStarted-holder->perfEnqueueUs);
+        }
         if (!sendInputPacket(holder, LbqGetItemCount(&packetQueue) > 0)) {
             freePacketHolder(holder);
             return;
         }
+        if(sendStarted)perf_record(PERF_INPUT_SEND_WORK,perf_clock()-sendStarted);
 
         freePacketHolder(holder);
     }
@@ -1005,6 +1029,7 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
     PPACKET_HOLDER holder;
     int err;
     bool enqueueHolder = false;
+    uint64_t perfSampleStamp=0,perfEnqueueStamp=0;
 
     if (!initialized) {
         return -2;
@@ -1086,6 +1111,14 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
         // currentQueuedControllerPacket array.
         PltLockMutex(&batchedInputMutex);
     }
+    else if(perf_enabled())perf_count(PERF_C_INPUT_COALESCED,1);
+    if(perf_enabled()) {
+        uint64_t now=perf_clock(),sample=perf_input_sample_time(controllerNumber);
+        holder->perfSampleUs=sample && now>=sample?sample:0;
+        perfSampleStamp=holder->perfSampleUs;
+        perfEnqueueStamp=now; /* coalesced update while the holder is locked */
+    }
+    else if(enqueueHolder)holder->perfEnqueueUs=holder->perfSampleUs=0;
 
     if (AppVersionQuad[0] == 3) {
         // Generation 3 servers don't support multiple controllers so we send
@@ -1149,10 +1182,13 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
 
     if (enqueueHolder) {
         // Enqueue the new packet holder
+        holder->perfEnqueueUs=perf_enabled()?perf_clock():0;
+        perfEnqueueStamp=holder->perfEnqueueUs;
         err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
         if (err != LBQ_SUCCESS) {
             LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
             Limelog("Input queue reached maximum size limit\n");
+            perf_count(PERF_C_INPUT_QUEUE_FULL,1);
             freePacketHolder(holder);
         }
     }
@@ -1160,6 +1196,8 @@ static int sendControllerEventInternal(short controllerNumber, short activeGamep
         // The packet holder we updated was already enqueued
         err = 0;
     }
+    if(err==0 && perfSampleStamp && perfEnqueueStamp>=perfSampleStamp)
+        perf_record(PERF_CONTROLLER_SAMPLE_ENQUEUE,perfEnqueueStamp-perfSampleStamp);
 
     return err;
 }

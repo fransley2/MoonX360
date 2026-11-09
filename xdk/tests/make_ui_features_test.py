@@ -49,6 +49,7 @@ int main(){
  ui_set_language(99);assert(!strcmp(ui_translate("Settings"),"Settings"));
  ui_set_language(0);const char *original="Settings";assert(ui_translate(original)==original);
  ui_set_language(1);assert(!strcmp(ui_translate("Starting %s"),"Iniciando %s"));
+ assert(!strcmp(ui_translate("Unknown key"),"Unknown key") && !strcmp(ui_translate(NULL),""));
  char title[80];snprintf(title,sizeof(title),ui_translate("Starting %s"),"Settings");assert(!strcmp(title,"Iniciando Settings"));
  ui_set_page(UI_SETTINGS);ui_set_language(0);int root=ui_location_enter("Settings");ui_location_enter("Developer");
  ui_set_language(1);char path[256];ui_location_path(path,sizeof(path),NULL,NULL);assert(!strcmp(path,"Ajustes  >  Avanzado"));ui_location_restore(root);
@@ -56,6 +57,41 @@ int main(){
  ui_set_language(CONFIG_LANGUAGE_PT_BR);ui_set_page(UI_LIBRARY);root=ui_location_enter_raw("Right");
  ui_location_path(path,sizeof(path),NULL,NULL);assert(!strcmp(path,"Biblioteca  >  Right"));ui_location_restore(root);
  ui_draw_enable(true);assert(ui_init(1280,720));
+ // Verify the actual shared knob commands, including every explicit On/Off
+ // setting and decorated legacy On labels, independently of translated text.
+ for(int language=0;language<CONFIG_LANGUAGE_COUNT;language++) {
+  ui_set_language(language);
+  for(int id=0;id<SET_COUNT;id++)if(settings_kind(id)==UI_OPTION_TOGGLE)for(int state=0;state<2;state++) {
+   ui_setting row={labels[id],state?"On":"Off",helps[id]};int kind=UI_OPTION_TOGGLE;
+   ui_draw_settings_options("Stream Adjustment",&row,&kind,1,0);
+   int count=0;const ui_draw_command *commands=ui_draw_commands(&count);bool found=false;
+   for(int j=0;j<count;j++)if(commands[j].kind==UI_RECT && commands[j].w==S(16) && commands[j].h==S(16) && commands[j].r==S(8) && commands[j].x>S(W-160)) {
+    assert(commands[j].color==(state?C_BG_BOTTOM:C_TEXT));
+    assert(commands[j].x==S(W-UI_SAFE_X-(state?54:78)));found=true;
+   }
+   assert(found);
+  }
+ }
+ assert(toggle_enabled("On (Experimental)") && toggle_enabled("On") && !toggle_enabled("Off"));
+ ui_set_language(0);
+ // Reuse the existing subtitle area: no new texture or shader sampling region.
+ ui_app crt_app={};crt_app.name="CRT game";ui_launch_begin(&crt_app,100,false);
+ ui_launch_session("CRT",640,480,60,9000);
+ std::vector<uint32_t> normal(LAUNCH_TEXT_W*LAUNCH_TEXT_H),note(normal.size());
+ ui_launch_text(normal.data(),LAUNCH_TEXT_W,LAUNCH_TEXT_H);
+ assert(font_text_width(FONT_REGULAR,12,"Compatible CRT resolution not detected. Using selected settings.")<=480);
+ ui_launch_crt_note(true);ui_launch_text(note.data(),LAUNCH_TEXT_W,LAUNCH_TEXT_H);
+ bool changed=false;
+ for(int y=0;y<LAUNCH_TEXT_H;y++)for(int x=0;x<LAUNCH_TEXT_W;x++) {
+  int at=y*LAUNCH_TEXT_W+x;
+  if(y<48 || y>=96) {
+   if(normal[at]!=note[at]){printf("Unexpected atlas change outside subtitle at %d,%d\n",x,y);fflush(stdout);}
+   assert(normal[at]==note[at]);
+  } else changed|=normal[at]!=note[at];
+ }
+ assert(changed);
+ ui_launch_begin(&crt_app,200,false);ui_launch_session("CRT",640,480,60,9000);
+ ui_launch_text(note.data(),LAUNCH_TEXT_W,LAUNCH_TEXT_H);assert(normal==note);
  // Entering Stream from Home seeds the correct root before any frame is drawn.
  ui_set_page(UI_HOME);ui_set_settings_context(UI_STREAM,-1);root=ui_location_enter("Stream");
  ui_location_path(path,sizeof(path),NULL,NULL);assert(!strcmp(path,ui_translate("Stream")));
@@ -70,6 +106,10 @@ int main(){
  hostrows[1].label="Name";ui_draw_settings_page("Profile actions",hostrows,2,0);actual=value_glyphs();
  ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,776,293,410,C_TEXT_DIM,"Right");
  assert(!actual.empty() && actual==value_glyphs()); // exact host-name glyphs, never "Derecho"
+ assert(ui_init_layout(960,720,1) && W==960 && H==720);
+ ui_draw_settings_page("Settings",hostrows,2,0);bounds();
+ ui_draw_main(NULL,NULL,0,0,NULL,0);bounds();
+ assert(ui_init(1280,720));
  const int sizes[][2]={{848,480},{1280,720},{1920,1080},{640,480},{720,576}};
  for(unsigned k=0;k<sizeof(sizes)/sizeof(sizes[0]);k++)for(int language=0;language<CONFIG_LANGUAGE_COUNT;language++){
   ui_set_language(language);assert(ui_init(sizes[k][0],sizes[k][1]));assert(W>=1279.9f && H>=719.9f);

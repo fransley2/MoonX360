@@ -60,6 +60,7 @@ char *storage_read(const char *name, size_t *len)
         return NULL;
     if(fseek(f,0,SEEK_END)!=0){fclose(f);errno=EIO;return NULL;}
     size = ftell(f);
+    if(!strcmp(name,"home-wallpaper.png") && size>8*1024*1024){fclose(f);return NULL;}
     if(size<0 || ((!strcmp(name,"profiles-a.tsv") || !strcmp(name,"profiles-b.tsv")) && size>=CONFIG_PROFILES_BYTES) ||
        (!strcmp(name,"sessions.tsv") && size>16384)) {fclose(f);errno=ERANGE;return NULL;}
     if(fseek(f,0,SEEK_SET)!=0){fclose(f);errno=EIO;return NULL;}

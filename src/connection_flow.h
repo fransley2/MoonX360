@@ -2,7 +2,8 @@
 #include <stdint.h>
 enum host_phase { HOST_IDLE, HOST_PROBING, HOST_FINDING, HOST_AUTHENTICATING,
     HOST_PAIRING, HOST_FETCHING_APPS, HOST_LAUNCHING, HOST_NEGOTIATING,
-    HOST_WAITING_VIDEO, HOST_WAITING_AUDIO, HOST_STREAMING, HOST_CANCELLING, HOST_FAILED };
+    HOST_WAITING_VIDEO, HOST_WAITING_AUDIO, HOST_STREAMING, HOST_CANCELLING, HOST_FAILED,
+    HOST_SWITCHING };
 #define HOST_PROBE_MS 1200u
 #define HOST_DISCOVERY_MS 6000u
 #define HOST_AUTH_MS 2400u
@@ -17,6 +18,7 @@ static const char *host_phase_text(int phase)
     case HOST_PAIRING:return "Pairing...";
     case HOST_FETCHING_APPS:return "Fetching game library...";
     case HOST_LAUNCHING:return "Starting app...";
+    case HOST_SWITCHING:return "Ending previous session and verifying the PC...";
     case HOST_NEGOTIATING:return "Negotiating video...";
     case HOST_WAITING_VIDEO:return "Waiting for first frame...";
     case HOST_WAITING_AUDIO:return "Waiting for audio...";

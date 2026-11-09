@@ -16,11 +16,18 @@ int main(){
     assert(adaptive_stream_sample(&a,22000,false,5,20000,60,false)==2);
     assert(!adaptive_stream_sample(&a,23000,true,5,20000,60,true)); // Guide suppresses adaptation
     for(int i=24;i<31;i++)assert(!adaptive_stream_sample(&a,i*1000,true,0,6000,60,false));
-    assert(adaptive_stream_sample(&a,31000,true,0,6000,60,false)==1);
+    assert(!adaptive_stream_sample(&a,31000,true,0,6000,60,false)); // poor hint is not loss evidence
     assert(!adaptive_stream_sample(&a,32000,false,0,6000,60,false));
     int w=1920,h=1080,b=20000;assert(adaptive_stream_lower(1,&w,&h,&b));assert(w==1920 && h==1080 && b==15000);
     assert(adaptive_stream_lower(2,&w,&h,&b));assert(w==1280 && h==720);
-    assert(adaptive_stream_lower(2,&w,&h,&b));assert(w==854 && h==480 && b==8000);
+    assert(adaptive_stream_lower(2,&w,&h,&b));assert(w==854 && h==480 && b==15000); // decoder advice never pretends to fix network bandwidth
+    adaptive_evidence e={};e.network_valid=true;e.missing=1;e.fps=60;e.decode_us=6000;
+    for(int i=0;i<8;i++)assert(!adaptive_stream_observe(&a,33000+i*1000,&e)); // cooldown
+    assert(adaptive_stream_observe(&a,52000,&e)==ADAPT_NETWORK);
+    assert(!adaptive_stream_observe(&a,53000,&e));
+    adaptive_stream risk={};e=adaptive_evidence();e.queue=5;e.fps=60;e.refresh_ms=250;e.decode_us=6000;
+    for(int i=15;i<22;i++)assert(!adaptive_stream_observe(&risk,i*1000,&e));
+    assert(adaptive_stream_observe(&risk,22000,&e)==ADAPT_REFRESH);
     b=6000;assert(!adaptive_stream_lower(1,&w,&h,&b));
     display_render_size(0,720,480,&w,&h);assert(w==848 && h==480);
     display_render_size(0,1920,1080,&w,&h);assert(w==1920 && h==1080);

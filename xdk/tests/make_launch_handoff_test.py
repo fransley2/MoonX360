@@ -24,7 +24,7 @@ fixture=r'''
 static void launch_set_status(enum launch_status){}
 struct plat_thread {std::thread value;};
 static unsigned task_generation;
-static bool ui_suspended,task_start_failed,launch_connecting;
+static bool ui_suspended,task_start_failed,launch_connecting,aurora_direct_active;
 static volatile int launch_handoff,task_cancel,task_phase;
 static bool task_was_cancelled,task_timed_out,task_interrupt_transport;static unsigned task_limit_ms=30000;
 static void task_state(int n){task_phase=n;}static void gs_set_request_cancel(volatile int*){}

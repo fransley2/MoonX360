@@ -2,6 +2,9 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#ifndef ADAPTIVE_FAST_DECODE
+#define ADAPTIVE_FAST_DECODE 0
+#endif
 
 /* Percent of one frame budget. Require repeated evidence, never one spike.
  * Recovery lasts at least thirty calls and requires thirty healthy samples to leave. */
@@ -13,6 +16,8 @@
 #define DEADLINE_MIN_FAST     30
 #define DEADLINE_EXIT_FRAMES  30
 #define DEADLINE_BACKLOG_BUDGETS 6  /* far below common-c's 15-unit bound */
+#define DEADLINE_TAIL_WINDOW 16
+#define DEADLINE_TAIL_SLOW_COUNT 3
 
 struct decode_deadline {
     bool recovery, queue_valid, previous_valid;
@@ -26,6 +31,9 @@ struct decode_deadline {
     uint32_t decode_samples;
     uint32_t decode_us, max_decode_us, max_queue_us; /* statistics-interval maxima */
     uint32_t session_max_decode_us, session_max_queue_us;
+    /* Decoder-thread-only bounded tail pressure; no per-frame sorting. */
+    uint8_t tail_slow[DEADLINE_TAIL_WINDOW];
+    unsigned tail_next, tail_count;
 };
 
 static bool decode_deadline_before(struct decode_deadline *s, bool forced_fast,
@@ -44,6 +52,8 @@ static bool decode_deadline_before(struct decode_deadline *s, bool forced_fast,
     queue_pressure = s->queue_valid && s->queue_us > s->budget_us * DEADLINE_QUEUE_ENTER / 100 &&
                      (!s->previous_valid || s->queue_us >= s->previous_queue_us);
     slow = decode_ema > s->budget_us * DEADLINE_EMA_ENTER / 100;
+    if (ADAPTIVE_FAST_DECODE && s->tail_count >= DEADLINE_TAIL_SLOW_COUNT &&
+        decode_ema > s->budget_us * 80 / 100) slow = true;
     if (forced_fast) {
         s->recovery = false;
         s->overload = s->healthy = s->fast_duration = 0;
@@ -77,6 +87,13 @@ static bool decode_deadline_before(struct decode_deadline *s, bool forced_fast,
 
 static void decode_deadline_after(struct decode_deadline *s, bool skipped, bool decoded, uint32_t us)
 {
+    if (ADAPTIVE_FAST_DECODE && decoded && s->budget_us) {
+        unsigned at=s->tail_next;
+        s->tail_count-=s->tail_slow[at];
+        s->tail_slow[at]=(uint8_t)(us > s->budget_us * 90 / 100);
+        s->tail_count+=s->tail_slow[at];
+        s->tail_next=(at+1)%DEADLINE_TAIL_WINDOW;
+    }
     s->decode_samples++;
     s->decode_us = us;
     if (us > s->max_decode_us) s->max_decode_us = us;

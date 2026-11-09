@@ -23,6 +23,61 @@
 static IXAudio2 *xaudio;
 static IXAudio2MasteringVoice *master;
 static IXAudio2SourceVoice *voice;
+/* Menu audio is deliberately independent of the stream decoder/voice. It is
+ * prepared once before Home and remains ready across stream disconnects. */
+static IXAudio2 *menu_engine;
+static IXAudio2MasteringVoice *menu_master;
+static IXAudio2SourceVoice *menu_voice;
+#define MENU_SAMPLES 2400
+static int16_t menu_pcm[4][MENU_SAMPLES*2];
+static bool menu_enabled;
+static int menu_volume;
+static DWORD menu_last_nav;
+void audio_menu_shutdown(void)
+{
+    if(menu_voice){menu_voice->Stop(0);menu_voice->DestroyVoice();menu_voice=NULL;}
+    if(menu_master){menu_master->DestroyVoice();menu_master=NULL;}
+    if(menu_engine){menu_engine->Release();menu_engine=NULL;}
+}
+void audio_menu_configure(bool enabled,int volume)
+{
+    menu_enabled=enabled;menu_volume=volume<0?0:volume>100?100:volume;
+    if(!enabled || !menu_volume){if(menu_voice){menu_voice->Stop(0);menu_voice->FlushSourceBuffers();}return;}
+    if(menu_voice){menu_voice->SetVolume(menu_volume/100.0f);menu_voice->Start(0);return;}
+    if(FAILED(XAudio2Create(&menu_engine,0,xdk_aux_processor()==0?XboxThread0:XboxThread5)) ||
+       FAILED(menu_engine->CreateMasteringVoice(&menu_master))){audio_menu_shutdown();return;}
+    WAVEFORMATEX format;ZeroMemory(&format,sizeof(format));format.wFormatTag=WAVE_FORMAT_PCM;
+    format.nChannels=2;format.nSamplesPerSec=48000;format.wBitsPerSample=16;
+    format.nBlockAlign=4;format.nAvgBytesPerSec=192000;
+    if(FAILED(menu_engine->CreateSourceVoice(&menu_voice,&format))){audio_menu_shutdown();return;}
+    static const int hz[]={520,690,360,220};
+    for(int effect=0;effect<4;effect++){
+        int phase=0;
+        for(int i=0;i<MENU_SAMPLES;i++){
+            phase=(phase+hz[effect]*65536/48000)&65535;
+            int triangle=phase<32768?phase-16384:49152-phase;
+            int envelope=(MENU_SAMPLES-i)*(MENU_SAMPLES-i)/MENU_SAMPLES;
+            /* Direction changes must remain audible at the conservative 18%
+             * default. The previous /12 gain was barely above room noise. */
+            int gain=effect==0?3:effect==3?4:5;
+            int sample=triangle*envelope/(MENU_SAMPLES*gain);
+            menu_pcm[effect][i*2]=menu_pcm[effect][i*2+1]=(int16_t)sample;
+        }
+    }
+    menu_voice->SetVolume(menu_volume/100.0f);
+    if(FAILED(menu_voice->Start(0)))audio_menu_shutdown();
+}
+void audio_menu_play(int effect)
+{
+    if(!menu_enabled || !menu_volume || !menu_voice || effect<0 || effect>3)return;
+    DWORD now=GetTickCount();if(effect==0 && now-menu_last_nav<80)return;
+    XAUDIO2_VOICE_STATE state;menu_voice->GetState(&state);
+    if(state.BuffersQueued)return; /* One short sound maximum; no delayed clicks. */
+    XAUDIO2_BUFFER buffer;ZeroMemory(&buffer,sizeof(buffer));
+    buffer.Flags=XAUDIO2_END_OF_STREAM;
+    buffer.AudioBytes=sizeof(menu_pcm[0]);buffer.pAudioData=(const BYTE*)menu_pcm[effect];
+    if(SUCCEEDED(menu_voice->SubmitSourceBuffer(&buffer)) && effect==0)menu_last_nav=now;
+}
 static OpusMSDecoder *decoder;
 static int16_t pcm[BUFFERS][MAX_FRAME_SAMPLES * AUDIO_MAX_CHANNELS];
 static int channels,output_channels;
@@ -45,10 +100,13 @@ int audio_select_configuration(bool surround)
 }
 static void audio_cleanup(void);
 static int next_buffer;
+static int nominal_frame_samples,audio_sample_rate;
+static bool freeze_first_audio_submit;
 static bool thread_pinned;
 
 static int audio_init(int config, const POPUS_MULTISTREAM_CONFIGURATION opus, void *ctx, int flags)
 {
+    plat_diagnostics_checkpoint("[FREEZE] audio init entered\n");
     WAVEFORMATEX wfx;
     WAVEFORMATEXTENSIBLE surround;
     int err;
@@ -59,6 +117,7 @@ static int audio_init(int config, const POPUS_MULTISTREAM_CONFIGURATION opus, vo
     if (!audio_layout_valid(opus->channelCount,opus->sampleRate,opus->samplesPerFrame))
         return -1;
     channels=output_channels=opus->channelCount;
+    nominal_frame_samples=opus->samplesPerFrame;audio_sample_rate=opus->sampleRate;
     if(config==AUDIO_CONFIGURATION_51_SURROUND && channels==2)fallback_reason="Stereo fallback: host negotiated stereo.";
     decoder = opus_multistream_decoder_create(opus->sampleRate, opus->channelCount, opus->streams,
                                               opus->coupledStreams, opus->mapping, &err);
@@ -106,6 +165,8 @@ static int audio_init(int config, const POPUS_MULTISTREAM_CONFIGURATION opus, vo
     applied_volume=-1;
     next_buffer = 0;
     thread_pinned = false;
+    freeze_first_audio_submit=false;
+    plat_diagnostics_checkpoint("[FREEZE] audio init ready\n");
     return 0;
 }
 
@@ -133,6 +194,7 @@ static void audio_cleanup(void)
 
 static void audio_decode_and_play(char *data, int len)
 {
+    video_progress_note(VP_AUDIO);
     PerfScope callback(PERF_AUDIO_CALLBACK);
     XAUDIO2_VOICE_STATE state;
     XAUDIO2_BUFFER buf;
@@ -155,6 +217,11 @@ static void audio_decode_and_play(char *data, int len)
 
     /* Decode every packet to preserve Opus state, even when playback is behind. */
     voice->GetState(&state);
+    if(perf_enabled()) {
+        perf_record(PERF_AUDIO_BUFFERS,state.BuffersQueued);
+        if(audio_sample_rate>0)perf_record(PERF_AUDIO_QUEUED_MS,
+            (uint64_t)state.BuffersQueued*nominal_frame_samples*1000/audio_sample_rate);
+    }
     if (state.BuffersQueued >= MAX_QUEUED) {
         perf_record(PERF_AUDIO_QUEUE_FULL,1);
         return;
@@ -164,9 +231,13 @@ static void audio_decode_and_play(char *data, int len)
     if(channels==6 && output_channels==2)audio_downmix(out,samples);
     buf.AudioBytes = audio_pcm_bytes(samples,output_channels);
     buf.pAudioData = (const BYTE *)out;
-    if (SUCCEEDED(voice->SubmitSourceBuffer(&buf)))
+    if (SUCCEEDED(voice->SubmitSourceBuffer(&buf))) {
         next_buffer = (next_buffer + 1) % BUFFERS;
-    else perf_record(PERF_AUDIO_SUBMIT_FAIL,1);
+        if(!freeze_first_audio_submit) {
+            freeze_first_audio_submit=true;
+            plat_diagnostics_checkpoint("[FREEZE] first audio submit\n");
+        }
+    } else perf_record(PERF_AUDIO_SUBMIT_FAIL,1);
 }
 
 void audio_init_callbacks(AUDIO_RENDERER_CALLBACKS *cb)

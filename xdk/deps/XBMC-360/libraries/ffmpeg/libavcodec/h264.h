@@ -37,6 +37,7 @@
 #include "h264pred.h"
 #include "h264qpel.h"
 #include "rectangle.h"
+#include "../../../../../ffmpeg_xbox/h264_parallel_diagnostic.h"
 
 #define MAX_SPS_COUNT          32
 #define MAX_PPS_COUNT         256
@@ -563,6 +564,7 @@ typedef struct H264Context {
     int max_contexts;
 
     int slice_context_count;
+    FFH264ParallelDiagnostic xbox_parallel_diagnostic;
 
     /**
      *  1 if the single thread fallback warning has already been

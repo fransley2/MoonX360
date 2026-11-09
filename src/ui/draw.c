@@ -14,6 +14,24 @@ static canvas_t buttons;
 static struct ui_memory_info memory;
 static bool motion_enabled=true;
 bool ui_motion_enabled(void){return motion_enabled;}
+static struct {bool active,started;uint32_t start;int index;} transition={false,false,0,-1};
+void ui_transition_begin(void)
+{transition.active=motion_enabled;transition.started=false;transition.index=-1;}
+bool ui_transition_active(void){return enabled && ready && transition.active;}
+bool ui_transition_tick(uint32_t now)
+{
+    if(!ui_transition_active())return false;
+    if(!transition.started){transition.started=true;transition.start=now;}
+    unsigned elapsed=now-transition.start;
+    unsigned alpha=elapsed>=180?0:150*(180-elapsed)/180;
+    if(transition.index<0){
+        cv_unclip(target);ui_fill(target,0,0,target->w,target->h,alpha<<24);
+        if(!ready || !used || commands[used-1].kind!=UI_RECT)return false;
+        transition.index=(int)used-1;
+    } else commands[transition.index].color=alpha<<24;
+    if(elapsed>=180)transition.active=false;
+    return true; /* present the final transparent frame once */
+}
 static bool focus_feedback; /* Older synchronous presenters need no terminal-frame retry. */
 static struct cover_fade {const void *pixels;uint32_t generation,start,stamp;bool started,active;} art_fades[12];
 static struct cover_ref {unsigned command,slot;uint32_t color;} art_refs[16];
@@ -69,6 +87,7 @@ void ui_set_motion(bool value)
 {
     motion_enabled=value;
     if(!value) {
+        transition.active=false;
         bool visible=ready && focus.registered;
         ui_focus_finish();focus.pending=visible;
     }
@@ -148,8 +167,8 @@ static struct ui_draw_command *push(canvas_t *c,int kind) {
 void ui_draw_enable(bool value) {enabled=value;if(!value)ui_draw_suspend();}
 bool ui_draw_enabled(void) {return enabled;}
 bool ui_draw_recording(void) {return recording;}
-void ui_draw_begin(canvas_t *c) {art_ref_count=0;art_pending=false;focus.registered=focus.pending=false;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
-void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;memset(art_fades,0,sizeof(art_fades));focus.known=focus.active=focus.registered=focus.pending=false;recording=ready=false;used=0;}
+void ui_draw_begin(canvas_t *c) {art_ref_count=0;art_pending=false;focus.registered=focus.pending=false;transition.index=-1;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
+void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;memset(art_fades,0,sizeof(art_fades));focus.known=focus.active=focus.registered=focus.pending=false;transition.active=false;recording=ready=false;used=0;}
 void ui_scene_drop(void) {scene_count=0;}
 bool ui_scene_store(void) {
     scene_count=0;

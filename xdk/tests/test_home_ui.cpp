@@ -102,79 +102,146 @@ int main(void)
     ui_draw_enable(true);ui_draw_dashboard(&simple_host,simple,5,0,NULL,&simple_dashboard);
     ui_draw_commands(&command_count);printf("Simple Home GPU commands: %d\n",command_count);
     assert(command_count<400);ui_draw_software();save_preview("simple-home.ppm");ui_draw_enable(false);ui_drop_main_cache();
-    // Refined Home contains only host, four covers and four quick-access tiles.
-    ui_menu_item tiles[9];tiles[0]={"Play / Connect",NULL,ICON_PLAY,true};
+    // Native Series layout uses four destinations, real recent covers and four shortcuts.
+    ui_menu_item tiles[13];
+    const char *navigation[]={"Home","Library","Computers","Settings"};
+    for(int i=0;i<4;i++)tiles[i]={navigation[i],NULL,ICON_INFO,true};
+    tiles[4]={"Continue stream","Desktop",ICON_PLAY,true};
     std::vector<uint32_t> art[4];
     const char *game_names[]={"GTA San Andreas","PCSX2 Big Picture","Steam Big Picture","Desktop"};
     for(int i=0;i<4;i++) {
         art[i].resize(150*200,0xFF294553);char path[64];snprintf(path,sizeof(path),"preview-cover-%d.argb",i);
         FILE *f=fopen(path,"rb");if(f){assert(fread(art[i].data(),4,150*200,f)==150*200);fclose(f);}
         recent[i].name=game_names[i];recent[i].art=art[i].data();recent[i].generation=10+i;
-        tiles[1+i]={game_names[i],"Recent",ICON_PLAY,true};
+        tiles[5+i]={game_names[i],"Recent",ICON_PLAY,true};
     }
-    const char *shortcuts[]={"Library","Stream","Continue","Settings"};
-    for(int i=0;i<4;i++)tiles[5+i]={shortcuts[i],i==2?"Play now":"Open",ICON_GEAR,true};
+    const char *shortcuts[]={"My Library","Stream Settings","Recent Sessions","Stop app"};
+    const int shortcut_icons[]={ICON_PLAY,ICON_MONITOR,ICON_INFO,ICON_STOP};
+    for(int i=0;i<4;i++)tiles[9+i]={shortcuts[i],i==3?"Desktop":NULL,shortcut_icons[i],true};
     dashboard.profile="Smooth";dashboard.connection="720p60  \xE2\x80\xA2  25 Mbps";
     for(int r=0;r<=4;r++) {
-        int total=1+r+4;bool visited[9]={};visited[0]=true;
-        for(int pass=0;pass<9;pass++)for(int i=0;i<total;i++)if(visited[i]) {
+        int total=9+r;bool visited[13]={};visited[0]=true;
+        for(int pass=0;pass<13;pass++)for(int i=0;i<total;i++)if(visited[i]) {
             visited[ui_dashboard_move_tiles(i,1,0,total,r)]=true;visited[ui_dashboard_move_tiles(i,-1,0,total,r)]=true;
             visited[ui_dashboard_move_tiles(i,0,1,total,r)]=true;visited[ui_dashboard_move_tiles(i,0,-1,total,r)]=true;
         }
         for(int i=0;i<total;i++)assert(visited[i]);
     }
-    dashboard.recent_count=4;
-    std::vector<uint32_t> resume_art(150*200,0xFF5C3450);
-    ui_app resume={"Another game",resume_art.data(),true,false,90};
-    dashboard.resume=&resume;dashboard.resume_id=999;
-    for(int i=0;i<9;i++) {
-        ui_draw_dashboard(&host,tiles,9,i,ip,&dashboard);
+    ui_app running=recent[3];running.running=true;
+    dashboard.recent_count=4;dashboard.resume=&running;dashboard.resume_id=45;
+    dashboard.featured=&running;dashboard.featured_id=45;
+    ui_set_motion(false);
+    for(int i=0;i<13;i++) {
+        ui_draw_dashboard(&host,tiles,13,i,ip,&dashboard);
         canvas_t *c=ui_canvas();std::vector<uint32_t> pixels(c->px,c->px+c->w*c->h);
-        ui_drop_main_cache();ui_draw_dashboard(&host,tiles,9,i,ip,&dashboard);
+        ui_drop_main_cache();ui_draw_dashboard(&host,tiles,13,i,ip,&dashboard);
         assert(!memcmp(pixels.data(),c->px,pixels.size()*4));
     }
     ui_draw_enable(true);
-    for(int selection=0;selection<9;selection++) {
-        ui_draw_dashboard(&host,tiles,9,selection,ip,&dashboard);
+    for(int selection=0;selection<13;selection++) {
+        ui_draw_dashboard(&host,tiles,13,selection,ip,&dashboard);
         const ui_draw_command *cmd=ui_draw_commands(&command_count);assert(cmd);
         std::vector<ui_draw_command> cached(cmd,cmd+command_count);
-        ui_drop_main_cache();ui_draw_dashboard(&host,tiles,9,selection,ip,&dashboard);
+        ui_drop_main_cache();ui_draw_dashboard(&host,tiles,13,selection,ip,&dashboard);
         cmd=ui_draw_commands(&command_count);assert(cmd && cached.size()==(size_t)command_count);
         assert(!memcmp(cached.data(),cmd,cached.size()*sizeof(*cmd)));
     }
     auto gpu_started=std::chrono::steady_clock::now();
-    for(int i=0;i<140;i++)ui_draw_dashboard(&host,tiles,9,i%9,ip,&dashboard);
+    for(int i=0;i<140;i++)ui_draw_dashboard(&host,tiles,13,i%13,ip,&dashboard);
     double gpu_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gpu_started).count()/140;
     printf("Retained GPU scene CPU recording: %.4f ms/navigation (desktop; excludes GPU/present).\n",gpu_ms);
-    ui_draw_dashboard(&host,tiles,9,1,ip,&dashboard);
-    const ui_draw_command *cmd=ui_draw_commands(&command_count);assert(cmd);
-    int images=0,resume_images=0;for(int i=0;i<command_count;i++) {
-        assert(cmd[i].kind!=UI_GRADIENT);
-        if(cmd[i].kind==UI_IMAGE && cmd[i].pixels==recent[0].art)images++;
-        if(cmd[i].kind==UI_IMAGE && cmd[i].pixels==resume.art)resume_images++;
+    for(int selected=0;selected<4;selected++) {
+        ui_draw_dashboard(&host,tiles,13,5+selected,ip,&dashboard);
+        const ui_draw_command *cmd=ui_draw_commands(&command_count);assert(cmd);
+        for(int j=0;j<4;j++) {float size=0;
+            for(int k=0;k<command_count;k++)if(cmd[k].kind==UI_IMAGE && cmd[k].pixels==recent[j].art)size=cmd[k].w;
+            assert(size==(j==selected?164.0f:106.0f));}
     }
-    assert(images==1 && resume_images==1); // Continue and Hero share the same cached thumbnail; no additional texture
-    printf("Refined Home GPU commands: %d (four covers, Continue, no host list)\n",command_count);
-    assert(command_count<400);
+    ui_app all_recent[8];ui_menu_item all_tiles[17];std::vector<uint32_t> extra[4];
+    const char *extra_names[]={"Game five","Game six","Game seven","Game eight"};
+    for(int i=0;i<5;i++)all_tiles[i]=tiles[i];
+    for(int i=0;i<8;i++) {
+        if(i<4)all_recent[i]=recent[i];
+        else {extra[i-4].resize(150*200,0xFF3B5260);all_recent[i]={extra_names[i-4],extra[i-4].data(),false,false,(uint32_t)(20+i)};}
+        all_tiles[5+i]={all_recent[i].name,NULL,ICON_PLAY,true};
+    }
+    for(int i=0;i<4;i++)all_tiles[13+i]=tiles[9+i];
+    ui_dashboard full_dashboard=dashboard;full_dashboard.recent=all_recent;full_dashboard.recent_count=8;
+    for(int selected=0;selected<8;selected++) {
+        ui_draw_dashboard(&host,all_tiles,17,5+selected,ip,&full_dashboard);
+        const ui_draw_command *cmd=ui_draw_commands(&command_count);assert(cmd);
+        float last_right=64;
+        for(int j=0;j<8;j++) {const ui_draw_command *image=NULL;
+            for(int k=0;k<command_count;k++)if(cmd[k].kind==UI_IMAGE && cmd[k].pixels==all_recent[j].art)image=cmd+k;
+            assert(image && image->w==(j==selected?164.0f:106.0f));
+            assert(image->x>=last_right && image->x+image->w<=1216);
+            last_right=image->x+image->w;
+        }
+    }
+    ui_draw_dashboard(&host,tiles,13,4,ip,&dashboard);
+    const ui_draw_command *cmd=ui_draw_commands(&command_count);assert(cmd && command_count<400);
     ui_draw_software();save_preview("series-dashboard-refined.ppm");
-    ui_draw_dashboard(&host,tiles,9,7,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-continue.ppm");
-    // Changing Continue (including identical names with different IDs) and
-    // clearing it must invalidate retained content. Compare against fresh UI.
-    resume.name="New target";dashboard.resume_id=1000;
-    ui_draw_dashboard(&host,tiles,9,7,ip,&dashboard);ui_draw_software();
-    canvas_t *changed=ui_canvas();std::vector<uint32_t> target_pixels(changed->px,changed->px+changed->w*changed->h);
-    ui_drop_main_cache();ui_draw_dashboard(&host,tiles,9,7,ip,&dashboard);ui_draw_software();
-    assert(!memcmp(target_pixels.data(),changed->px,target_pixels.size()*4));
-    dashboard.resume=NULL;dashboard.resume_id=0;
-    ui_draw_dashboard(&host,tiles,9,7,ip,&dashboard);ui_draw_software();
-    assert(memcmp(target_pixels.data(),changed->px,target_pixels.size()*4));
-    std::vector<uint32_t> cleared(changed->px,changed->px+changed->w*changed->h);
-    ui_drop_main_cache();ui_draw_dashboard(&host,tiles,9,7,ip,&dashboard);ui_draw_software();
-    assert(!memcmp(cleared.data(),changed->px,cleared.size()*4));
-    dashboard.resume=&resume;dashboard.resume_id=1000;
+    ui_draw_dashboard(&host,tiles,13,5,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-recent.ppm");
+    ui_draw_dashboard(&host,tiles,13,6,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-tile2.ppm");
+    dashboard.featured=recent;dashboard.featured_id=42;dashboard.resume=NULL;dashboard.resume_id=0;
+    tiles[4]={"Start playing","GTA San Andreas",ICON_PLAY,true};
+    tiles[12]={"My Computers",NULL,ICON_MONITOR,true};
+    ui_draw_dashboard(&host,tiles,13,4,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-last-played.ppm");
+    dashboard.featured=&running;dashboard.featured_id=45;dashboard.resume=&running;dashboard.resume_id=45;
+    tiles[4]={"Continue stream","Desktop",ICON_PLAY,true};
+    tiles[12]={"Stop app","Desktop",ICON_STOP,true};
+    ui_set_appearance(4,0);auto wall_started=std::chrono::steady_clock::now();double max_slice_ms=0;
+    for(int i=0;i<30;i++){
+        auto slice=std::chrono::steady_clock::now();
+        bool ready=ui_home_prepare_cover("uuid:PC",recent+1,1000);
+        double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-slice).count();
+        if(ms>max_slice_ms)max_slice_ms=ms;
+        assert(ready==(i==29));
+    }
+    printf("Cover wallpaper CPU preparation: %.3f ms total, %.3f ms largest slice (desktop; excludes GPU upload).\n",
+        std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-wall_started).count(),max_slice_ms);
+    ui_draw_dashboard(&host,tiles,13,6,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-wallpaper.ppm");
+    assert(!ui_home_prepare_cover("uuid:PC",recent+1,1200));
+    ui_app missing={"Missing",NULL,false,false,0};assert(!ui_home_prepare_cover("uuid:PC",&missing,1250));
+    assert(!ui_home_prepare_cover("uuid:PC",recent+2,1300));
+    ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    cmd=ui_draw_commands(&command_count);int before_ready=0;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)before_ready++;
+    assert(before_ready==1); /* Old wallpaper stays complete during preparation. */
+    ui_set_motion(true);
+    for(int i=1;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1300)==(i==29));
+    ui_set_motion(true);ui_home_tick(1300);
+    ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    cmd=ui_draw_commands(&command_count);int backgrounds=0;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    assert(backgrounds==2);ui_home_tick(1500);ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    cmd=ui_draw_commands(&command_count);backgrounds=0;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    assert(backgrounds==1);
+    // A new image arriving without navigation replaces the focused backdrop once.
+    ui_set_motion(false);recent[2].generation++;
+    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1600)==(i==29));
+    assert(!ui_home_prepare_cover("uuid:PC",recent+2,1600));
+    ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    cmd=ui_draw_commands(&command_count);backgrounds=0;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    assert(backgrounds==1); // Reduce Motion never draws the preceding backdrop.
+    assert(!ui_home_prepare_cover("uuid:other",recent+2,1700));ui_home_cancel_prepare();
+    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1800)==false);
+    std::vector<uint32_t> custom(1280*720);
+    for(int y=0;y<720;y++)for(int x=0;x<1280;x++)custom[y*1280+x]=(x&1)?0xFFF4A431u:0xFF1768C1u;
+    ui_home_set_user_wallpaper(custom.data(),1280,720);ui_set_appearance(3,0);
+    ui_draw_library(&host,recent,4,0,"All Apps");
+    cmd=ui_draw_commands(&command_count);bool retained_custom=false;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720) {
+        const uint32_t *wall=(const uint32_t*)cmd[i].pixels;
+        assert(wall[100*1280+100]!=wall[100*1280+101]);retained_custom=true;
+    }
+    assert(retained_custom); /* Library shares the sharp custom wallpaper. */
+    ui_set_appearance(0,0);
     // A different screen may replace active commands; the retained Home remains valid.
     ui_draw_library(&host,recent,4,0,"All Apps");
-    ui_draw_dashboard(&host,tiles,9,0,ip,&dashboard);assert(ui_draw_commands(&command_count));
+    ui_draw_dashboard(&host,tiles,13,0,ip,&dashboard);assert(ui_draw_commands(&command_count));
     assert(ui_scene_restore(ui_canvas()));int base_count;ui_draw_commands(&base_count);
     assert(base_count<command_count); // focus was appended, never stored in the static scene
     ui_drop_main_cache();assert(!ui_scene_restore(ui_canvas()));
@@ -183,7 +250,7 @@ int main(void)
         {"Host actions","Open","Refresh / pair / quit / unpair"}};
     ui_draw_hosts(host_rows,4,0,UI_HOME,true);ui_draw_software();save_preview("series-dashboard-hosts.ppm");
     ui_draw_enable(false);ui_drop_main_cache();
-    puts("PASS: 0-4 recents, asymmetric two-row navigation, cover/Continue identity, CPU/GPU scene cache equivalence and invalidation.");
+    puts("PASS: four destinations, 0-8 recents, every selected tile growth without overlap, wallpaper replacement and CPU/GPU cache equivalence.");
     ui_draw_enable(true);ui_set_page(UI_LIBRARY);
     int root=ui_location_enter("GTA San Andreas");
     char path[800];ui_location_path(path,sizeof(path),NULL,NULL);
@@ -209,12 +276,12 @@ int main(void)
     ui_draw_settings_options("Renderer",renderer_rows,renderer_kinds,3,0);ui_draw_software();save_preview("navigation-renderer-options.ppm");
     ui_launch_begin(recent,1000,true);ui_launch_session("Smooth",1280,720,60,12000);
     ui_draw_software();save_preview("launch-native-preview.ppm");
-    // The active tab underline must exactly match its measured label.
+    // Nested screens retain the same compact top navigation as Home.
     ui_draw_settings_options("Stream",stream_rows,stream_kinds,3,0);
     const ui_draw_command *tab_cmd=ui_draw_commands(&command_count);assert(tab_cmd);
     bool underline=false;
-    for(int i=0;i<command_count;i++)if(tab_cmd[i].kind==UI_RECT && tab_cmd[i].y==123 && tab_cmd[i].h==2) {
-        assert(tab_cmd[i].w>40 && tab_cmd[i].w<120);underline=true;
+    for(int i=0;i<command_count;i++)if(tab_cmd[i].kind==UI_RECT && tab_cmd[i].y==101 && tab_cmd[i].h==2) {
+        assert(tab_cmd[i].w==20);underline=true;
     }
     assert(underline);
     ui_set_page(UI_SETTINGS);
@@ -223,7 +290,7 @@ int main(void)
     ui_draw_stats("Network diagnostics",net_rows,3,"Last stopped session. No live stream is running.");
     ui_draw_software();save_preview("navigation-network-details.ppm");
     ui_location_restore(section);ui_location_restore(root);ui_draw_enable(false);ui_drop_main_cache();
-    puts("PASS: nested breadcrumb restore, explicit option kinds, Stop app details and label-width tab underline.");
+    puts("PASS: nested breadcrumb restore, explicit option kinds, Stop app details and shared top navigation.");
     // Same workload is also compiled against the preceding UI for comparison.
     host = original_host;
     memcpy(items, original_items, sizeof(items));

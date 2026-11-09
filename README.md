@@ -1,4 +1,4 @@
-# MoonX360 v0.2.2
+# MoonX360 v0.2.4
 
 MoonX360 streams PC games to an Xbox 360 through a controller-first interface with host discovery, PIN pairing, a game library, saved stream profiles, and on-console diagnostics.
 
@@ -10,7 +10,7 @@ MoonX360 streams PC games to an Xbox 360 through a controller-first interface wi
 
 ## Install and start
 
-1. Download and extract `MoonX360-v0.2.2-dashboard.zip` from the GitHub release.
+1. Download and extract `MoonX360-v0.2.4.zip` from the GitHub release. Copy the contents of its `MoonX360/` folder, including the Wallpaper and shortcut template.
 2. Copy `default.xex` to a writable folder on the Xbox 360 HDD or supported USB storage, such as `Hdd1:/Apps/MoonX360/default.xex`.
 3. In Aurora, add or refresh that folder in the game list, then launch MoonX360.
 4. Select a discovered PC on Home, or add its address from the Hosts screen.
@@ -27,7 +27,7 @@ MoonX360 works with games and apps exposed by a compatible GameStream host, not 
 
 The PC does the game's rendering, but the Xbox 360 decodes H.264 video on its CPU. Performance depends on the PC and encoder, game, network, and the console's decoding limits.
 
-Version 0.2.2 is a dashboard `default.xex` launched through Aurora/DashLaunch; it does not include a XeLL/ELF build. During a stream, hold the default **LB + RB + L3 + R3** shortcut for about two seconds to disconnect and return to MoonX360, where you can choose another app.
+Version 0.2.4 is a dashboard `default.xex` launched through Aurora/DashLaunch; it does not include a XeLL/ELF build. During a stream, press **Back + L3** to open the Quick Menu. Hold the default **LB + RB + L3 + R3** shortcut for about two seconds to disconnect and return to MoonX360, where you can choose another app.
 
 MoonX360 includes GameStream compatibility handling for Sunshine, Apollo, and Vibepollo, including optional host capability and permission responses. This release was not validated against live instances of each host.
 
@@ -48,6 +48,10 @@ MoonX360 includes GameStream compatibility handling for Sunshine, Apollo, and Vi
 
 The repository contains the dashboard build scripts and patches. Building requires a separately obtained Xbox 360 SDK; Microsoft SDK files are not included. See [xdk/README.md](xdk/README.md). MoonX360 is GPLv3; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-## v0.2.2 changes
+## v0.2.4 changes
 
-See [release notes](RELEASE_NOTES_v0.2.2.md).
+See [release notes](docs/RELEASE_NOTES_v0.2.4.md) for the dashboard, Quick Menu, app switching, Aurora integration, recovery changes and included Wallpaper. Fast Decode uses On/Off; profile format 5 requires a backup before rolling back to an older binary. The exact release XEX still requires physical Xbox validation.
+
+To use the included image, open **Settings > Interface**, open **Customize Home** (or press **X**), then select **Choose wallpaper** and browse to `Wallpapers/home-wallpaper.png`. Selecting the image saves a copy without replacing your pairing/configuration data.
+
+MoonX360 builds on [Xenonlight](https://github.com/roderick-neuhoff/Xenonlight) and Moonlight technology; original attribution and third-party licenses are retained.

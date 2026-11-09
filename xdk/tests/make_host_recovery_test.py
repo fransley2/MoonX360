@@ -25,7 +25,8 @@ struct gs_server {char hostname[64],address[64],uuid[80],app_version[32],gfe_ver
  volatile int *cancel,*wake_cancel;int info_timeout_ms;char *rtsp_session_url;SERVER_INFORMATION info;};
 
 static config cfg;static gs_server server;static host_cache hosts;
-static bool server_ok,task_start_failed,task_was_cancelled,worker;
+static bool server_ok,task_start_failed,task_was_cancelled,worker,aurora_direct_active;
+static void plat_log(const char*){}
 static volatile int task_cancel,task_phase;
 static unsigned tick,cancel_at;static int old_kind,auth_kind,plain_calls,auth_calls,opens,closes,saves,pairs;
 static bool advertise,legacy_confirm;static int confirm_keys;static char server_error[200];

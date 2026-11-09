@@ -23,7 +23,7 @@ fixture=r'''
 static config cfg;
 static int settings_initial_group=-1,navigation_pending=-1,settings_navigation_page=-1;
 static struct {int count;} session_history;
-static const int resolutions[][2]={{854,480},{1280,720},{1920,1080}};
+static const int resolutions[][2]={{640,480},{854,480},{1280,720},{1920,1080}};
 static std::deque<int> keys;
 static std::set<std::string> pages,options;
 static bool allow_write=true;static unsigned messages,restarts;
@@ -65,6 +65,7 @@ static bool plat_has_diagnostics(){return true;}
 static void plat_diagnostics_configure(bool){}
 static void plat_run_benchmark(){}
 static int wait_button();
+void ui_draw_confirm(const char*,const char*,const char*){}
 static void save_current_profile(){}
 static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
 static void stream_profile_menu(){assert(context_page==UI_STREAM || context_page==UI_SETTINGS);while(!(wait_button()&B_FLAG)){};}
@@ -72,6 +73,7 @@ static void pointer_settings_menu(){}
 static void launch_defaults_menu(){while(!(wait_button()&B_FLAG)){};}
 static void ui_memory_menu(){}
 static void network_diagnostics_menu(){}
+static void latency_diagnostics_menu(){}
 static void log_viewer(){}
 static void history_menu(){}
 static void advisor_menu(){}
@@ -82,6 +84,8 @@ static void power_menu(bool){}
 static bool plat_power_available(){return true;}
 static void plat_display_info(char *out,size_t n){snprintf(out,n,"1920x1080p 59.94 Hz");}
 void ui_set_language(int language){selected_language=language;}
+static unsigned wallpaper_calls;
+static void choose_wallpaper(){wallpaper_calls++;}
 void ui_set_appearance(int,int){}
 void ui_set_motion(bool){}
 void ui_set_stream_hud(int,int){}
@@ -109,12 +113,31 @@ int main(){
     assert(cfg.fps==config_cycle_fps(original.fps,1) && cfg.stream_profile==0);
     begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(cfg.bitrate_kbps==original.bitrate_kbps+1000);
     cfg=original;begin(true);keys={RIGHT_FLAG,B_FLAG};finish();assert(cfg.fps==24 && cfg.width==1920);
-    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_STREAM:UI_HOME));}
+    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_PAGE_COUNT:UI_HOME));}
     cfg=original;begin();down(2);keys.push_back(A_FLAG);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);down(1);keys.push_back(RIGHT_FLAG);back(3);finish();assert(cfg.ui_background==1 && cfg.ui_accent==1);
+    keys={UP_FLAG,A_FLAG,B_FLAG};appearance_menu();assert(keys.empty() && wallpaper_calls==1);
+    keys={UP_FLAG,LEFT_FLAG,RIGHT_FLAG,B_FLAG};appearance_menu();assert(keys.empty() && wallpaper_calls==1);
     unsigned prior=hosts_calls;begin();keys.push_back(A_FLAG);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);down(1);keys.push_back(A_FLAG);back(2);finish();assert(hosts_calls==prior+3);
     bool mdns=cfg.mdns_discovery;begin();keys.push_back(A_FLAG);down(3);keys.push_back(RIGHT_FLAG);back(2);finish();assert(cfg.mdns_discovery!=mdns);
     cfg=original;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);
     begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);down(7);keys.push_back(A_FLAG);keys.push_back(A_FLAG);back(3);finish();assert(!cfg.fast_decode && cfg.stream_profile==0 && cfg.image_quality==1);
+    for(int expected:{1,0}) {
+        begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);down(7);keys.push_back(A_FLAG);keys.push_back(A_FLAG);back(3);finish();
+        assert(cfg.fast_decode==expected && cfg.stream_profile==0);
+    }
+    int clarity_row=0;
+    for(int i=0;i<SETTINGS_ENTRY_COUNT;i++)if(settings_entries[i].page==MENU_STREAM_ADJUST) {
+        if(settings_entries[i].setting==SET_RENDERER && !plat_has_renderer_choice())continue;
+        if(settings_entries[i].setting==SET_CRT_CLARITY)break;
+        clarity_row++;
+    }
+    cfg.crt_clarity=false;
+    for(int expected:{1,0}) {
+        begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);down(clarity_row);keys.push_back(RIGHT_FLAG);back(2);finish();
+        assert(cfg.crt_clarity==(expected!=0));bool displayed=false;
+        for(auto d:draws)if(d.label=="CRT Interlace Clarity (Experimental)" && d.value==(expected?"On":"Off"))displayed=true;
+        assert(displayed);
+    }
     // The reused editor omits selection/coverage, saves only on explicit Save, and never writes global config.
     unsigned prior_saves=saves;profile_editor_active=true;profile_editor_save=false;
     cfg=original;begin(true);keys={A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(!profile_editor_save && saves==prior_saves && cfg.bitrate_kbps==original.bitrate_kbps+1000);
@@ -130,5 +153,5 @@ int main(){
 }
 
 '''
-code=function('static void cycle_stream_profile(')+'\n'+function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void settings_menu(void)\n{')
+code=function('static void cycle_stream_profile(')+'\n'+function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static bool confirm_action(')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void settings_menu(void)\n{')
 Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',code))

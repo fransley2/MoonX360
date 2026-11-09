@@ -17,6 +17,7 @@ fixture=r'''
 #include <string>
 #include <deque>
 #include "../src/config.h"
+#include "../src/aurora_launch.h"
 #include "../src/product_features.h"
 #include "../src/launch_settings.h"
 #include "../src/video.h"
@@ -29,6 +30,7 @@ static uint32_t *app_art[MAX_APPS],art_generation[MAX_APPS];
 static int app_count;
 static library_favorites favorites;
 static config cfg;
+static bool aurora_direct_active;static moonx_launch_data aurora_direct_data;
 static const char *host_key(){return cfg.host;}
 static game_bindings game_bindings;
 static char library_query[64];
@@ -39,6 +41,7 @@ static video_stats stats;
 static int writes,details,messages,reconnects,stream_calls;
 static bool connection_terminated;static int termination_error;static std::string last_report;
 static unsigned adaptive_reconnects;
+static unsigned video_reconnects;
 static struct {bool paired;int current_game;} server={true,0};
 static char server_error[80],unstable_title[64];
 static std::deque<int> buttons;
@@ -63,11 +66,17 @@ static const char *game_profile_label(int){return "Profile";}
 static void history_menu() {history_calls++;}
 static ui_host host_view() {ui_host h={"PC","PC",HOST_PAIRED,NULL,NULL};return h;}
 void ui_draw_app_details(const ui_host*,const ui_app *a,const char*,const char*,int selected) {assert(a->name && selected>=0 && selected<6);}
+void ui_app_details_aurora(bool,bool) {}
 void ui_set_page(int) {}
 int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}
 void ui_present() {}
 static void refresh_server() {reconnects++;}
+// Switch preflight is exercised by switch-app; unrelated lifecycle fixture.
+// Refresh can replace the source app title before stream_session begins.
+static bool stream_return_home,prepare_ok=true;
+static int prepare_calls;
+static bool prepare_selected_app(int){prepare_calls++;strcpy(unstable_title,"Overwritten by preflight refresh");return prepare_ok;}
 static bool stream_once(int,const char *title) {
     assert(!strcmp(title,"Original title"));stream_calls++;strcpy(unstable_title,"Overwritten by history push");
     return stream_calls==1;
@@ -84,7 +93,7 @@ static bool stream_session(int id,const char *title){return stream_once(id,title
 /* ACTUAL_FUNCTIONS */
 int main() {
     config_defaults(&cfg);strcpy(cfg.host,"PC");
-    sample.frames=600;sample.decode_avg_us=33000;sample.queue_peak_us=300000;
+    sample.frames=600;stats.rendered=600;sample.decode_avg_us=33000;sample.queue_peak_us=300000;
     sample.shown_fps=27;sample.tail_valid=true;sample.decode_p99_us=41000;
     record_session(42,"Game",10000);
     assert(writes==1 && session_history.count==1 && session_history.records[0].cause==PERF_CPU);
@@ -94,11 +103,11 @@ int main() {
     fail_save=true;record_session(44,"RAM only",10000);
     assert(history_save_failed && session_history.records[0].app_id==44);fail_save=false;
     record_session(45,"Saved later",10000);assert(!history_save_failed);
-    config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);config before=cfg;
+    config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);int original_fast_decode=cfg.fast_decode;config before=cfg;
     buttons.push_back(B_FLAG);advisor_menu();assert(!memcmp(&before,&cfg,sizeof(cfg)));
     buttons.push_back(X_FLAG);buttons.push_back(B_FLAG);advisor_menu();assert(details==1 && !memcmp(&before,&cfg,sizeof(cfg)));
     buttons.push_back(A_FLAG);advisor_menu();assert(config_video_preset(&cfg)==CONFIG_PROFILE_STANDARD);
-    assert(cfg.bitrate_kbps==12000 && cfg.fast_decode && cfg.vsync);
+    assert(cfg.bitrate_kbps==12000 && cfg.fast_decode==original_fast_decode && cfg.vsync);
     session_history.records[0].grade=PERF_GOOD;config_apply_preset(&cfg,CONFIG_PROFILE_SMOOTH);before=cfg;
     buttons.push_back(A_FLAG);buttons.push_back(B_FLAG);advisor_menu();assert(!memcmp(&before,&cfg,sizeof(cfg)));
     app_count=3;apps[0].id=45;strcpy(apps[0].name,"Desktop");apps[1].id=46;strcpy(apps[1].name,"Game");apps[2].id=47;strcpy(apps[2].name,"Other");
@@ -106,9 +115,10 @@ int main() {
     assert(library_map(3,map)==1 && map[0]==0);
     assert(library_map(0,map)==1 && map[0]==0); // only recorded app still offered by this host
     assert(library_favorite_toggle(&favorites,"PC",46));assert(library_map(1,map)==1 && map[0]==1);
-    for(int page=0;page<UI_PAGE_COUNT;page++) {
-        assert(tab_key(LB_FLAG,page) && navigation_pending==(page+3)%4);
-        assert(tab_key(RB_FLAG,page) && navigation_pending==(page+1)%4);
+    const int destinations[]={UI_HOME,UI_LIBRARY,UI_PAGE_COUNT,UI_SETTINGS};
+    for(int page=0;page<4;page++) {
+        assert(tab_key(LB_FLAG,destinations[page]) && navigation_pending==destinations[(page+3)%4]);
+        assert(tab_key(RB_FLAG,destinations[page]) && navigation_pending==destinations[(page+1)%4]);
     }
     navigation_pending=-1;assert(!tab_key(A_FLAG,UI_HOME));
     for(int i=0;i<40;i++) {
@@ -126,6 +136,14 @@ int main() {
     buttons={UP_FLAG,UP_FLAG,A_FLAG,B_FLAG};assert(!app_details(0));assert(stop_requests==2);
     reconnects=0;
     strcpy(cfg.host,"Another PC");assert(library_map(0,map)==0 && library_map(1,map)==0);strcpy(cfg.host,"PC");
+    // Canceling a new selection must clear a previous session's Home return.
+    // Library uses this flag after stream returns to decide whether to exit.
+    stream_return_home=true;prepare_ok=false;stream_calls=0;reconnects=0;
+    int previous_prepares=prepare_calls;config before_cancel=cfg;
+    strcpy(unstable_title,"Original title");stream(7,unstable_title);
+    assert(prepare_calls==previous_prepares+1 && !stream_return_home);
+    assert(!stream_calls && !reconnects && !memcmp(&before_cancel,&cfg,sizeof(cfg)));
+    prepare_ok=true;
     strcpy(unstable_title,"Original title");stream(7,unstable_title);assert(stream_calls==2 && reconnects==0);
     stream_calls=0;reconnects=0;server_ok=false;strcpy(unstable_title,"Original title");
     stream(7,unstable_title);assert(stream_calls==2 && reconnects==0); // preflight belongs to stream_once, covered by launch-flow

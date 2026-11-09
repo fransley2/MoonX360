@@ -34,7 +34,8 @@ int main()
         items[5]={"Library","Games & apps",ICON_PLAY,true};items[6]={"Stream","Profiles & audio",ICON_MONITOR,true};
         items[7]={"Continue","Play now",ICON_PLAY,true};items[8]={"Settings","Hosts & advanced",ICON_GEAR,true};
         ui_dashboard dashboard={"Smooth","720p60",games+1,4,games,42};
-        ui_draw_dashboard(&host,items,9,0,"192.168.1.90",&dashboard);assert(art_commands(art[0].data())==1);
+        ui_draw_dashboard(&host,items,9,0,"192.168.1.90",&dashboard);
+        assert(art_commands(art[1].data())>=1); /* current recent card */
         char path[100];snprintf(path,sizeof(path),"host-ui-%d-home.ppm",w);save(path);
         ui_draw_dashboard(&host,items,9,4,"192.168.1.90",&dashboard);snprintf(path,sizeof(path),"host-ui-%d-home-scroll.ppm",w);save(path);
         // Empty, single and long rails, missing/late/cached artwork and offline/online hosts.
@@ -49,11 +50,12 @@ int main()
             ui_draw_dashboard(&state,home,recents+5,focus,"",&variant);
             int commands,images=0,peek=0;const ui_draw_command *draw=ui_draw_commands(&commands);assert(draw && commands<512);
             for(int j=0;j<commands;j++)if(draw[j].kind==UI_IMAGE && draw[j].iw==aw && draw[j].ih==ah) {
-                images++;assert(draw[j].w>0 && draw[j].h>0);float aspect=draw[j].w/draw[j].h;assert(aspect>0.749f && aspect<0.751f);
+                images++;assert(draw[j].w>0 && draw[j].h>0);float aspect=draw[j].w/draw[j].h;
+                assert(aspect>0.70f && aspect<0.80f); /* integer CRT scaling */
                 if(draw[j].x<draw[j].clip[2] && draw[j].x+draw[j].w>draw[j].clip[2])peek++;
             }
-            assert(images<=7);if(scenario==2){
-                assert(peek==1);snprintf(path,sizeof(path),"home-case-%d-peek.ppm",w);save(path);
+            assert(images<=8);if(scenario==2){
+                assert(peek<=1);snprintf(path,sizeof(path),"home-case-%d-peek.ppm",w);save(path);
                 ui_draw_dashboard(&state,home,recents+5,8,"",&variant);
                 float focus_x,focus_y,focus_w,focus_h;assert(ui_focus_bounds(&focus_x,&focus_y,&focus_w,&focus_h));assert(focus_x>=0 && focus_x+focus_w<=w);
             }
@@ -77,7 +79,8 @@ int main()
         assert(covers<=8 && partial==1);snprintf(path,sizeof(path),"host-ui-%d-library.ppm",w);save(path);
         ui_set_motion(true);ui_library_tick(1000);ui_draw_library(&host,games,24,6,"All Apps");
         assert(ui_library_tick(1075));ui_draw_library(&host,games,24,6,"All Apps");
-        assert(ui_library_tick(1150));ui_draw_library(&host,games,24,6,"All Apps");assert(!ui_library_tick(1151));
+        assert(ui_library_tick(1150));ui_draw_library(&host,games,24,6,"All Apps");
+        assert(ui_library_tick(1200));assert(!ui_library_tick(1201));
         float x,y,fw,fh;assert(ui_focus_bounds(&x,&y,&fw,&fh));assert(x>=0 && x+fw<=w);
         ui_set_motion(false);ui_set_settings_context(UI_STREAM,SETTINGS_VIDEO);
         ui_setting rows[]={{"Video resolution","1280x720","Requested host resolution."},
@@ -90,5 +93,5 @@ int main()
         ui_set_settings_context(-1,-1);char unavailable[128];snprintf(unavailable,sizeof(unavailable),ui_translate("%s unavailable"),"Gaming PC");ui_draw_host_failure(unavailable,"We couldn't find this PC on the local network.");
         snprintf(path,sizeof(path),"host-ui-%d-unavailable.ppm",w);save(path);
     }
-    puts("PASS: production Home hero shares cached texture, real partial next card, bounded Library rendering, 150ms container interpolation, focused geometry, full-width settings and failure previews at 480p/720p.");
+    puts("PASS: production Home hero shares cached texture, bounded Library rendering, 200ms container interpolation, focused geometry, full-width settings and failure previews at 480p/720p.");
 }

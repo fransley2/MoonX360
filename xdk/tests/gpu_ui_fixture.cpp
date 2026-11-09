@@ -9,6 +9,9 @@
 #include "../src/ui/cover_cache.h"
 #include "../src/system_ui.h"
 #include "../src/launch_cover.h"
+#include "../src/ui_layout_geometry.h"
+static int safe_margin;
+static void gfx_ui_viewport(int cw,int ch,int ow,int oh,int *l,int *t,int *r,int *b){ui_layout_safe_viewport(cw,ch,ow,oh,safe_margin,l,t,r,b);}
 typedef unsigned DWORD,UINT;typedef unsigned char BYTE;typedef int HRESULT,LONG;
 static DWORD tick;
 static DWORD GetTickCount(){return tick;}
@@ -42,6 +45,7 @@ struct RECT {LONG left,top,right,bottom;};
 static bool pending,fail_create,fail_upload,fail_shader,fail_glyph,owned;
 static unsigned allocations,releases,uploads,waits,draws,primitives,compiles,presents;
 static int physical_w=1920,physical_h=1080;
+static int layout_width=1280,layout_height=720;
 struct D3DTexture {
     int w,h;D3DTexture(int a,int b):w(a),h(b){allocations++;}
     void Release(){assert(!pending);releases++;delete this;}
@@ -62,6 +66,7 @@ static bool gfx_upload(D3DTexture *t,const void*,int pitch,int bytes,int rows) {
     assert(!pending && pitch==t->w*4 && bytes==pitch && rows==t->h);uploads++;return !fail_upload;
 }
 static void gfx_backbuffer_size(int *w,int *h){*w=physical_w;*h=physical_h;}
+static int backbuffer_width=1920,backbuffer_height=1080;
 struct D3DDevice {
     bool blend,scissor;D3DTexture *bound;
     void Clear(int,void*,int,DWORD,float,int){}
@@ -96,6 +101,7 @@ static D3DDevice present_device={};
 static D3DDevice *gfx_begin(){assert(!owned);owned=true;return &present_device;}
 static void gfx_end(){assert(owned);owned=false;}
 static void gfx_draw_rect(D3DDevice *d,int shader,float,float,float,float){assert(d->bound && shader==GFX_SHADER_RGB);}
+static void gfx_draw_layout_rect(D3DDevice *d,int shader,float,float,float,float){assert(d->bound && shader==GFX_SHADER_RGB);}
 static D3DTexture *mouse_indicator;
 static bool mouse_indicator_failed;
 static void gfx_stream_menu_reset(D3DDevice*){}
@@ -107,6 +113,14 @@ static void preview(const char *name) {
 }
 int main() {
     ui_draw_enable(true);assert(ui_init(1280,720));assert(ui_apps_columns()==6);
+    physical_w=640;physical_h=480;
+    ui_projection four_three=projection(960,720);
+    assert(four_three.left==0 && four_three.top==0 && four_three.right==640 && four_three.bottom==480);
+    ui_vertex probe[6];quad(probe,0,0,960,720,0,0,1,1,0xffffffff,four_three);
+    assert(probe[0].x==-1 && probe[0].y==1 && probe[1].x==1 && probe[2].y==-1);
+    ui_projection wide=projection(1280,720);
+    assert(wide.left==0 && wide.top==60 && wide.right==640 && wide.bottom==420);
+    physical_w=1920;physical_h=1080;
     D3DDevice d={};ui_host host={"Gaming PC","192.168.1.3",HOST_PAIRED,NULL,NULL};
     ui_app apps[20]={};uint32_t art[150*200];for(int i=0;i<150*200;i++)art[i]=HEX(0x66884A);
     for(int i=0;i<20;i++) {apps[i].name="Example game";apps[i].art=art;apps[i].generation=1;}
@@ -175,7 +189,11 @@ int main() {
     const ui_draw_command *steady=ui_draw_commands(&count);std::vector<ui_draw_command> steady_commands(steady,steady+count);
     assert(ui_focus_tick(0));unsigned before_motion=presents,before_motion_uploads=uploads;ui_present();assert(presents==before_motion); // pending prior fence
     assert(ui_focus_tick(120));guide=true;pending=false;ui_present();assert(presents==before_motion);
-    assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1 && !ui_focus_tick(176));
+    assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1);
+    assert(ui_focus_tick(176)); // cover fade still advances after focus has settled
+    assert(ui_focus_tick(220));ui_present();
+    for(unsigned ms=236;ms<1200 && ui_focus_tick(ms);ms+=40){pending=false;ui_present();}
+    assert(!ui_focus_tick(1200));
     assert(uploads==before_motion_uploads);
     steady=ui_draw_commands(&count);assert(!memcmp(steady_commands.data(),steady,count*sizeof(*steady)));
 

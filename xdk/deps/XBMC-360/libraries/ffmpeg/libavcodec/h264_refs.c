@@ -284,6 +284,8 @@ int ff_h264_decode_ref_pic_list_reordering(H264Context *h){
             if (!h->ref_list[list][index].f.data[0]) {
                 int i;
                 av_log(h->avctx, AV_LOG_ERROR, "Missing reference picture, default is %d\n", h->default_ref_list[list][0].poc);
+                if (h->cur_pic_ptr)
+                    h->cur_pic_ptr->f.decode_error_flags |= FF_DECODE_ERROR_MISSING_REFERENCE;
                 for (i=0; i<FF_ARRAY_ELEMS(h->last_pocs); i++)
                     h->last_pocs[i] = INT_MIN;
                 if (h->default_ref_list[list][0].f.data[0])

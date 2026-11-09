@@ -6,5 +6,5 @@ def fn(sig):
  while d:d+=(s[b]=='{')-(s[b]=='}');b+=1
  return s[a:b]
 f=(r/'xdk/tests/storage_recovery_fixture.cpp').read_text().replace('../../../src/','../src/')
-code='\n'.join(fn(x) for x in ['char *storage_read(', 'static void storage_log_failure(', 'bool storage_write('])
+code='\n'.join(fn(x) for x in ['char *storage_read(', 'static void storage_log_failure(', 'bool storage_write(', 'void plat_archive_session_reports('])
 Path(sys.argv[1]).write_text(f.replace('/* ACTUAL_STORAGE */',code))

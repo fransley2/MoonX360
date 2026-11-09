@@ -56,3 +56,6 @@ bool ui_focus_bounds(float *x,float *y,float *w,float *h);
 void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h);
 
 bool ui_motion_enabled(void);
+void ui_transition_begin(void);
+bool ui_transition_active(void);
+bool ui_transition_tick(uint32_t now);

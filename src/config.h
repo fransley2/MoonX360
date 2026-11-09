@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "fast_decode.h"
 #include <stddef.h>
 
 enum config_language { CONFIG_LANGUAGE_ENGLISH, CONFIG_LANGUAGE_SPANISH,
@@ -13,7 +14,8 @@ struct config {
     int bitrate_kbps;
     int packet_size;
     int slice_count;    /* diagnostic override: 0 Auto, 8, 12 or 16; next session */
-    bool fast_decode;
+    int refresh_interval_ms; /* optional periodic IDR: 0, 125, 250, 1000..60000 ms */
+    int fast_decode; /* On/Off; format-5 value 2 loads as On */
     int renderer;       /* enum video_renderer: 0 GPU, 1 CPU, 2 CPU + display colour matrix */
     bool vsync;
     bool sops;          /* let the host change its resolution to match */
@@ -35,15 +37,29 @@ struct config {
     bool launch_animation; /* independent of the legacy focus animation */
     int launch_cover_ms; /* global 0..10000; not part of stream profiles */
     bool mdns_discovery;
-    int adaptive_quality; /* 0 manual, 1 bounded automatic reconnect on sustained pressure */
-    int display_mode; /* render target: 0 auto, 1 480p, 2 720p, 3 1080p; next app start */
+    int adaptive_quality; /* 0 Off, 1 sustained-evidence recommendations; no automatic reconnect */
+    int display_mode; /* render target: 0 auto, 1 widescreen 480p, 2 720p, 3 1080p, 4 640x480; next app start */
+    int ui_layout; /* 0 16:9 (default), 1 4:3; next app start, independent of stream size */
+    int ui_safe_area; /* 0..10 percent per edge; UI only, next app start */
+    int refresh_smoothing,smoothing_strength; /* 0 Off / 1 experimental; strength 0 Low / 1 Medium */
+    bool crt_clarity; /* optional spatial interlace shader; never temporal IDR blending */
+    bool crt_display_backup;
+    int previous_display_mode,previous_ui_layout,previous_safe_area;
     int mouse_hud,stream_menu_style; /* global: compact/text/hidden HUD; compact/sidebar menu */
     bool ui_motion; /* bounded local menu focus animation; global */
     int ui_background,ui_accent; /* global appearance, never owned by stream profiles */
+    bool menu_sounds;
+    int menu_volume; /* independent menu PCM volume, 0..100 */
     int language; /* 0 English, 1 Spanish, 2 Brazilian Portuguese; persisted */
     int thread_layout; /* 0 legacy, 1 balanced; next connection */
     int decode_workers; /* 3 or 4; requires rebuilt FFmpeg mapping */
     int left_min, left_max, right_min, right_max; /* axial activation/saturation percentages */
+    bool aurora_enabled,aurora_direct_enabled;
+    bool artwork_cache_enabled;
+    int artwork_cache_mb; /* 32, 64, or 128; disk only */
+    int aurora_cache_handling; /* 0 Safe, 1 Manual; neither writes Aurora DB */
+    char aurora_shortcuts_folder[160],aurora_main_xex[160],aurora_path[160];
+    char aurora_default_profile[80]; /* empty = game/current binding */
 };
 
 /* Finds a writable USB/HDD device and creates <dev>:/moonlight/. */
@@ -81,12 +97,23 @@ int config_cycle_fps(int fps, int direction);
 #define CONFIG_PROFILE_SMOOTH CONFIG_PRESET_720_60
 #define CONFIG_PROFILE_STANDARD 4
 #define CONFIG_PROFILE_1080_SMOOTH 5
-#define CONFIG_PROFILE_COUNT 6
+#define CONFIG_PROFILE_WIRELESS 6
+#define CONFIG_PROFILE_CRT 7
+#define CONFIG_PROFILE_CRT_SMOOTH 8
+#define CONFIG_PROFILE_CRT_STABLE 9
+#define CONFIG_PROFILE_CRT_QUALITY 10
+#define CONFIG_PROFILE_COUNT 11
+bool config_crt_profile(const struct config *c);
+void config_crt_display_enable(struct config *c);
+bool config_crt_display_restore(struct config *c);
+bool config_crt_display_commit(struct config *c,bool enable);
 const char *config_profile_key(int profile);
 const char *config_preset_name(int preset);
 int config_step_bitrate(int bitrate, int direction);
 bool config_slices_supported(int slices);
 int config_cycle_slices(int slices, int direction);
+bool config_refresh_interval_supported(int milliseconds);
+int config_cycle_refresh_interval(int milliseconds, int direction);
 
 /* Diagnostic bitrate sweep only changes requested kbps for the next session. */
 int config_test_bitrate(const struct config *c,int direction);
@@ -102,6 +129,8 @@ struct stream_options {
     int width,height,fps,bitrate_kbps,packet_size,slice_count;
     int fast_decode,renderer,vsync,sops,local_audio,image_quality;
     int adaptive_quality,thread_layout,decode_workers,audio_mode;
+    int refresh_interval_ms,crt_clarity,new_options_owned;
+    int refresh_smoothing,smoothing_strength,smoothing_options_owned; /* v1/v2 snapshots leave new options unchanged */
 };
 struct user_stream_profile { char name[CONFIG_PROFILE_NAME_BYTES]; struct stream_options options; };
 struct user_profiles {

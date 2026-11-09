@@ -39,6 +39,7 @@
 #include "internal.h"
 #include "thread.h"
 #include "libavutil/common.h"
+#include "../../../../../ffmpeg_xbox/h264_parallel_diagnostic.h"
 
 typedef int (action_func)(AVCodecContext *c, void *arg);
 typedef int (action_func2)(AVCodecContext *c, void *arg, int jobnr, int threadnr);
@@ -66,6 +67,9 @@ typedef struct ThreadContext {
     int rets_count;
     int job_count;
     int job_size;
+    unsigned worker_mask;
+    unsigned active_jobs;
+    unsigned peak_active_jobs;
 
     pthread_cond_t last_job_cond;
     pthread_cond_t current_job_cond;
@@ -197,12 +201,17 @@ static void* attribute_align_arg worker(void *v)
                 return NULL;
             }
         }
+        c->worker_mask |= 1u << self_id;
+        c->active_jobs++;
+        if (c->active_jobs > c->peak_active_jobs)
+            c->peak_active_jobs = c->active_jobs;
         pthread_mutex_unlock(&c->current_job_lock);
 
         c->rets[our_job%c->rets_count] = c->func ? c->func(avctx, (char*)c->args + our_job*c->job_size):
                                                    c->func2(avctx, c->args, our_job, self_id);
 
         pthread_mutex_lock(&c->current_job_lock);
+        c->active_jobs--;
         our_job = c->current_job++;
     }
 }
@@ -248,6 +257,7 @@ static int avcodec_thread_execute(AVCodecContext *avctx, action_func* func, void
     pthread_mutex_lock(&c->current_job_lock);
 
     c->current_job = avctx->thread_count;
+    c->worker_mask = c->active_jobs = c->peak_active_jobs = 0;
     c->job_count = job_count;
     c->job_size = job_size;
     c->args = arg;
@@ -265,6 +275,23 @@ static int avcodec_thread_execute(AVCodecContext *avctx, action_func* func, void
     avcodec_thread_park_workers(c, avctx->thread_count);
 
     return 0;
+}
+
+void ff_xbox_slice_last_dispatch(const AVCodecContext *avctx,
+                                 unsigned *participants, unsigned *concurrent)
+{
+    unsigned mask, count = 0;
+    const ThreadContext *c;
+    if (participants) *participants = 0;
+    if (concurrent) *concurrent = 0;
+    if (!avctx || !(avctx->active_thread_type & FF_THREAD_SLICE) ||
+        avctx->thread_count <= 1 || !avctx->thread_opaque)
+        return;
+    c = avctx->thread_opaque;
+    mask = c->worker_mask;
+    while (mask) { count += mask & 1; mask >>= 1; }
+    if (participants) *participants = count;
+    if (concurrent) *concurrent = c->peak_active_jobs;
 }
 
 static int avcodec_thread_execute2(AVCodecContext *avctx, action_func2* func2, void *arg, int *ret, int job_count)

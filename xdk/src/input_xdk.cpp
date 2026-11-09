@@ -12,25 +12,38 @@
 #include <string.h>
 
 #include "../../src/input.h"
+#include "../../src/platform.h"
 #include "../../src/ui/ui.h"
+#include "../../src/ui/draw.h"
 
 #include <Limelight.h>
 
 #include "../../src/input_session.h"
+#include "../../src/input_shortcut.h"
 #include "../../src/input_hotplug.h"
 #include "../../src/remote_input.h"
 #include "../../src/quick_menu.h"
 #include "../../src/audio.h"
+#include "../../src/video.h"
 static volatile LONG mouse_mode;
 bool input_mouse_active(void) {return InterlockedCompareExchange(&mouse_mode,0,0)!=0;}
 
 static struct input_settings stream_settings;
+#ifndef LOW_LATENCY_INPUT
+#define LOW_LATENCY_INPUT 0
+#endif
+static DWORD stream_interval_ms=4;
+void input_configure_low_latency(bool enabled)
+{
+    /* The build flag alone is inert for Smooth and normal user sessions. */
+    stream_interval_ms=LOW_LATENCY_INPUT && enabled ? 2 : 4;
+}
 static int pointer_speed=100,pointer_acceleration,pointer_scroll_ms=100;
 static bool initial_stats;
 static volatile LONG quick_snapshot,mouse_available=1,quick_available=1;
 void input_quick_ui_unavailable(void){InterlockedExchange(&quick_available,0);}
 unsigned input_quick_snapshot(void){return (unsigned)InterlockedCompareExchange(&quick_snapshot,0,0);}
-bool input_stats_visible(void){return (input_quick_snapshot()&4096)!=0;}
+bool input_stats_visible(void){return (input_quick_snapshot()&QUICK_STATS)!=0;}
 void input_mouse_indicator_available(bool available){InterlockedExchange(&mouse_available,available?1:0);}
 void input_configure_pointer(int speed,int acceleration,int scroll_ms,bool stats)
 {pointer_speed=speed<25?25:speed>200?200:speed;pointer_acceleration=acceleration;pointer_scroll_ms=scroll_ms<50?50:scroll_ms>400?400:scroll_ms;initial_stats=stats;}
@@ -48,16 +61,18 @@ void input_configure(int quit_combo, int deadzone)
     stream_settings.quit_combo = quit_combo == 1 ? 1 : 0;
     stream_settings.deadzone = deadzone < 0 ? 0 : deadzone > 30 ? 30 : deadzone;
 }
-#define SEND_INTERVAL_MS 4
 #define REPROBE_DISCONNECTED_MS 100
 
 static int menu_prev;
-static volatile LONG stream_active,quit_requested,rumble_enabled,rumble_generation,rumble_connected_mask;
+static volatile LONG stream_active,quit_requested,close_app_requested,rumble_enabled,rumble_generation,rumble_connected_mask;
 static HANDLE stream_thread;
 static DWORD next_probe_ms[MAX_PADS];
 static bool physical_connected[MAX_PADS];
+int input_connected_count(void){int n=0;for(int i=0;i<MAX_PADS;i++)if(physical_connected[i])n++;return n;}
 static bool port_connected[MAX_PADS] = { true, true, true, true };
 static struct input_hotplug hotplug[MAX_PADS];
+static XINPUT_STATE last_stream_xinput[MAX_PADS];
+static bool have_stream_xinput[MAX_PADS];
 
 static const struct {
     WORD xinput;
@@ -83,6 +98,7 @@ int input_poll(struct pad pads[MAX_PADS])
 {
     DWORD now_ms = GetTickCount();
     int i, mask = 0;
+    for(i=0;i<MAX_PADS;i++)perf_input_sample(i,0);
 
     for (i = 0; i < MAX_PADS; i++) {
         struct pad *p = &pads[i];
@@ -100,6 +116,12 @@ int input_poll(struct pad pads[MAX_PADS])
             continue;
         }
         physical_connected[i]=true;
+        if(perf_enabled() && (!have_stream_xinput[i] ||
+           memcmp(&last_stream_xinput[i].Gamepad,&s.Gamepad,sizeof(s.Gamepad))!=0)) {
+            uint64_t detected=perf_clock();
+            perf_input_sample(i,detected);
+        }
+        last_stream_xinput[i]=s;have_stream_xinput[i]=true;
         port_connected[i] = true;
         p->present = true;
         mask |= 1 << i;
@@ -167,6 +189,10 @@ int input_menu_pressed(void)
     }
 
     menu_prev = now;
+    if(!pressed && ui_transition_active())ui_present();
+    if(pressed&B_FLAG)audio_menu_play(2);
+    else if(pressed&(A_FLAG|X_FLAG|Y_FLAG|PLAY_FLAG))audio_menu_play(1);
+    else if(pressed&repeatable)audio_menu_play(0);
     return pressed;
 }
 
@@ -174,6 +200,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
 {
     struct pad pads[MAX_PADS];
     struct input_session session;
+    struct input_shortcut shortcut;memset(&shortcut,0,sizeof(shortcut));
     struct remote_input remote;memset(&remote,0,sizeof(remote));
     remote.speed=pointer_speed;remote.acceleration=pointer_acceleration;remote.scroll_ms=pointer_scroll_ms;
     struct quick_menu quick;memset(&quick,0,sizeof(quick));quick.volume=100;quick.stats=initial_stats;
@@ -192,6 +219,12 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         previous_poll=poll;
         DWORD started = GetTickCount();
         int mask = input_poll(pads);
+        video_progress_note(VP_INPUT);
+        bool guide=gfx_system_ui_active();
+        bool shortcut_consumed[MAX_PADS]={false};
+        if(guide)memset(&shortcut,0,sizeof(shortcut));
+        bool shortcut_fired=!guide && input_shortcut_step(&shortcut,pads,input_exit_mask(stream_settings.quit_combo),started,shortcut_consumed);
+        if(shortcut_fired){InterlockedExchange(&quit_requested,1);plat_log("[INPUT] Exit combo detected and consumed\n");}
         InterlockedExchange(&rumble_connected_mask,mask);
         bool cover_input=launch_active();
         bool any=false,cancel=false,reveal=false;
@@ -201,15 +234,21 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         }
         if(cover_input){launch_command(cancel,reveal);launch_neutral=true;}
         bool block_launch=cover_input || launch_neutral;
-        bool guide=gfx_system_ui_active();
         if(guide && !guide_seen)for(int i=0;i<MAX_PADS;i++)input_rumble((unsigned short)i,0,0);
         struct pad quick_pads[MAX_PADS];memcpy(quick_pads,pads,sizeof(pads));
         for(int i=0;i<MAX_PADS;i++)if(!physical_connected[i])quick_pads[i].present=false;
-        bool quick_quit=false;int mouse_action=-1;
+        bool quick_quit=false,quick_close_app=false;int mouse_action=-1;
+        bool quick_was_open=quick.open;
         if(!InterlockedCompareExchange(&quick_available,0,0)){if(quick.open){quick.open=false;quick.neutral=true;}quick.latch=true;}
         bool local=block_launch;
-        if(!block_launch)local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&mouse_action,started);
+        if(!block_launch && !shortcut_fired)local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&quick_close_app,&mouse_action,started);
+        if(quick.refresh_request)video_request_picture_refresh();
+        video_refresh_tick(started);
+        if(!quick_was_open && quick.open)plat_log("[INPUT] Quick Menu combo detected\n");
         if(quick_quit)InterlockedExchange(&quit_requested,1);
+        if(quick_close_app)InterlockedExchange(&close_app_requested,1);
+        if(quick_quit)plat_log("[INPUT] Quick Menu action consumed\n");
+        for(int i=0;i<MAX_PADS;i++)if(shortcut_consumed[i]){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         if(mouse_action>=0) {
             bool old=remote.mouse[mouse_action];
             for(int i=0;i<MAX_PADS;i++){if(remote.mouse[i])remote.suppress[i]=true;remote_mouse_release(&remote,i);remote.mouse[i]=false;}
@@ -244,7 +283,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;
             if(!physical_connected[i])pads[i].present=false;
-            if(!local)remote_pad(&remote,pads+i,i,started,guide,input_exit_mask(stream_settings.quit_combo));
+            if(!local && !shortcut_consumed[i])remote_pad(&remote,pads+i,i,started,guide,input_exit_mask(stream_settings.quit_combo));
             if(!InterlockedCompareExchange(&mouse_available,0,0) && remote.mouse[i]){remote_mouse_release(&remote,i);remote.mouse[i]=false;remote.suppress[i]=true;}
             pads[i].present=present;
         }
@@ -255,15 +294,14 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
             bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;
         }
         uint64_t send=perf_enabled()?perf_clock():0;
-        if (input_session_step(&session, pads, mask, GetTickCount(), &stream_settings))
-            quit_requested = true;
+        input_session_step(&session, pads, mask, GetTickCount(), &stream_settings);
         if(send)perf_record(PERF_INPUT_SEND,perf_clock()-send);
         if(poll)perf_record(PERF_INPUT_WORK,perf_clock()-poll);
-        /* Include polling/sending in the 4 ms period instead of adding it
+        /* Include polling/sending in the selected period instead of adding it
          * to every sleep. After an overrun yield for 1 ms; never burst polls
          * or busy-spin on the hardware thread shared with presentation. */
         DWORD elapsed = GetTickCount() - started;
-        Sleep(elapsed < SEND_INTERVAL_MS ? SEND_INTERVAL_MS - elapsed : 1);
+        Sleep(elapsed < stream_interval_ms ? stream_interval_ms - elapsed : 1);
     }
     remote_release(&remote);
     InterlockedExchange(&mouse_mode,0);
@@ -275,10 +313,13 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
 void input_stream_start(void)
 {
     if (stream_thread) return;
+    plat_log(stream_interval_ms==2 ? "[INPUT] polling target 2 ms; disconnected reprobe 100 ms\n" :
+             "[INPUT] polling target 4 ms; disconnected reprobe 100 ms\n");
     InterlockedExchange(&mouse_available,1);
     InterlockedExchange(&quick_available,1);
     InterlockedExchange(&quick_snapshot,0);
     InterlockedExchange(&quit_requested,0);
+    InterlockedExchange(&close_app_requested,0);
     InterlockedExchange(&stream_active,1);
     InterlockedIncrement(&rumble_generation);
     InterlockedExchange(&rumble_connected_mask,0);
@@ -314,8 +355,9 @@ void input_stream_stop(void)
 
 bool input_quit_requested(void)
 {
-    return quit_requested;
+    return InterlockedCompareExchange(&quit_requested,0,0)!=0;
 }
+bool input_close_app_requested(void){return InterlockedCompareExchange(&close_app_requested,0,0)!=0;}
 
 void input_rumble(unsigned short controller, unsigned short low, unsigned short high)
 {

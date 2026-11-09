@@ -25,26 +25,28 @@ static void gpu_options_parse(const char *text,int *pipeline,int *shader)
         }
     }
 }
-enum gpu_slot_state { GPU_FREE, GPU_WRITING, GPU_READY, GPU_IN_FLIGHT };
+enum gpu_slot_state { GPU_FREE, GPU_WRITING, GPU_READY, GPU_IN_FLIGHT, GPU_HISTORY };
 struct gpu_slot { int state; uint32_t serial, fence; };
-static int gpu_slot_write(struct gpu_slot slots[3])
+static int gpu_slot_write_count(struct gpu_slot *slots,int count)
 {
     int i;
-    for (i=0;i<3;i++) if (slots[i].state==GPU_FREE) { slots[i].state=GPU_WRITING; return i; }
+    for (i=0;i<count;i++) if (slots[i].state==GPU_FREE) { slots[i].state=GPU_WRITING; return i; }
     return -1;
 }
-static int gpu_slot_latest(struct gpu_slot slots[3], unsigned *discarded)
+static int gpu_slot_latest_count(struct gpu_slot *slots,int count,unsigned *discarded)
 {
     int i, newest=-1;
     *discarded=0;
-    for (i=0;i<3;i++) if (slots[i].state==GPU_READY &&
+    for (i=0;i<count;i++) if (slots[i].state==GPU_READY &&
         (newest<0 || (int32_t)(slots[i].serial-slots[newest].serial)>0)) newest=i;
-    for (i=0;i<3;i++) if (slots[i].state==GPU_READY && i!=newest) {
+    for (i=0;i<count;i++) if (slots[i].state==GPU_READY && i!=newest) {
         slots[i].state=GPU_FREE; (*discarded)++;
     }
     if (newest>=0) { slots[newest].state=GPU_IN_FLIGHT; slots[newest].fence=0; }
     return newest;
 }
+static int gpu_slot_write(struct gpu_slot slots[3]){return gpu_slot_write_count(slots,3);}
+static int gpu_slot_latest(struct gpu_slot slots[3],unsigned *discarded){return gpu_slot_latest_count(slots,3,discarded);}
 #define GPU_TIME_SAMPLES 256
 struct gpu_time_window { uint32_t us[GPU_TIME_SAMPLES]; unsigned count, next; };
 static void gpu_time_add(struct gpu_time_window *w, uint32_t us)

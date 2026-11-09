@@ -10,9 +10,11 @@ fixture=r'''
 #include <stdio.h>
 #include <string.h>
 typedef int LONG;typedef unsigned char BYTE;
-static bool covered,thread_pinned;
+static bool covered,thread_pinned,freeze_first_audio_submit;
+static void plat_diagnostics_checkpoint(const char*){}
 static LONG desired_volume=37;static int applied_volume=-1;
 static int decoded,submitted,next_buffer,channels=2,output_channels=2;
+static int nominal_frame_samples=480,audio_sample_rate=48000;
 enum {MAX_FRAME_SAMPLES=960,MAX_QUEUED=3,BUFFERS=8};
 static int16_t pcm[BUFFERS][MAX_FRAME_SAMPLES*6];
 struct XAUDIO2_VOICE_STATE {unsigned BuffersQueued;};

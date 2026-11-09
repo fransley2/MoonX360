@@ -1620,6 +1620,7 @@ static void referenceFrameControlFunc(void* context) {
 }
 
 static void requestIdrFrameFunc(void* context) {
+    uint64_t lastIdrRequestMs = 0;
     while (!PltIsThreadInterrupted(&requestIdrFrameThread)) {
         PltWaitForEvent(&idrFrameRequiredEvent);
         PltClearEvent(&idrFrameRequiredEvent);
@@ -1629,11 +1630,20 @@ static void requestIdrFrameFunc(void* context) {
             return;
         }
 
+        /* The event coalesces simultaneous requests. Also bound repeated
+         * decoder failures without losing the one pending recovery request. */
+        uint64_t now = PltGetMillis();
+        if (lastIdrRequestMs && now >= lastIdrRequestMs && now - lastIdrRequestMs < 250)
+            PltSleepMsInterruptible(&requestIdrFrameThread, (int)(250 - (now - lastIdrRequestMs)));
+        if (stopping || PltIsThreadInterrupted(&requestIdrFrameThread))
+            return;
+
         // Any pending RFI requests and LTR frame ACK messages are now redundant
         freeBasicLbqList(LbqFlushQueueItems(&referenceFrameControlQueue));
 
         // Request the IDR frame
         requestIdrFrame();
+        lastIdrRequestMs = PltGetMillis();
     }
 }
 

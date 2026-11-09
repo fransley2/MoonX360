@@ -8,6 +8,7 @@
 #include <Limelight.h>
 #define MAX_APPS 64
 #include "../../../src/config.h"
+#include "../../../src/aurora_launch.h"
 #include "../../../src/product_features.h"
 #include "../../../src/session_history.h"
 #include "../../../src/library_state.h"
@@ -16,6 +17,9 @@
 #include "../../../src/input.h"
 #include "../../../src/ui/ui.h"
 static struct config cfg;
+static bool aurora_direct_active;
+static bool stream_return_home;
+static struct moonx_launch_data aurora_direct_data;
 static struct host_cache hosts;
 static struct game_bindings game_bindings;
 static struct session_history session_history;
@@ -24,7 +28,7 @@ static char library_query[64];
 static struct {int id;char name[64];} apps[64];static int app_count;
 static struct {bool paired;int current_game;} server;
 static bool server_ok,host_cache_save_failed,accept_edit=true;static char server_error[128];
-static unsigned next_discovery,adaptive_reconnects;
+static unsigned next_discovery,adaptive_reconnects,video_reconnects;
 static std::deque<int> keys;
 static std::map<std::string,std::string> files;
 static int messages,writes,stream_calls,used_width,used_audio,wakes;
@@ -36,14 +40,17 @@ static void message(int,const char*,const char*){messages++;}
 void ui_draw_settings_page(const char*,const ui_setting *rows,int n,int sel){assert(n>0 && sel>=0 && sel<n);for(int i=0;i<n;i++)assert(rows[i].label && rows[i].value);}
 void ui_draw_settings_options(const char *title,const ui_setting *rows,const int *kinds,int n,int sel){for(int i=0;i<n;i++)assert(kinds[i]);ui_draw_settings_page(title,rows,n,sel);}
 void ui_present(){}
+const char *ui_translate(const char *text){return text;}
 int ui_location_enter(const char*){return 0;}void ui_location_restore(int){}
 static bool edit_profile_name(char *text){if(accept_edit)strcpy(text,"My PC");return accept_edit;}
+static bool edit_search_query(char text[64]){if(accept_edit)strcpy(text,"My PC");return accept_edit;}
 static void clear_apps(){app_count=0;}
 static bool wake_host(){wakes++;return true;}
 static void edit_host_mac(){}
 static const char *gs_error(){return "Permission denied";}
 static void host_options_menu(){}
 static bool stream_once(int,const char*){stream_calls++;used_width=cfg.width;used_audio=cfg.audio_mode;return false;}
+static bool stream_session(int id,const char *title){return stream_once(id,title);}
 static void refresh_server(){}
 static void remember_played_art(int){}
 /* ACTUAL_FUNCTIONS */
@@ -65,7 +72,7 @@ int main(){
     keys={A_FLAG};game_profile_menu(42);assert(!strcmp(game_bindings.items[0].profile,"factory:2"));assert(keys.empty());
     config current=cfg;config profile=cfg;profile.width=1920;profile.height=1080;profile.fps=60;profile.audio_mode=1;profile.stream_profile=0;
     user_profiles saved={};saved.slot=-1;assert(config_profiles_create(&saved,&profile,"TV"));
-    keys={DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,A_FLAG};game_profile_menu(42);assert(keys.empty());
+    keys.clear();for(int i=2;i<CONFIG_PROFILE_COUNT;i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);game_profile_menu(42);assert(keys.empty());
     assert(!strcmp(game_bindings.items[0].profile,"user:TV"));stream(42,"Game");assert(stream_calls==1 && used_width==1920 && used_audio==1 && !memcmp(&cfg,&current,sizeof(cfg)));
     files.erase("profiles-a.tsv");files.erase("profiles-b.tsv");int notices=messages;stream(42,"Game");assert(used_width==current.width && messages==notices+1 && !memcmp(&cfg,&current,sizeof(cfg)));
     puts("PASS: actual controller per-game factory/saved selection, next-launch apply, missing profile fallback and global restoration");

@@ -4,6 +4,7 @@
  * tiny tag-extracting XML reader.
  */
 #include "gamestream.h"
+#include "performance.h"
 #include "http.h"
 #include "wake.h"
 #include "performance.h"
@@ -249,7 +250,7 @@ static bool load_serverinfo(struct gs_server *srv, bool https)
 
     make_uuid(uuid);
     snprintf(path, sizeof(path), "/serverinfo?uniqueid=%s&uuid=%s", UNIQUE_ID, uuid);
-    if(srv->wake_cancel) {
+    if(srv->wake_cancel && !https) {
         if(!http_get_plain_probe(srv->address,srv->http_port,path,srv->info_timeout_ms,srv->wake_cancel,&r))return false;
         if(r.status!=200){http_response_free(&r);return false;}
     } else if (!request(srv, https, path, srv->info_timeout_ms?srv->info_timeout_ms:TIMEOUT_MS, &r))
@@ -281,20 +282,31 @@ static bool load_serverinfo(struct gs_server *srv, bool https)
         }
     }
 
-    if (appver && state && current) {
+    uint32_t current_id=0;
+    bool current_valid=current && gs_u32_text(current,&current_id) && current_id<=2147483647u;
+    if (appver && state && current_valid &&
+        ((strstr(state,"_SERVER_BUSY") && current_id>0) || (strstr(state,"_SERVER_FREE") && current_id==0))) {
         srv->paired = paired && strcmp(paired, "1") == 0;
         snprintf(srv->app_version, sizeof(srv->app_version), "%s", appver);
         snprintf(srv->gfe_version, sizeof(srv->gfe_version), "%s", gfever ? gfever : "");
         srv->server_major_version = atoi(appver);
         srv->is_nvidia = strstr(state, "MJOLNIR") != NULL;
         srv->codec_mode_support = codec ? atoi(codec) : SCM_H264;
-        srv->current_game = strstr(state, "_SERVER_BUSY") ? atoi(current) : 0;
+        srv->current_game = (int)current_id;
+        {
+            char line[160];
+            snprintf(line,sizeof(line),"[HOST] serverinfo state=%.48s currentgame=%d active_app=%d\n",
+                     state,atoi(current),srv->current_game);
+            plat_log(line);
+        }
         uint32_t secure_port=0;
         if(https_port && gs_u32_text(https_port,&secure_port) && secure_port>0 && secure_port<=65535)
             srv->https_port=(unsigned short)secure_port;
         ok = true;
     } else {
-        set_error("Host sent incomplete server info", NULL);
+        srv->current_game=-1;
+        last_error_kind=GS_ERROR_PROTOCOL;
+        set_error("Host sent incomplete or invalid server info", NULL);
     }
 
     free(paired);
@@ -691,13 +703,15 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
     int fps;
     bool resume;
 
+    if(app_id<=0){last_error_kind=GS_ERROR_APP_MISSING;set_error("Invalid app ID",NULL);return false;}
     char expected_host[80];snprintf(expected_host,sizeof(expected_host),"%s",srv->uuid);
     /* Cached state can outlive a crash, host restart or a game closed on PC.
      * Never resume another app and relabel it as the requested one. */
     if (!load_serverinfo(srv,true))
         return false;
-    if(expected_host[0] && !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
+    if(!wake_identity_valid(expected_host) || !wake_identity_valid(srv->uuid) || !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
     if (srv->current_game && srv->current_game != app_id) {
+        last_error_kind=GS_ERROR_APP_MISSING;
         set_error("Another app is running on the PC. Return to the app list to select or close it.",NULL);
         return false;
     }
@@ -725,6 +739,7 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
              sops ? 1 : 0, rikey, (int)rikeyid, local_audio ? 1 : 0,
              SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(cfg->audioConfiguration), 0xF, 0xF,
              LiGetLaunchUrlQueryParameters());
+    perf_request_fps(PERF_FPS_LAUNCH_REQUEST,fps,cfg->clientRefreshRateX100);
 
     /* One bounded launch request. Do not retry permission/protocol failures. */
     if (!request(srv, true, path, 15000, &r))
@@ -751,6 +766,7 @@ bool gs_launch(struct gs_server *srv, STREAM_CONFIGURATION *cfg, int app_id, boo
     srv->info.rtspSessionUrl = session;
     srv->current_game = app_id;
 
+
     http_response_free(&r);
     return true;
 }
@@ -765,7 +781,7 @@ bool gs_quit(struct gs_server *srv)
     int requested_app=srv->current_game;char expected_host[80];snprintf(expected_host,sizeof(expected_host),"%s",srv->uuid);
     /* Refresh the authenticated control state, independently from video RTSP. */
     if(!load_serverinfo(srv,true))return false;
-    if(expected_host[0] && !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
+    if(!wake_identity_valid(expected_host) || !wake_identity_valid(srv->uuid) || !wake_identity(expected_host,srv->uuid)){last_error_kind=GS_ERROR_IDENTITY;set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);return false;}
     if(!srv->current_game)return true;
     if(requested_app && srv->current_game!=requested_app){last_error_kind=GS_ERROR_APP_MISSING;set_error("The running app changed. Refresh the library before stopping it.",NULL);return false;}
     make_uuid(uuid);
@@ -774,13 +790,66 @@ bool gs_quit(struct gs_server *srv)
         return false;
     ok = xml_status_ok(r.body);
     result = ok ? xml_get(r.body, "cancel") : NULL;
-    ok = ok && result && strcmp(result, "0") != 0;
+    ok = ok && result && strcmp(result, "1") == 0;
     free(result);
     http_response_free(&r);
-    if (ok)
+    if (ok) {
         srv->current_game = 0;
-    else if (!last_error[0])
-        set_error("Host refused to quit the app", NULL);
+    }
+    else {
+        if(last_error_kind==GS_ERROR_NONE)last_error_kind=GS_ERROR_PROTOCOL;
+        if(!last_error[0])set_error("Host refused to quit the app or does not support cancel", NULL);
+    }
+    return ok;
+}
+
+/* Only stop the confirmed previous session. The caller launches separately,
+ * after refreshing its app list; a cancel acknowledgement alone is not idle. */
+bool gs_switch_app(struct gs_server *srv, int expected_previous_app, int target_app)
+{
+    char expected_host[80];
+    int saved_timeout=srv->info_timeout_ms;
+    bool ok=false;
+    uint32_t deadline;
+    if(target_app<=0 || expected_previous_app<0){
+        last_error_kind=GS_ERROR_APP_MISSING;set_error("Invalid app ID",NULL);return false;
+    }
+    snprintf(expected_host,sizeof(expected_host),"%s",srv->uuid);
+    srv->info_timeout_ms=500;
+    if(!load_serverinfo(srv,true))goto done;
+    if(!wake_identity_valid(expected_host) || !wake_identity_valid(srv->uuid) ||
+       !wake_identity(expected_host,srv->uuid))goto identity_changed;
+    if(!srv->current_game || srv->current_game==target_app){ok=true;goto done;}
+    if(srv->current_game!=expected_previous_app)goto app_changed;
+    /* gs_quit refreshes again and guards the confirmed app before /cancel. */
+    if(!gs_quit(srv))goto done;
+    deadline=plat_now_ms()+5000;
+    for(;;){
+        int32_t remaining=(int32_t)(deadline-plat_now_ms());
+        volatile int *cancel=srv->cancel?srv->cancel:request_cancel;
+        if(cancel && plat_atomic_load(cancel)){
+            last_error_kind=GS_ERROR_CANCELLED;set_error("Connection cancelled",NULL);goto done;
+        }
+        if(remaining<=0){
+            last_error_kind=GS_ERROR_PROTOCOL;set_error("The PC did not confirm that the app stopped in time.",NULL);goto done;
+        }
+        srv->info_timeout_ms=remaining<500?remaining:500;
+        if(!load_serverinfo(srv,true))goto done;
+        if(!wake_identity_valid(srv->uuid) || !wake_identity(expected_host,srv->uuid))goto identity_changed;
+        if(!srv->current_game){ok=true;goto done;}
+        if(srv->current_game!=expected_previous_app)goto app_changed;
+        remaining=(int32_t)(deadline-plat_now_ms());
+        if(remaining>0)plat_sleep_ms((unsigned int)(remaining<100?remaining:100));
+    }
+identity_changed:
+    last_error_kind=GS_ERROR_IDENTITY;
+    set_error("The PC at this IP has a different identity. Choose the intended PC again in Hosts.",NULL);
+    goto done;
+app_changed:
+    last_error_kind=GS_ERROR_APP_MISSING;
+    set_error("The running app changed. Refresh the library before stopping it.",NULL);
+done:
+    srv->info_timeout_ms=saved_timeout;
     return ok;
 }
 

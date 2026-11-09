@@ -1,7 +1,8 @@
 #pragma once
 static void display_render_size(int choice,int physical_w,int physical_h,int *w,int *h)
 {
-    if(choice==1){*w=848;*h=480;}
+    if(choice==4){*w=640;*h=480;}
+    else if(choice==1){*w=848;*h=480;}
     else if(choice==2){*w=1280;*h=720;}
     else if(choice==3){*w=1920;*h=1080;}
     else if(physical_h<=576 && physical_h>0){*w=848;*h=480;}

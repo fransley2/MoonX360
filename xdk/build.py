@@ -33,13 +33,17 @@ COMPAT_INC = os.path.join(XDK_DIR, "compat", "include")
 ENV["INCLUDE"] = os.pathsep.join([COMPAT_INC, os.path.join(JUL12, "include", "xbox"), os.path.join(XEDK, "include", "xbox")])
 ENV["LIB"] = os.pathsep.join([os.path.join(JUL12, "lib", "xbox"), os.path.join(XEDK, "lib", "xbox")])
 
-BASE = ["/nologo", "/c", "/O2", "/Oi", "/GF", "/Gy", "/MT", "/GR-", "/W3", "/wd4996",
-        "/D", "NDEBUG", "/D", "_XBOX", "/D", "XBOX"]
+CONFIGURATION = os.environ.get("XDK_CONFIGURATION", "Release")
+if CONFIGURATION not in ("Release","Debug"):
+    raise SystemExit("XDK_CONFIGURATION must be Release or Debug")
+BASE = ["/nologo", "/c", "/GF", "/Gy", "/MT", "/GR-", "/W3", "/wd4996",
+        "/D", "_XBOX", "/D", "XBOX"]
+BASE += ["/Od","/Zi","/D","MOONX_DEBUG_BUILD"] if CONFIGURATION=="Debug" else ["/O2","/Oi","/D","NDEBUG"]
 PROFILE = os.environ.get("XDK_OPTIMIZATION", "aggressive")
 if PROFILE not in ("aggressive", "compatible"):
     raise SystemExit("XDK_OPTIMIZATION must be aggressive or compatible")
 # Keep mbedTLS and the system compatibility layer on the original settings.
-HOT = [f for f in BASE if f != "/O2"] + ["/Ox", "/Ou", "/Oc"] if PROFILE == "aggressive" else BASE
+HOT = ([f for f in BASE if f != "/O2"] + ["/Ox", "/Ou", "/Oc"] if PROFILE == "aggressive" else BASE) if CONFIGURATION=="Release" else BASE
 
 MBEDTLS = os.path.join(DEPS, "mbedtls-2.16.12")
 OPUS = os.path.join(DEPS, "opus-1.5.2")
@@ -49,9 +53,30 @@ WORKER_MAP=os.environ.get('XDK_WORKER_MAP','current')
 if WORKER_MAP not in ('current','previous'):raise SystemExit('XDK_WORKER_MAP must be current or previous')
 SLICE_DISPATCH=os.environ.get('XDK_SLICE_DISPATCH','legacy')
 if SLICE_DISPATCH not in ('legacy','batched'):raise SystemExit('XDK_SLICE_DISPATCH must be legacy or batched')
+LOW_LATENCY_INPUT=os.environ.get('XDK_LOW_LATENCY_INPUT','0')
+if LOW_LATENCY_INPUT not in ('0','1'):raise SystemExit('XDK_LOW_LATENCY_INPUT must be 0 or 1')
+OPTIMIZED_YUV_COPY=os.environ.get('XDK_OPTIMIZED_YUV_COPY','0')
+if OPTIMIZED_YUV_COPY not in ('0','1'):raise SystemExit('XDK_OPTIMIZED_YUV_COPY must be 0 or 1')
+DIAGNOSTIC_LEGACY_UPLOAD=os.environ.get('XDK_DIAGNOSTIC_LEGACY_UPLOAD','0')
+if DIAGNOSTIC_LEGACY_UPLOAD not in ('0','1'):raise SystemExit('XDK_DIAGNOSTIC_LEGACY_UPLOAD must be 0 or 1')
+ADAPTIVE_FAST_DECODE=os.environ.get('XDK_ADAPTIVE_FAST_DECODE','0')
+if ADAPTIVE_FAST_DECODE not in ('0','1'):raise SystemExit('XDK_ADAPTIVE_FAST_DECODE must be 0 or 1')
+H264_REFERENCE_MODE=os.environ.get('XDK_H264_REFERENCE_MODE','0')
+if H264_REFERENCE_MODE not in ('0','1','2'):raise SystemExit('XDK_H264_REFERENCE_MODE must be 0, 1, or 2')
+H264_NO_RFI=os.environ.get('XDK_H264_NO_RFI','0')
+if H264_NO_RFI not in ('0','1'):raise SystemExit('XDK_H264_NO_RFI must be 0 or 1')
+H264_SINGLE_SLICE_REQUEST=os.environ.get('XDK_H264_SINGLE_SLICE_REQUEST','0')
+if H264_SINGLE_SLICE_REQUEST not in ('0','1'):raise SystemExit('XDK_H264_SINGLE_SLICE_REQUEST must be 0 or 1')
 IDENTITY_DEFS=['/D','XDK_WORKER_MAP_PREVIOUS='+str(int(WORKER_MAP=='previous')),
                '/D','XDK_SLICE_DISPATCH_BATCHED='+str(int(SLICE_DISPATCH=='batched')),
-               '/D','XDK_OPTIMIZATION_AGGRESSIVE='+str(int(PROFILE=='aggressive'))]
+               '/D','XDK_OPTIMIZATION_AGGRESSIVE='+str(int(PROFILE=='aggressive')),
+               '/D','LOW_LATENCY_INPUT='+LOW_LATENCY_INPUT,
+               '/D','OPTIMIZED_YUV_COPY='+OPTIMIZED_YUV_COPY,
+               '/D','DIAGNOSTIC_LEGACY_UPLOAD='+DIAGNOSTIC_LEGACY_UPLOAD,
+               '/D','ADAPTIVE_FAST_DECODE='+ADAPTIVE_FAST_DECODE,
+               '/D','XDK_H264_REFERENCE_MODE='+H264_REFERENCE_MODE,
+               '/D','XDK_H264_NO_RFI='+H264_NO_RFI,
+               '/D','XDK_H264_SINGLE_SLICE_REQUEST='+H264_SINGLE_SLICE_REQUEST]
 MBEDTLS_DEFS = ["/I", os.path.join(MBEDTLS, "include"), "/I", XDK_DIR,
                 "/D", 'MBEDTLS_USER_CONFIG_FILE="mbedtls_config_xdk.h"']
 
@@ -244,7 +269,7 @@ def target_app():
     shared = [os.path.join(ROOT, "src", f) for f in
               ("app.c", "config.c", "crypto.c", "http.c", "gamestream.c", "mdns.c", "mdns_net.c", "host_cache.c", "wake_net.c",
                "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c")]
-    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk")]
+    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk")]
     flags = HOT + IDENTITY_DEFS + ["/FIxdk_compat.h", "/I", os.path.join(MLC, "src"), "/I", os.path.join(OPUS, "include")] + MBEDTLS_DEFS
     srcs = [(s, ["/TP"]) for s in shared + platform]
     # Only the video module sees FFmpeg's headers: FFmpeg's root has its own config.h.
@@ -305,7 +330,9 @@ def target_xex():
     # The XDK linker otherwise auto-converts to XEX before our SPA/config exists.
     rc, out = run([TOOLS["link"], "/nologo", "/XEX:NO", "/OUT:" + exe, "/OPT:REF", "/OPT:ICF", "/STACK:524288",
                    "/MAP:" + os.path.join(OUT, "MoonX360.map"),
-                   "@" + rsp])
+                   "@" + rsp] + (["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    with open(exe + '.link.log', 'w', encoding='utf-8') as f:
+        f.write('exit=' + str(rc) + '\n' + out)
     if rc != 0:
         print(out)
         return None
@@ -323,6 +350,8 @@ def target_xex():
     config.write(config_path, encoding="utf-8", xml_declaration=True)
     rc, out = run([TOOLS["imagexex"], "/nologo", "/config:" + config_path,
                    "/out:" + xex, exe])
+    with open(xex + '.imagexex.log', 'w', encoding='utf-8') as f:
+        f.write('exit=' + str(rc) + '\n' + out)
     if rc != 0:
         print(out)
         return None
@@ -335,7 +364,78 @@ def target_xex():
     with open(spa, "rb") as expected, open(extracted, "rb") as actual:
         if expected.read() != actual.read():
             raise SystemExit("MoonX360 dashboard SPA did not survive XEX embedding")
+    install_dir=os.path.join(OUT,"MoonX360")
+    os.makedirs(install_dir,exist_ok=True)
+    import shutil
+    shutil.copy2(xex,os.path.join(install_dir,"default.xex"))
+    # Ship the Aurora utility with the install tree. The XEX alone has one
+    # static display title; per-item names are applied inside Aurora.
+    script_src=os.path.join(XDK_DIR,"aurora","MoonX360Sync","Main.lua")
+    script_dir=os.path.join(install_dir,"AuroraScripts","MoonX360Sync")
+    os.makedirs(script_dir,exist_ok=True)
+    shutil.copy2(script_src,os.path.join(script_dir,"Main.lua"))
+    shutil.copy2(os.path.join(ROOT,"assets","brand","MoonX360-64.png"),
+                 os.path.join(script_dir,"icon.png"))
+    probe_dir=os.path.join(install_dir,"AuroraScripts","MoonX360Probe")
+    os.makedirs(probe_dir,exist_ok=True)
+    shutil.copy2(os.path.join(XDK_DIR,"aurora","MoonX360Probe","Main.lua"),
+                 os.path.join(probe_dir,"Main.lua"))
+    shutil.copy2(os.path.join(ROOT,"assets","brand","MoonX360-64.png"),
+                 os.path.join(probe_dir,"icon.png"))
     print(f"  -> {os.path.relpath(xex, ROOT)} ({os.path.getsize(xex) // 1024} KB)")
+    return xex
+
+def shortcut_variant_flags(variant):
+    if variant not in ("normal","diagnostic","main_only"):
+        raise SystemExit("Unknown shortcut variant")
+    return (["/D","MOONX_SHORTCUT_DIAGNOSTIC"] if variant=="diagnostic" else
+            ["/D","MOONX_SHORTCUT_LAUNCH_MAIN_ONLY"] if variant=="main_only" else [])
+
+def target_shortcut_xex(variant="normal"):
+    """One launcher source, isolated normal/diagnostic/main-only outputs."""
+    import shutil
+    folder=os.path.join(OUT,"MoonX360Shortcut"+("" if variant=="normal" else "-"+variant))
+    os.makedirs(folder,exist_ok=True)
+    source=os.path.join(SRC,"aurora_shortcut_xdk.cpp")
+    flags=BASE+["/TP","/FIxdk_compat.h"]+shortcut_variant_flags(variant)
+    objects=compile_all("shortcut"+("" if variant=="normal" else "-"+variant),[(source,[])],flags,base=ROOT)
+    if objects is None:return None
+    exe=os.path.join(folder,"MoonX360Shortcut.exe")
+    rc,out=run([TOOLS["link"],"/nologo","/XEX:NO","/OUT:"+exe,"/OPT:REF","/OPT:ICF"]+objects+
+               ["xapilib.lib","xboxkrnl.lib"]+(["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    with open(exe+'.link.log','w',encoding='utf-8') as f:f.write('exit='+str(rc)+'\n'+out)
+    if rc!=0:print(out);return None
+    tree=ET.parse(os.path.join(XDK_DIR,"MoonX360.xlast"))
+    root=tree.getroot()
+    game=next(e for e in root.iter() if e.tag.endswith("GameConfigProject"))
+    game.set("name","MoonX360 Shortcut");game.set("titleName","MoonX360 Shortcut")
+    game.set("titleId","0x4D583353")
+    for e in root.iter():
+        if e.tag.endswith("Translation") and e.text=="MoonX360":e.text="MoonX360 Shortcut"
+    xlast=os.path.join(folder,"MoonX360Shortcut.xlast")
+    tree.write(xlast,encoding="utf-8",xml_declaration=True)
+    spa=os.path.join(folder,"MoonX360Shortcut.spa")
+    rc,out=run([os.path.join(XEDK,"bin","win32","spac.exe"),"-nologo","-noh","-o",spa,xlast],cwd=XDK_DIR)
+    if rc!=0 or "error" in out.lower() or not os.path.isfile(spa):print(out);return None
+    config=ET.parse(os.path.join(XDK_DIR,"xex.xml"))
+    config.getroot().find("titleid").set("id","0x4D583353")
+    ET.SubElement(config.getroot(),"section",name="4D583353",file=spa,memory="RO")
+    config_path=os.path.join(folder,"MoonX360Shortcut.xex.xml")
+    config.write(config_path,encoding="utf-8",xml_declaration=True)
+    xex=os.path.join(folder,"default.xex")
+    rc,out=run([TOOLS["imagexex"],"/nologo","/config:"+config_path,"/out:"+xex,exe])
+    with open(xex+'.imagexex.log','w',encoding='utf-8') as f:f.write('exit='+str(rc)+'\n'+out)
+    if rc!=0:print(out);return None
+    extracted=os.path.join(folder,"MoonX360Shortcut-embedded.spa")
+    rc,out=run([TOOLS["imagexex"],"/dump","/sectionname:4D583353","/sectionfile:"+extracted,xex])
+    if rc!=0 or not os.path.isfile(extracted):print(out);return None
+    with open(spa,"rb") as expected,open(extracted,"rb") as actual:
+        if expected.read()!=actual.read():raise SystemExit("Shortcut SPA embedding failed")
+    if variant=="normal":
+        installed_template=os.path.join(OUT,"MoonX360","MoonX360Shortcut")
+        os.makedirs(installed_template,exist_ok=True)
+        shutil.copy2(xex,os.path.join(installed_template,"default.xex"))
+    print(f"  -> {os.path.relpath(xex,ROOT)} ({os.path.getsize(xex)//1024} KB)")
     return xex
 
 
@@ -346,6 +446,9 @@ TARGETS = {
     "moonlight": target_moonlight,
     "app": target_app,
     "xex": target_xex,
+    "shortcut_xex": target_shortcut_xex,
+    "shortcut_diagnostic": lambda: target_shortcut_xex("diagnostic"),
+    "shortcut_main_only": lambda: target_shortcut_xex("main_only"),
 }
 
 if __name__ == "__main__":

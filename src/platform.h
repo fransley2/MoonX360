@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "config.h"
+#include "console_link.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ uint32_t *plat_decode_art(const unsigned char *data, size_t len, int tw, int th)
 
 /* The console's IP address for display, e.g. "192.168.1.99". */
 const char *plat_console_ip(void);
+int plat_network_link(void); /* console's local link only, not the complete host path */
+int plat_crt_output_status(void); /* 1 SD interlaced NTSC-class, -1 incompatible, 0 unknown */
 
 /* Adjusts loaded settings to what this build supports (e.g. renderer). */
 void plat_fixup_config(struct config *cfg);
@@ -52,6 +55,10 @@ bool plat_has_diagnostics(void);
 void plat_diagnostics_configure(bool enabled);
 void plat_diagnostics_checkpoint(const char *phase);
 void plat_diagnostics_flush(void);
+#ifdef _XBOX
+/* Cold, bounded copies of the last five completed diagnostic sessions. */
+void plat_archive_session_reports(void);
+#endif
 /* A bounded textual snapshot for the in-app viewer. */
 void plat_diagnostics_read(char *out, size_t capacity, bool previous);
 /* Once the connecting UI is finished, release its GPU-only textures. */
@@ -70,14 +77,24 @@ bool plat_system_ui_active(void);
 bool plat_power_action(bool restart);
 bool plat_restart_available(void);
 bool plat_restart_app(void);
+/* Called only after the shared stream/session teardown has completed. */
+void plat_exit_to_dashboard(void);
 
 #ifdef _XBOX
 /* 1 accepted, 0 cancelled, -1 unavailable (controller editor fallback). */
 int plat_edit_profile_name(char *name,size_t capacity);
+int plat_edit_text(char *text,size_t capacity,const char *title);
 #endif
 
 /* Runs the whole app (splash, identity, menus). Platform init must be done. */
 void app_main(void);
+#ifdef _XBOX
+/* One-shot XDK launch data. Returns false for absent/invalid data. */
+struct moonx_launch_data;
+bool plat_direct_launch_read(struct moonx_launch_data *out);
+void plat_direct_launch_stage(const char *stage);
+void plat_prepare_video(void);
+#endif
 
 #ifdef __cplusplus
 }

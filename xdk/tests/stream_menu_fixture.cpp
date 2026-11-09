@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <set>
+#include "src/video.h"
+#include "src/quick_menu.h"
 typedef unsigned DWORD;
 #define FAILED(x) ((x)<0)
 #define D3DFMT_LIN_A8R8G8B8 1
@@ -22,6 +24,9 @@ static bool cv_init(canvas_t *c,int w,int h){c->px=(uint32_t*)calloc(w*h,4);c->w
 static void cv_free(canvas_t *c){free(c->px);c->px=NULL;canvas_releases++;}
 static void cv_fill(canvas_t *c,int x,int y,int w,int h,uint32_t){assert(c->px && x>=0 && y>=0 && x+w<=c->w && y+h<=c->h);}
 static void cv_circle(canvas_t *c,float x,float y,float r,uint32_t){assert(c->px && x-r>=0 && y-r>=0 && x+r<c->w && y+r<c->h);}
+static void cv_ring(canvas_t *c,float x,float y,float r,float,uint32_t){cv_circle(c,x,y,r,0);}
+static void cv_line(canvas_t *c,float x,float y,float xx,float yy,float,uint32_t){assert(c->px && x>=0 && y>=0 && xx>=0 && yy>=0 && x<c->w && y<c->h && xx<c->w && yy<c->h);}
+static void cv_triangle(canvas_t *c,float x,float y,float xx,float yy,float xxx,float yyy,uint32_t){assert(c->px && x>=0 && y>=0 && xx>=0 && yy>=0 && xxx>=0 && yyy>=0 && x<c->w && xx<c->w && xxx<c->w && y<c->h && yy<c->h && yyy<c->h);}
 static void cv_rrect(canvas_t *c,float x,float y,float w,float h,float,uint32_t){assert(c->px && x>=0 && y>=0 && x+w<=c->w && y+h<=c->h);}
 static void cv_rrect_outline(canvas_t *c,float x,float y,float w,float h,float,float,uint32_t){assert(c->px && x>=0 && y>=0 && x+w<=c->w && y+h<=c->h);}
 static void font_draw_fit(canvas_t *c,int,int,int x,int y,int width,uint32_t,const char *s){assert(c->px && x>=0 && y>0 && y<c->h && x+width<=c->w && s);}
@@ -29,11 +34,18 @@ static int font_draw_wrapped(canvas_t *c,int,float,int x,int y,int width,float,u
 struct D3DTexture {DWORD fence;D3DTexture():fence(0){}void Release(){assert(!gfx_fence_pending(fence));releases++;delete this;}};
 struct D3DDevice {
  D3DTexture *bound;
- int CreateTexture(int w,int h,int,int,int,int,D3DTexture **out,void*){assert((w==448 && h==640) || (w==512 && (h==128 || h==320)));if(fail_texture){*out=NULL;return -1;}*out=new D3DTexture;allocations++;return 0;}
+ int CreateTexture(int w,int h,int,int,int,int,D3DTexture **out,void*){assert((w==448 && h==640) || (w==640 && h==600) || (w==512 && h==128));if(fail_texture){*out=NULL;return -1;}*out=new D3DTexture;allocations++;return 0;}
  void SetTexture(int,D3DTexture *t){bound=t;}
 };
 static unsigned input_quick_snapshot(){return snapshot;}
 static bool input_mouse_active(){return false;}
+static bool video_xdk_is_streaming(){return true;}
+static void video_get_stats(video_stats *out){memset(out,0,sizeof(*out));out->actual_w=640;out->actual_h=480;out->display_w=640;out->display_h=480;out->decoded=1;}
+static void video_get_quick_info(video_quick_info *out){memset(out,0,sizeof(*out));out->requested_w=640;out->requested_h=480;out->requested_fps=60;out->bitrate_kbps=10000;out->decode_workers=4;out->slices=8;}
+static void video_get_refresh_snapshot(video_refresh_snapshot *out){memset(out,0,sizeof(*out));}
+static void gfx_backbuffer_size(int *w,int *h){*w=640;*h=480;}
+static int gfx_layout_width(){return style?1280:960;}
+static void gfx_draw_layout_rect(D3DDevice *d,int mode,float x,float y,float r,float b);
 static void input_quick_ui_unavailable(){unavailable++;}
 static int audio_output_channels(){return 2;}
 static const char *audio_fallback_reason(){return reason;}
@@ -45,8 +57,9 @@ static void plat_log(const char*){}
 static DWORD GetTickCount(){return tick;}
 static bool gfx_system_ui_active(){return guide;}
 static void gfx_wait_fence(D3DDevice*,DWORD fence){assert(fence);waits++;for(std::set<DWORD>::iterator i=pending.begin();i!=pending.end() && *i<=fence;)pending.erase(i++);}
-static bool gfx_upload(D3DTexture *t,const void*,int pitch,int row,int height){assert(!gfx_fence_pending(t->fence) && ((pitch==1792 && row==1792 && height==640)||(pitch==2048 && row==2048 && (height==128 || height==320))));uploads++;return !fail_upload;}
+static bool gfx_upload(D3DTexture *t,const void*,int pitch,int row,int height){assert(!gfx_fence_pending(t->fence) && ((pitch==1792 && row==1792 && height==640)||(pitch==2560 && row==2560 && height==600)||(pitch==2048 && row==2048 && height==128)));uploads++;return !fail_upload;}
 static void gfx_draw_rect(D3DDevice *d,int,float x,float y,float r,float b){assert(d->bound);last_x=x;last_y=y;last_right=r;last_bottom=b;draws++;}
+static void gfx_draw_layout_rect(D3DDevice *d,int mode,float x,float y,float r,float b){gfx_draw_rect(d,mode,x,y,r,b);}
 static unsigned hud_draws,hud_masks;
 static void gfx_draw_hud_rect(D3DDevice *d,float x,float y,float r,float b){hud_draws++;gfx_draw_rect(d,3,x,y,r,b);}
 static void gfx_hud_pixels(uint32_t *pixels,int w,int h){assert(pixels && w==512 && h==128);hud_masks++;}
@@ -55,13 +68,13 @@ static void submit(DWORD fence){gfx_stream_menu_submitted(fence);for(int i=0;i<2
 int main(){
  D3DDevice d={};gfx_stream_menu_draw(&d,1,1,0,1000,false);assert(!allocations && !draws);
  for(style=0;style<2;style++){
-  snapshot=1|(100<<4);gfx_stream_menu_draw(&d,1,1,0,1000,false);
-  int width=style?448:512,height=style?640:320;assert(panels[0].canvas.w==width && panels[0].canvas.h==height);
-  assert(last_x==(style?40:384) && last_y==(style?40:190) && last_right==(style?488:896) && last_bottom==(style?680:510));
+  snapshot=QUICK_OPEN|(100<<QUICK_VOLUME_SHIFT);gfx_stream_menu_draw(&d,1,1,0,1000,false);
+  int width=style?448:640,height=style?640:600;assert(panels[0].canvas.w==width && panels[0].canvas.h==height);
+  assert(last_x==(style?38:160) && last_y==(style?40:60) && last_right==(style?486:800) && last_bottom==(style?680:660));
   D3DTexture *first=panels[0].texture;unsigned initial=uploads;submit(1);
   snapshot|=2;gfx_stream_menu_draw(&d,2,2,0,1000,false);
   assert(uploads==initial+1 && panels[0].texture!=first && panels[0].spare==first);submit(2);
-  snapshot=1|4|(100<<4);initial=uploads;gfx_stream_menu_draw(&d,2,2,0,1000,false);assert(uploads==initial);submit(3); // both busy
+  snapshot=QUICK_OPEN|(2<<QUICK_ROW_SHIFT)|(100<<QUICK_VOLUME_SHIFT);initial=uploads;gfx_stream_menu_draw(&d,2,2,0,1000,false);assert(uploads==initial);submit(3); // both busy
   pending.erase(1);gfx_stream_menu_draw(&d,2,2,0,1000,false);assert(uploads==initial+1 && panels[0].texture==first && panels[0].previous==snapshot);submit(4);
   // Upload failure on the free spare must keep the last complete image.
   D3DTexture *complete=panels[0].texture;pending.erase(2);pending.erase(3);snapshot|=8;fail_upload=true;
@@ -72,10 +85,10 @@ int main(){
   unsigned before=draws;guide=true;gfx_stream_menu_draw(&d,3,3,0,1000,false);assert(draws==before);guide=false;
   for(unsigned cycle=0;cycle<100;cycle++){
    snapshot=0;gfx_stream_menu_draw(&d,1,1,0,1000,false);
-   snapshot=1|((cycle%6)<<1)|(100<<4);gfx_stream_menu_draw(&d,1,1,0,1000,false);
+   snapshot=QUICK_OPEN|((cycle%8)<<QUICK_ROW_SHIFT)|(100<<QUICK_VOLUME_SHIFT);gfx_stream_menu_draw(&d,1,1,0,1000,false);
   }
   assert(allocations==created);reason="Stereo fallback: host negotiated stereo.";snapshot=1|8;gfx_stream_menu_draw(&d,1,1,0,1000,false);reason=NULL;
-  snapshot=4096;gfx_stream_menu_draw(&d,4,4,0,1000,false);assert(last_x==16 && last_y==16 && last_right==528 && last_bottom==144);
+  snapshot=QUICK_STATS;gfx_stream_menu_draw(&d,4,4,0,1000,false);assert(last_x==16 && last_y==16 && last_right==528 && last_bottom==144);
   assert(hud_draws && hud_masks);pending.clear();unsigned start_uploads=uploads;tick+=1000;gfx_stream_menu_draw(&d,34,34,0,1000,false);assert(uploads==start_uploads+1 && panels[1].last_shown==34);
   before=draws;gfx_stream_menu_draw(&d,4,4,0,1000,true);assert(draws==before);
   submit(10);gfx_stream_menu_reset(&d);pending.clear();assert(allocations==releases && canvas_allocations==canvas_releases);

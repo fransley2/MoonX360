@@ -131,6 +131,22 @@ void video_get_stats(struct video_stats *out)
 {
     *out = stats;
 }
+void video_get_quick_info(struct video_quick_info *out)
+{
+    memset(out,0,sizeof(*out));
+    out->requested_w=options.width;out->requested_h=options.height;
+    out->requested_fps=options.target_fps;out->bitrate_kbps=options.bitrate_kbps;
+    out->slices=options.slice_count;out->renderer=options.renderer;
+    out->fast_decode=options.fast_decode;out->shader_mode=options.shader_mode;
+    out->decode_workers=options.decode_workers;
+}
+
+bool video_request_picture_refresh(void) { return false; }
+void video_refresh_tick(uint32_t now_ms) { (void)now_ms; }
+void video_get_refresh_snapshot(struct video_refresh_snapshot *out)
+{
+    memset(out,0,sizeof(*out));out->state=VIDEO_REFRESH_UNAVAILABLE;
+}
 
 void video_set_network_stats(uint32_t rtt, uint32_t variance, bool valid,
                              int video_queue, int audio_queue_ms)
@@ -552,7 +568,10 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     if (codec_ctx == NULL)
         return -1;
     codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+    if(options.fast_decode)codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+    else codec_ctx->flags2 &= ~AV_CODEC_FLAG2_FAST;
+    codec_ctx->skip_frame = AVDISCARD_DEFAULT;
+    codec_ctx->skip_idct = AVDISCARD_DEFAULT;
     /*
      * The host encodes SLICES_PER_FRAME slices per frame (see capabilities);
      * FFmpeg decodes them in parallel on this thread plus hwpthread workers.

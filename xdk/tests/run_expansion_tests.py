@@ -14,7 +14,7 @@ def run(args):
     r=subprocess.run(list(map(str,args)),cwd=OUT,env=env,capture_output=True,text=True,errors='replace')
     print(r.stdout,r.stderr,flush=True)
     if r.returncode:raise SystemExit(r.returncode)
-flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/I'+str(ROOT/'evidencias/expansao-20261028/host'),'/I'+str(ROOT/'xdk/deps/moonlight-common-c/src')]
+flags=['/nologo','/O2','/EHsc','/D_CRT_SECURE_NO_WARNINGS','/Dstrtok_r=strtok_s','/I'+str(ROOT),'/I'+str(ROOT/'evidencias/expansao-20261028/host'),'/I'+str(ROOT/'xdk/deps/moonlight-common-c/src')]
 run([cl,*flags,*['/Tp'+str(ROOT/p) for p in ('xdk/tests/test_expansion.cpp','src/config.c','src/host_cache.c')],'/Feexpansion.exe'])
 run([OUT/'expansion.exe'])
 def function(text,signature):
@@ -27,10 +27,10 @@ functions='\n'.join(function(app,s) for s in (
     'static int selected_host_index(void)\n{','static const char *host_key(void)\n{','static const char *host_label(',
     'static void migrate_host_records(','static void save_hosts(',
     'static void connection_diagnosis_menu(','static void manage_host(void)\n{',
-    'static void game_profile_menu(int id)\n{','static void pointer_settings_menu(',
+    'static bool apply_game_profile(','static void game_profile_menu(int id)\n{','static void pointer_settings_menu(',
     'static void library_context(','static int library_map(',
     'static void stream(int app_id,'))
-fixture=(ROOT/'xdk/tests/expansion_menu_fixture.cpp').read_text().replace('/* ACTUAL_FUNCTIONS */',functions)
+fixture=(ROOT/'xdk/tests/expansion_menu_fixture.cpp').read_text().replace('/* ACTUAL_FUNCTIONS */','static bool prepare_selected_app(int){return true;}\n'+functions)
 (OUT/'expansion-menus.cpp').write_text(fixture)
 run([cl,*flags,OUT/'expansion-menus.cpp','/Tp'+str(ROOT/'src/config.c'),'/Tp'+str(ROOT/'src/host_cache.c'),'/Feexpansion-menus.exe'])
 run([OUT/'expansion-menus.exe'])
@@ -39,8 +39,20 @@ fixture=(ROOT/'xdk/tests/stream_menu_fixture.cpp').read_text().replace('/* ACTUA
 (OUT/'stream-menu.cpp').write_text(fixture)
 run([cl,*flags,OUT/'stream-menu.cpp','/Festream-menu.exe'])
 run([OUT/'stream-menu.exe'])
+video=(ROOT/'xdk/src/video_xdk.cpp').read_text()
+refresh='\n'.join(function(video,s) for s in (
+    'static bool request_picture_refresh(DWORD now,DWORD cooldown_ms)',
+    'bool video_request_picture_refresh(void)',
+    'void video_refresh_tick(uint32_t now_ms)',
+    'void video_get_refresh_snapshot(struct video_refresh_snapshot *out)',
+    'static void video_refresh_decoded_idr(uint32_t now_ms,uint32_t request)'))
+fixture=(ROOT/'xdk/tests/video_refresh_fixture.cpp').read_text().replace('/* ACTUAL_REFRESH */',refresh)
+fixture=fixture.replace('/* ACTUAL_REPORT */',function(video,'static void write_seamless_report(void)'))
+(OUT/'video-refresh.cpp').write_text(fixture)
+run([cl,*flags,OUT/'video-refresh.cpp','/Fevideo-refresh.exe'])
+run([OUT/'video-refresh.exe'])
 main=(ROOT/'xdk/src/main_xdk.cpp').read_text()
-fixture=(ROOT/'xdk/tests/storage_recovery_fixture.cpp').read_text().replace('/* ACTUAL_STORAGE */',function(main,'char *storage_read(')+'\n'+function(main,'static void storage_log_failure(')+'\n'+function(main,'bool storage_write('))
+fixture=(ROOT/'xdk/tests/storage_recovery_fixture.cpp').read_text().replace('/* ACTUAL_STORAGE */',function(main,'char *storage_read(')+'\n'+function(main,'static void storage_log_failure(')+'\n'+function(main,'bool storage_write(')+'\n'+function(main,'void plat_archive_session_reports('))
 (OUT/'storage-recovery.cpp').write_text(fixture)
 run([cl,*flags,OUT/'storage-recovery.cpp','/Festorage-recovery.exe'])
 run([OUT/'storage-recovery.exe'])

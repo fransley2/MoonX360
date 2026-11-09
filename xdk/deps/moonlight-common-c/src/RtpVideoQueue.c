@@ -1,4 +1,6 @@
 #include "Limelight-internal.h"
+#include "../../../../src/performance.h"
+#include "../../../../src/rtp_diagnostics.h"
 
 #include <rs.h>
 
@@ -161,6 +163,8 @@ static bool queuePacket(PRTP_VIDEO_QUEUE queue, PRTPV_QUEUE_ENTRY newEntry, PRTP
     // FEC recovery packets are synthesized by us, so don't use them to determine OOS data
     if (!isFecRecovery) {
         if (outOfSequence) {
+            queue->stats.packetCountOOS++;
+            perf_count(PERF_C_VIDEO_OOS,1);
             // This packet was received after a higher sequence number packet, so note that we
             // received an out of order packet to disable our speculative RFI recovery logic.
             queue->lastOosFramePresentationTimestamp = newEntry->presentationTimeUs;
@@ -336,6 +340,11 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
     LC_ASSERT(ret == 0);
 
     if (queue->bufferDataPackets != queue->receivedDataPackets) {
+        if(ret==0){
+            uint32_t recovered=queue->bufferDataPackets-queue->receivedDataPackets;
+            queue->stats.packetCountFecRecovered+=recovered;
+            perf_count(PERF_C_VIDEO_FEC_RECOVERED,recovered);
+        }
 #ifdef FEC_VERBOSE
         Limelog("Recovered %d video data shards from frame %d\n",
                 queue->bufferDataPackets - queue->receivedDataPackets,
@@ -544,6 +553,7 @@ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
 int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry) {
     if (isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber)) {
         // Reject packets behind our current buffer window
+        perf_count(PERF_C_VIDEO_LATE,1);
         return RTPF_RET_REJECTED;
     }
 
@@ -557,6 +567,8 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
     if (length < dataOffset + (int)sizeof(NV_VIDEO_PACKET)) {
         // Reject packets that are too small to fit a NV_VIDEO_PACKET header
+        queue->stats.packetCountInvalid++;
+        perf_count(PERF_C_VIDEO_INVALID,1);
         return RTPF_RET_REJECTED;
     }
 
@@ -594,6 +606,12 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
     if (queue->pendingFecBlockList.count == 0 || queue->currentFrameNumber != nvPacket->frameIndex ||
             queue->multiFecCurrentBlockNumber != fecCurrentBlockNumber) {
         if (queue->pendingFecBlockList.count != 0) {
+            if(queue->perfGapStartUs)perf_count(PERF_C_VIDEO_WAIT_LOST,1);
+            if(queue->receivedDataPackets<queue->bufferDataPackets) {
+                uint32_t deficit=rtp_diagnostic_deficit(queue->bufferDataPackets,queue->receivedDataPackets);
+                queue->stats.packetCountFecFailed+=deficit;
+                perf_count(PERF_C_VIDEO_FEC_FAILED,deficit);
+            }
             // Report the final status of the FEC queue before dropping this frame
             reportFinalFrameFecStatus(queue);
 
@@ -698,6 +716,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
         connectionSawFrame(queue->currentFrameNumber);
 
         queue->bufferFirstRecvTimeUs = PltGetMicroseconds();
+        queue->perfGapStartUs=0;queue->perfGapFilled=false;
         queue->bufferLowestSequenceNumber = U16(packet->sequenceNumber - fecIndex);
         queue->nextContiguousSequenceNumber = queue->bufferLowestSequenceNumber;
         queue->receivedDataPackets = 0;
@@ -714,8 +733,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
         queue->multiFecCurrentBlockNumber = fecCurrentBlockNumber;
         queue->multiFecLastBlockNumber = (nvPacket->multiFecBlocks >> 6) & 0x3;
 
-        queue->stats.packetCountVideo += queue->bufferDataPackets;
-        queue->stats.packetCountFec += queue->bufferParityPackets;
+        rtp_diagnostic_expected(&queue->stats,queue->currentFrameNumber,queue->bufferDataPackets,queue->bufferParityPackets,perf_enabled());
     }
 
     // Reject packets above our FEC queue valid sequence number range
@@ -759,20 +777,26 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             // queuePacket() accepted it, we must have received a missing packet.
             LC_ASSERT(queue->missingPackets > 0);
             queue->missingPackets--;
+            queue->perfGapFilled=true;
         }
 
         // We explicitly assert less-than because we know we received at least one packet (this one)
         LC_ASSERT(queue->missingPackets < queue->bufferDataPackets + queue->bufferParityPackets);
+        if(queue->missingPackets && !queue->perfGapStartUs && perf_enabled())queue->perfGapStartUs=PltGetMicroseconds();
 
         if (isBefore16(packet->sequenceNumber, queue->bufferFirstParitySequenceNumber)) {
             queue->receivedDataPackets++;
+            perf_count(PERF_C_VIDEO_DATA_ACCEPTED,1);
             LC_ASSERT(queue->receivedDataPackets <= queue->bufferDataPackets);
         }
         else {
             queue->receivedParityPackets++;
+            perf_count(PERF_C_VIDEO_FEC_ACCEPTED,1);
             LC_ASSERT(queue->receivedParityPackets <= queue->bufferParityPackets);
         }
 
+        rtp_diagnostic_accepted(&queue->stats,queue->currentFrameNumber,packetEntry->isParity,(uint32_t)length,
+            perf_enabled()?PltGetMicroseconds():0,perf_enabled());
         // Try to submit this frame. If we haven't received enough packets,
         // this will fail and we'll keep waiting.
         if (reconstructFrame(queue) == 0) {
@@ -792,6 +816,17 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             }
             else {
                 // Submit all FEC blocks to the depacketizer
+                if(perf_enabled()) {
+                    uint64_t completed=PltGetMicroseconds();
+                    if(queue->bufferFirstRecvTimeUs && completed>=queue->bufferFirstRecvTimeUs)
+                        perf_record(PERF_VIDEO_RTP_FRAME_SPAN,completed-queue->bufferFirstRecvTimeUs);
+                    if(queue->perfGapStartUs && completed>=queue->perfGapStartUs)
+                        perf_record(PERF_VIDEO_RTP_WAIT,completed-queue->perfGapStartUs);
+                    if(queue->perfGapFilled)perf_count(PERF_C_VIDEO_WAIT_RECOVERED,1);
+                    perf_count(PERF_C_VIDEO_FRAMES_COMPLETE,1);
+                    perf_frame_complete(queue->currentFrameNumber);
+                }
+                video_progress_note(VP_ASSEMBLED);
                 submitCompletedFrame(queue);
 
                 // submitCompletedFrame() should have consumed all completed FEC data

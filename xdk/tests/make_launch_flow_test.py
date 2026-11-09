@@ -11,11 +11,15 @@ def function(signature):
 
 once=function('static bool stream_once(')
 prefix=once[:once.index('    /* A cached online')]+ '\nreturn true;\n}'
-assert once.count('    launch_begin(')==1 and once.count('    art_launch_begin(')==1 and once.count('ui_launch_begin(')==1
+assert once.count('launch_begin(cover_delay')==1 and once.count('art_launch_begin(app_id)')==1 and once.count('ui_launch_begin(&launch_app')==1
 assert once.index('launch_present();')<once.index('discovery_pause();')<once.index('refresh_server();')
 retry=once[once.index('    if(cj.ret!=0 && !launch_cancelled()'):once.index('    if(task_was_cancelled || task_timed_out)',once.index('    if(cj.ret!=0 && !launch_cancelled()'))]
 assert 'launch_begin(' not in retry and 'launch_end(' not in retry and 'launch_prepare(' not in retry
 assert 'ui_draw_launch' not in source
+stream=function('static void stream(int app_id,')
+assert 'offer_crt_display' not in stream and 'config_crt_display' not in stream
+environment=function('static void offer_stream_environment(')
+assert 'config_crt_profile' not in environment and 'message(' not in environment
 
 fixture=r'''
 #define _XBOX 1
@@ -30,7 +34,9 @@ fixture=r'''
 #include "../src/launch_cover.h"
 #include "../src/ui/ui.h"
 static config cfg;
-static bool stream_return_home,launch_connecting,task_was_cancelled,server_ok,active,cancelled;
+static unsigned session_generation;
+static void cl_log(const char*,...){}
+static bool stream_return_home,launch_connecting,task_was_cancelled,server_ok,active,cancelled,aurora_direct_active;
 static bool fail_host,cancel_refresh,pair_needed,pair_cancel,pair_failure;
 static int busy_draws,pair_draws,begins,ends,presents,refreshes,recovers,phase;
 static volatile int launch_handoff,task_cancel;
@@ -62,6 +68,9 @@ bool launch_offer_art(const uint32_t*,int,int,uint32_t){return true;}
 void ui_art_size(int *w,int *h){*w=*h=1;}
 void ui_launch_begin(const ui_app*,uint32_t,bool){assert(active);}
 void ui_launch_session(const char*,int,int,int,int){}
+static int crt_status=1;static bool crt_note;
+static int plat_crt_output_status(){return crt_status;}
+void ui_launch_crt_note(bool show){assert(active);crt_note=show;}
 void ui_launch_pair_pin(const char *pin){assert(strlen(pin)==4);}
 static void ui_draw_software(){}
 static void draw_launch(void*,uint32_t){assert(active);}
@@ -89,6 +98,13 @@ int main(){
         begins=ends=presents=refreshes=0;task_was_cancelled=false;
         assert(stream_once(42,titles[i]));assert(begins==1 && ends==0 && refreshes==1 && presents==1 && !busy_draws);launch_end();
     }
+    for(int profile=CONFIG_PROFILE_CRT;profile<=CONFIG_PROFILE_CRT_QUALITY;profile++)for(int status=-1;status<=1;status++) {
+        config_select_factory(&cfg,profile);config saved=cfg;crt_status=status;task_was_cancelled=false;
+        assert(stream_once(42,"CRT game") && active);
+        assert(crt_note==(status!=1) && !memcmp(&cfg,&saved,sizeof(cfg)));launch_end();
+    }
+    config_select_factory(&cfg,CONFIG_PROFILE_SMOOTH);crt_status=0;task_was_cancelled=false;
+    assert(stream_once(42,"Normal game") && !crt_note);launch_end();crt_status=1;
     cancel_refresh=true;task_was_cancelled=false;assert(!stream_once(42,"Game") && !active);cancel_refresh=false;
     fail_host=true;task_was_cancelled=false;assert(!stream_once(42,"Game") && !active && recovers==1);fail_host=false;
     pair_needed=true;task_was_cancelled=false;assert(stream_once(42,"Game") && pair_draws==1 && active);launch_end();

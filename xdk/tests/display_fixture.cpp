@@ -5,6 +5,7 @@
 #include <vector>
 #include "../src/config.h"
 #include "../src/display_policy.h"
+#include "../src/ui_layout_geometry.h"
 static int selected_mode;
 void config_load(config *c){memset(c,0,sizeof(*c));c->display_mode=selected_mode;}
 typedef uint32_t DWORD;
@@ -19,7 +20,7 @@ enum {D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,D3DDECLUSAG
  D3DDEVTYPE_HAL,D3DCREATE_HARDWARE_VERTEXPROCESSING,D3DSAMP_MINFILTER,D3DSAMP_MAGFILTER,D3DSAMP_MIPFILTER,
  D3DTEXF_LINEAR,D3DTEXF_NONE,D3DSAMP_ADDRESSU,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP,
  D3DRS_CULLMODE,D3DCULL_NONE,D3DRS_ZENABLE,D3DRS_HALFPIXELOFFSET,D3DRS_ALPHABLENDENABLE,D3DPT_TRIANGLESTRIP};
-enum {GFX_SHADER_RGB,GFX_SHADER_YUV_FAST,GFX_SHADER_YUV_QUALITY,GFX_SHADER_RGBA};
+enum {GFX_SHADER_RGB,GFX_SHADER_YUV_FAST,GFX_SHADER_YUV_QUALITY,GFX_SHADER_RGBA,GFX_SHADER_CRT_CLARITY,GFX_SHADER_YUV_SMOOTH,GFX_SHADER_YUV_SMOOTH_CRT};
 struct vertex {float x,y,u,v;};
 struct D3DVERTEXELEMENT9 {int a,b,c,d,e,f;};
 #define D3DDECL_END() {0,0,0,0,0,0}
@@ -31,10 +32,12 @@ struct XVIDEO_MODE {DWORD dwDisplayWidth,dwDisplayHeight;int fIsInterlaced;float
 struct LARGE_INTEGER {int64_t QuadPart;};
 static LARGE_INTEGER gfx_frequency;
 static int backbuffer_width=1280,backbuffer_height=720,display_width=1280,display_height=720,dev_lock;
+static int layout_width=1280,layout_height=720;
 static XVIDEO_MODE video_mode={1920,1080,0,60.0f};
 static float display_refresh;
-static bool display_is_interlaced;
-static bool reject_1080,reject_all,reject_quality,half_pixel;
+static bool display_is_interlaced,display_mode_known;
+static int ui_safe_area;
+static bool reject_1080,reject_all,reject_quality,half_pixel,reject_crt,reject_smooth;
 static int d3d_releases,attempts;
 static std::vector<int> widths;
 static vertex drawn[4];
@@ -43,7 +46,7 @@ struct D3DVertexShader {};
 struct D3DPixelShader {};
 static D3DVertexDeclaration declaration,*decl;
 static D3DVertexShader vertex_shader,*vs;
-static D3DPixelShader pixel_shaders[4],*ps[4];
+static D3DPixelShader pixel_shaders[7],*ps[7];
 struct D3DDevice {
     void Release() {}
     int CreateVertexDeclaration(const D3DVERTEXELEMENT9*,D3DVertexDeclaration **p) { *p=&declaration;return 0; }
@@ -75,14 +78,15 @@ static Direct3D *Direct3DCreate9(int) { return &direct; }
 static void QueryPerformanceFrequency(LARGE_INTEGER *v) { v->QuadPart=1000000; }
 static void XGetVideoMode(XVIDEO_MODE *m) { *m=video_mode; }
 static void InitializeCriticalSection(int *p) { *p=1; }
-static const char *vs_src="vs",*ps_rgb_src="rgb",*ps_rgba_src="rgba",*ps_yuv_src="fast",*ps_yuv_quality_src="quality";
+static const char *vs_src="vs",*ps_rgb_src="rgb",*ps_rgba_src="rgba",*ps_yuv_src="fast",*ps_yuv_quality_src="quality",*ps_yuv_crt_src="crt",*ps_yuv_smooth_src="smooth",*ps_yuv_smooth_crt_src="smooth_crt";
 struct ID3DXBuffer {DWORD code;const DWORD *GetBufferPointer(){return &code;}void Release(){delete this;} };
-static ID3DXBuffer *compile(const char *s,const char*) { return reject_quality && !strcmp(s,"quality") ? NULL : new ID3DXBuffer; }
+static ID3DXBuffer *compile(const char *s,const char*) { return (reject_quality && !strcmp(s,"quality")) || (reject_crt && !strcmp(s,"crt")) || (reject_smooth && (!strcmp(s,"smooth") || !strcmp(s,"smooth_crt"))) ? NULL : new ID3DXBuffer; }
 /* ACTUAL_INIT */
 /* ACTUAL_RECT */
+/* ACTUAL_CRT_AVAILABLE */
 static void reset() {
     dev=NULL;memset(ps,0,sizeof(ps));widths.clear();attempts=d3d_releases=0;
-    selected_mode=0;reject_1080=reject_all=reject_quality=half_pixel=false;video_mode.dwDisplayWidth=1920;video_mode.dwDisplayHeight=1080;
+    selected_mode=0;reject_1080=reject_all=reject_quality=half_pixel=reject_crt=reject_smooth=false;display_mode_known=false;video_mode.fIsInterlaced=0;video_mode.RefreshRate=60.0f;video_mode.dwDisplayWidth=1920;video_mode.dwDisplayHeight=1080;
 }
 int main() {
     reset();assert(gfx_init());assert(attempts==1 && backbuffer_width==1920 && backbuffer_height==1080 && half_pixel);
@@ -99,6 +103,12 @@ int main() {
     reset();selected_mode=2;assert(gfx_init() && backbuffer_width==1280 && display_width==1920);
     reset();video_mode.dwDisplayWidth=720;video_mode.dwDisplayHeight=480;assert(gfx_init() && backbuffer_height==480);
     reset();reject_quality=true;assert(gfx_init() && !ps[GFX_SHADER_YUV_QUALITY] && ps[GFX_SHADER_YUV_FAST]);
+    reset();video_mode.dwDisplayWidth=640;video_mode.dwDisplayHeight=480;video_mode.fIsInterlaced=1;video_mode.RefreshRate=59.94f;
+    selected_mode=4;assert(gfx_init() && gfx_crt_clarity_available() && backbuffer_width==640);
+    video_mode.fIsInterlaced=0;assert(gfx_init() && !gfx_crt_clarity_available());
+    reset();reject_crt=true;assert(gfx_init() && !ps[GFX_SHADER_CRT_CLARITY] && ps[GFX_SHADER_YUV_FAST]);
+    reset();video_mode.dwDisplayWidth=video_mode.dwDisplayHeight=0;assert(gfx_init() && !display_mode_known && !gfx_crt_clarity_available());
+    reset();reject_smooth=true;assert(gfx_init() && !ps[GFX_SHADER_YUV_SMOOTH] && !ps[GFX_SHADER_YUV_SMOOTH_CRT] && ps[GFX_SHADER_YUV_FAST]);
     reset();reject_all=true;assert(!gfx_init() && d3d_releases==1);
     puts("PASS: actual gfx_init/quad: configured physical 1080p, 720p fallback, no MSAA/depth, shader fallback, logical UI transform and texel-center state.");
 }

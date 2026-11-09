@@ -37,7 +37,10 @@ static bool binding_profile_valid(const char *name)
 {
     if(!*name)return true;
     if(!strncmp(name,"user:",5))return config_profile_name_valid(name+5);
-    return !strncmp(name,"factory:",8) && strlen(name)==9 && name[8]>='1' && name[8]<'0'+CONFIG_PROFILE_COUNT;
+    if(strncmp(name,"factory:",8) || name[8]<'1' || name[8]>'9')return false;
+    unsigned n=0;const char *p=name+8;
+    while(*p){if(*p<'0' || *p>'9' || n>CONFIG_PROFILE_COUNT)return false;n=n*10+(unsigned)(*p++-'0');}
+    return n>0 && n<CONFIG_PROFILE_COUNT;
 }
 static bool binding_set(struct game_bindings *s,const char *host,int app,const char *profile)
 {
