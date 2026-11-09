@@ -22,6 +22,8 @@ output=r'''
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../third_party/stb/stb_image_write.h"
 static config cfg;
+static struct {char uuid[80];} server;
+static struct {int id;char name[64];} apps[64];static int app_count;
 static char filename[160];static int width,height,language;
 void ui_present(void) {
     ui_draw_software();canvas_t *cv=ui_canvas();
@@ -35,7 +37,7 @@ static int wait_button(){return B_FLAG;}
 static void choose_wallpaper(){}
 '''
 for name in ('labels','helps'):output+='static const char *'+name+'[]='+initializer(name)+';\n'
-output+='\n'.join(function(sig) for sig in ('static void appearance_menu(void)\n{','static void overlay_options_menu(void)\n{','static void pointer_settings_menu(void)\n{'))
+output+='\n'.join(function(sig) for sig in ('static void appearance_menu(void)\n{','static void overlay_options_menu(void)\n{','static void desktop_mapping_menu(void)\n{','static void desktop_settings_menu(void)\n{','static void pointer_settings_menu(void)\n{'))
 output+=r'''
 static void name(const char *page,int selected) {
     snprintf(filename,sizeof(filename),"menu-%dx%d-lang%d-%s-%d.png",width,height,language,page,selected);
@@ -78,6 +80,7 @@ int main(void) {
         name("appearance",0);appearance_menu();name("stream-ui",0);overlay_options_menu();ui_location_restore(token);
         ui_set_settings_context(UI_SETTINGS,SETTINGS_CONTROLS);token=ui_location_enter("Settings");ui_location_enter("Controllers and mouse");
         name("remote-input",0);pointer_settings_menu();ui_location_restore(token);
+        name("desktop",0);desktop_settings_menu();ui_location_restore(token);
         ui_set_settings_context(-1,-1);
     }
     width=960;height=720;language=CONFIG_LANGUAGE_PT_BR;

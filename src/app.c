@@ -775,6 +775,59 @@ static void calibrate_sticks(void)
         plat_sleep_ms(16);
     }
 }
+static void desktop_mapping_menu(void)
+{
+    static const char *buttons[]={"A","B","X","Y","D-Pad Up","D-Pad Down","D-Pad Left","D-Pad Right","LB","RB","Start","Back (release)"};
+    int selected=0;
+    for(;;){struct ui_setting rows[DESKTOP_BINDINGS];int kinds[DESKTOP_BINDINGS];
+        for(int i=0;i<DESKTOP_BINDINGS;i++){rows[i].label=buttons[i];rows[i].value=desktop_action_name(cfg.desktop.mapping[i]);rows[i].help="Changes swap actions. Back chords, R3 toolbar and stick/trigger axes stay reserved.";kinds[i]=UI_OPTION_CYCLE;}
+        ui_draw_settings_options("Desktop controls",rows,kinds,DESKTOP_BINDINGS,selected);ui_present();int key=wait_button();
+        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+DESKTOP_BINDINGS-1)%DESKTOP_BINDINGS;if(key&DOWN_FLAG)selected=(selected+1)%DESKTOP_BINDINGS;
+        if(key&(A_FLAG|LEFT_FLAG|RIGHT_FLAG))desktop_remap(&cfg.desktop,selected,(cfg.desktop.mapping[selected]+(key&LEFT_FLAG?DA_COUNT-1:1))%DA_COUNT);
+    }
+}
+static void desktop_settings_menu(void)
+{
+    int selected=0;
+    for(;;){char speed[24],zone[24],precision[24],scroll[24],binding[160];
+        snprintf(speed,sizeof(speed),"%d%%",cfg.desktop.speed);snprintf(zone,sizeof(zone),"%d%%",cfg.desktop.deadzone);
+        snprintf(precision,sizeof(precision),"%d%%",cfg.desktop.precision);snprintf(scroll,sizeof(scroll),"%d%%",cfg.desktop.scroll_speed);
+        snprintf(binding,sizeof(binding),"%s",cfg.desktop_app?"Bound to another PC / ID":"Off");
+        if(cfg.desktop_app && !strcmp(cfg.desktop_host,server.uuid)){
+            snprintf(binding,sizeof(binding),"App ID %d",cfg.desktop_app);
+            for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)snprintf(binding,sizeof(binding),"%s [ID %d]",apps[i].name,apps[i].id);
+        }
+        const char *keyboards[]={"Local UTF-8","Windows OSK","Touch keyboard taskbar"};
+        struct ui_setting rows[]={
+          {"Start in Desktop Mode",cfg.desktop_start?"On":"Off","Manual default for new streams. Quick Menu can switch at any time."},
+          {"Desktop launch application",binding,"Choose the real application ID on the selected paired PC. Off disables automatic selection."},
+          {"Sensitivity",speed,"Left stick mouse speed. LT precision takes priority over RT boost."},
+          {"Deadzone",zone,"0-30 percent, independent of gamepad calibration."},
+          {"Acceleration",cfg.desktop.acceleration?"On":"Off","Continuous acceleration toward the edge of the stick."},
+          {"Precision speed",precision,"LT reduces speed to this fraction; RT smoothly boosts up to 2x."},
+          {"Scroll speed",scroll,"Right stick: smooth horizontal and vertical wheels."},
+          {"Keyboard",keyboards[cfg.desktop.keyboard],"Y opens local UTF-8, Win+Ctrl+O, or Win+B to focus the taskbar touch keyboard icon (enable it in Windows first)."},
+          {"Control mapping","Configure","Conflict-free action swaps. Existing Back chords always take priority."}};
+        int kinds[]={UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_ACTION};
+        ui_draw_settings_options("Desktop Controller Mode",rows,kinds,9,selected);ui_present();int key=wait_button();
+        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+8)%9;if(key&DOWN_FLAG)selected=(selected+1)%9;
+        if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)){int direction=key&LEFT_FLAG?-1:1;
+            if(selected==0)cfg.desktop_start=!cfg.desktop_start;
+            if(selected==1 && server.uuid[0] && app_count){int index=-1;
+                if(!strcmp(cfg.desktop_host,server.uuid))for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)index=i;
+                index+=direction;if(index>=app_count)index=-1;if(index< -1)index=app_count-1;
+                cfg.desktop_app=index<0?0:apps[index].id;snprintf(cfg.desktop_host,sizeof(cfg.desktop_host),"%s",index<0?"":server.uuid);
+            }
+            if(selected==2){cfg.desktop.speed+=direction*25;if(cfg.desktop.speed<25)cfg.desktop.speed=200;if(cfg.desktop.speed>200)cfg.desktop.speed=25;}
+            if(selected==3){cfg.desktop.deadzone+=direction*2;if(cfg.desktop.deadzone<0)cfg.desktop.deadzone=30;if(cfg.desktop.deadzone>30)cfg.desktop.deadzone=0;}
+            if(selected==4)cfg.desktop.acceleration=!cfg.desktop.acceleration;
+            if(selected==5){cfg.desktop.precision+=direction*5;if(cfg.desktop.precision<10)cfg.desktop.precision=75;if(cfg.desktop.precision>75)cfg.desktop.precision=10;}
+            if(selected==6){cfg.desktop.scroll_speed+=direction*25;if(cfg.desktop.scroll_speed<25)cfg.desktop.scroll_speed=200;if(cfg.desktop.scroll_speed>200)cfg.desktop.scroll_speed=25;}
+            if(selected==7)cfg.desktop.keyboard=(cfg.desktop.keyboard+(direction>0?1:2))%3;
+            if(selected==8)desktop_mapping_menu();
+        }
+    }
+}
 static void pointer_settings_menu(void)
 {
     int selected=0;
@@ -784,13 +837,15 @@ static void pointer_settings_menu(void)
             {"Mouse acceleration",cfg.mouse_acceleration?"On":"Off","Optional extra speed near the edge of the stick."},
             {"Scroll interval",scroll,"50-400 ms per wheel step."},
             {"Quick menu","Back + L3","Opens during streaming. A selects, B resumes. The full exit shortcut keeps priority."},
-            {"Remote input","Back + R3","USB keyboard forwarding is suspended while the quick menu or Guide is open."}};
-        int kinds[]={UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_INFO,UI_OPTION_INFO};
-        ui_draw_settings_options("Remote mouse and keyboard",rows,kinds,5,selected);ui_present();int key=wait_button();
+            {"Remote input","Back + R3","USB keyboard forwarding is suspended while the quick menu or Guide is open."},
+            {"Desktop Controller Mode","Configure","Separate desktop mapping, keyboard and explicit application binding."}};
+        int kinds[]={UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_INFO,UI_OPTION_INFO,UI_OPTION_ACTION};
+        ui_draw_settings_options("Remote mouse and keyboard",rows,kinds,6,selected);ui_present();int key=wait_button();
         if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+5)%6;if(key&DOWN_FLAG)selected=(selected+1)%6;
         if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)){int d=key&LEFT_FLAG?-1:1;
             if(selected==0){cfg.mouse_speed+=d*25;if(cfg.mouse_speed<25)cfg.mouse_speed=200;if(cfg.mouse_speed>200)cfg.mouse_speed=25;}
             if(selected==1)cfg.mouse_acceleration=!cfg.mouse_acceleration;
+            if(selected==5)desktop_settings_menu();
             if(selected==2){cfg.mouse_scroll_ms+=d*50;if(cfg.mouse_scroll_ms<50)cfg.mouse_scroll_ms=400;if(cfg.mouse_scroll_ms>400)cfg.mouse_scroll_ms=50;}
         }
     }
@@ -2211,6 +2266,8 @@ static bool stream_once(int app_id, const char *app_title)
     input_configure_low_latency(config_overlay_mode(&cfg)==3 && cfg.stream_profile==0 && !cfg.user_profile[0]);
     ui_set_stream_hud(cfg.stream_menu_style,cfg.mouse_hud);
     input_configure_pointer(cfg.mouse_speed,cfg.mouse_acceleration,cfg.mouse_scroll_ms,cfg.stats_overlay);
+    input_configure_desktop(&cfg.desktop,cfg.desktop_start || (cfg.desktop_app==app_id &&
+        cfg.desktop_host[0] && server.uuid[0] && !strcmp(cfg.desktop_host,server.uuid)));
 #endif
     started = plat_now_ms();
 #ifdef _XBOX

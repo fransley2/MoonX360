@@ -94,7 +94,8 @@ int main(){
     for(int row=0;row<7;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,284+row*8);
     assert(q.row==7 && !quit && !exit_app);
     press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,344);
-    assert(q.row==0);
+    assert(q.row==QUICK_DESKTOP);
+    press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,352);assert(q.row==0);
     q={};q.volume=100;press(&q,pads,BACK_FLAG|LS_CLK_FLAG,exit,&quit,&exit_app,&action,360);
     for(int row=0;row<5;row++)press(&q,pads,DOWN_FLAG,exit,&quit,&exit_app,&action,364+row*8);
     assert(q.row==QUICK_SESSION_DETAILS);

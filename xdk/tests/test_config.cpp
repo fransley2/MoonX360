@@ -32,6 +32,16 @@ int main(void)
     assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000 && c.ui_layout==0);
     assert(c.artwork_cache_enabled && c.artwork_cache_mb==128);
     assert(writes == 0 && c.ui_motion && c.menu_sounds && c.menu_volume==18);
+    assert(!c.desktop_start && !c.desktop_app && !c.desktop_host[0] && c.desktop.speed==100 && c.desktop.deadzone==18);
+    c.desktop_start=true;strcpy(c.desktop_host,"desktop-test-pc");c.desktop_app=42;c.desktop.speed=175;c.desktop.deadzone=24;c.desktop.precision=15;c.desktop.scroll_speed=150;c.desktop.keyboard=1;
+    desktop_remap(&c.desktop,0,DA_KEYBOARD);desktop_remap(&c.desktop,11,DA_RIGHT_CLICK);
+    assert(config_save(&c));config_load(&loaded);assert(loaded.desktop_start && loaded.desktop_app==42 && !strcmp(loaded.desktop_host,"desktop-test-pc"));
+    assert(loaded.desktop.speed==175 && loaded.desktop.deadzone==24 && loaded.desktop.precision==15 && loaded.desktop.scroll_speed==150 && loaded.desktop.keyboard==1);
+    for(int i=0;i<DESKTOP_BINDINGS;i++)assert(loaded.desktop.mapping[i]==c.desktop.mapping[i]);
+    ini="desktop_map_-1=2\ndesktop_map_99=1\ndesktop_map_0=99\ndesktop_map_1=bad\ndesktop_speed=999\ndesktop_deadzone=-7\ndesktop_precision=0\n";
+    config_load(&loaded);assert(loaded.desktop.speed==200 && loaded.desktop.deadzone==0 && loaded.desktop.precision==10);
+    for(int i=0;i<DESKTOP_BINDINGS;i++)assert(loaded.desktop.mapping[i]==i);
+    ini.clear();writes=0;config_defaults(&c);
     const int refresh_values[]={0,125,250,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,30000,45000,60000};
     for(int i=0;i<18;i++){
         assert(config_refresh_interval_supported(refresh_values[i]));

@@ -26,7 +26,7 @@ static struct session_history session_history;
 static struct library_favorites favorites;
 static char library_query[64];
 static struct {int id;char name[64];} apps[64];static int app_count;
-static struct {bool paired;int current_game;} server;
+static struct {bool paired;int current_game;char uuid[80];} server;
 static bool server_ok,host_cache_save_failed,accept_edit=true;static char server_error[128];
 static unsigned next_discovery,adaptive_reconnects,video_reconnects;
 static std::deque<int> keys;
@@ -84,6 +84,9 @@ int main(){
     int filter=2;keys={DOWN_FLAG,DOWN_FLAG,A_FLAG,B_FLAG};library_context(&filter);assert(!strcmp(library_query,"My PC"));
     filter=1;keys={DOWN_FLAG,DOWN_FLAG,DOWN_FLAG,A_FLAG,B_FLAG};library_context(&filter);assert(!library_query[0] && filter==1);
     app_count=3;apps[0].id=42;strcpy(apps[0].name,"GTA San Andreas");apps[1].id=43;strcpy(apps[1].name,"Desktop");apps[2].id=44;strcpy(apps[2].name,"Halo");
+    strcpy(server.uuid,"desktop-test-pc");keys={DOWN_FLAG,RIGHT_FLAG,B_FLAG};desktop_settings_menu();
+    assert(cfg.desktop_app==42 && !strcmp(cfg.desktop_host,server.uuid));
+    keys={RIGHT_FLAG,DOWN_FLAG,B_FLAG};desktop_mapping_menu();assert(cfg.desktop.mapping[0]==DA_RIGHT_CLICK && cfg.desktop.mapping[1]==DA_LEFT_CLICK);
     strcpy(library_query,"gta");int map[64];assert(library_map(2,map)==1 && map[0]==0);library_query[0]=0;assert(library_map(2,map)==3 && library_map(1,map)==1);
     files["client.pem"]="preserve";keys={UP_FLAG,UP_FLAG,A_FLAG,A_FLAG,B_FLAG};manage_host();assert(hosts.count==1);
     keys={UP_FLAG,UP_FLAG,A_FLAG,DOWN_FLAG,A_FLAG};manage_host();assert(!hosts.count && !cfg.host[0] && files["client.pem"]=="preserve" && files["hosts.tsv"].empty());

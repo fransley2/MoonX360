@@ -27,7 +27,7 @@ functions='\n'.join(function(app,s) for s in (
     'static int selected_host_index(void)\n{','static const char *host_key(void)\n{','static const char *host_label(',
     'static void migrate_host_records(','static void save_hosts(',
     'static void connection_diagnosis_menu(','static void manage_host(void)\n{',
-    'static bool apply_game_profile(','static void game_profile_menu(int id)\n{','static void pointer_settings_menu(',
+    'static bool apply_game_profile(','static void game_profile_menu(int id)\n{','static void desktop_mapping_menu(', 'static void desktop_settings_menu(', 'static void pointer_settings_menu(',
     'static void library_context(','static int library_map(',
     'static void stream(int app_id,'))
 fixture=(ROOT/'xdk/tests/expansion_menu_fixture.cpp').read_text().replace('/* ACTUAL_FUNCTIONS */','static bool prepare_selected_app(int){return true;}\n'+functions)

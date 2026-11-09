@@ -7,12 +7,13 @@ enum { QUICK_OPEN=1u, QUICK_ROW_SHIFT=1, QUICK_ROW_MASK=15u,
        QUICK_MUTED=1u<<12, QUICK_STATS=1u<<13,
        QUICK_PAGE_SHIFT=14, QUICK_PAGE_MASK=3u,
        QUICK_DETAILS_SHIFT=16, QUICK_DETAILS_MASK=3u };
-enum { QUICK_MAIN, QUICK_DETAILS, QUICK_CONFIRM };
+enum { QUICK_MAIN, QUICK_DETAILS, QUICK_CONFIRM, QUICK_DESKTOP_PAGE };
 enum { QUICK_RESUME, QUICK_REFRESH, QUICK_VOLUME, QUICK_MOUSE,
        QUICK_PERFORMANCE, QUICK_SESSION_DETAILS, QUICK_DISCONNECT,
-       QUICK_CLOSE_APP, QUICK_ROW_COUNT };
+       QUICK_CLOSE_APP, QUICK_DESKTOP, QUICK_ROW_COUNT };
 struct quick_menu {
     bool open,latch,neutral,muted,stats,refresh_request;
+    int desktop_request;
     int owner,row,page,details_section,previous,volume,repeat;
     uint32_t held_at,repeated_at;
 };
@@ -28,7 +29,7 @@ static bool quick_step(struct quick_menu *q,struct pad pads[MAX_PADS],bool guide
                        bool *quit,bool *close_app,int *mouse_action,uint32_t clock)
 {
     const int combo=BACK_FLAG|LS_CLK_FLAG;int owner=-1;
-    q->refresh_request=false;
+    q->refresh_request=false;q->desktop_request=0;
     /* The full exit chord remains authoritative on every page. */
     for(int i=0;i<MAX_PADS;i++)if(pads[i].present && !guide &&
         (pads[i].buttons&exit_mask)==exit_mask){q->open=false;q->neutral=false;q->latch=true;return false;}
@@ -54,7 +55,10 @@ static bool quick_step(struct quick_menu *q,struct pad pads[MAX_PADS],bool guide
         else if(direction && (uint32_t)(clock-q->held_at)>=320 &&
             (uint32_t)(clock-q->repeated_at)>=95){pressed|=direction;q->repeated_at=clock;}
 
-        if(q->page==QUICK_DETAILS){
+        if(q->page==QUICK_DESKTOP_PAGE){
+            if(pressed&UP_FLAG)q->row=(q->row+6)%7;
+            if(pressed&DOWN_FLAG)q->row=(q->row+1)%7;
+        } else if(q->page==QUICK_DETAILS){
             if(pressed&UP_FLAG)q->details_section=(q->details_section+3)%4;
             if(pressed&DOWN_FLAG)q->details_section=(q->details_section+1)%4;
         } else if(q->page==QUICK_MAIN){
@@ -66,12 +70,14 @@ static bool quick_step(struct quick_menu *q,struct pad pads[MAX_PADS],bool guide
             }
         }
         if(pressed&B_FLAG){
-            if(q->page!=QUICK_MAIN)q->page=QUICK_MAIN;
+            if(q->page!=QUICK_MAIN){if(q->page==QUICK_DESKTOP_PAGE)q->row=QUICK_DESKTOP;q->page=QUICK_MAIN;}
             else {q->open=false;q->neutral=true;}
         } else if(pressed&A_FLAG) {
-            if(q->page==QUICK_CONFIRM){*quit=true;*close_app=true;q->open=false;q->neutral=true;}
+            if(q->page==QUICK_DESKTOP_PAGE){q->desktop_request=q->row+1;q->open=false;q->neutral=true;}
+            else if(q->page==QUICK_CONFIRM){*quit=true;*close_app=true;q->open=false;q->neutral=true;}
             else if(q->page==QUICK_MAIN) {
                 switch(q->row){
+                case QUICK_DESKTOP:q->page=QUICK_DESKTOP_PAGE;q->row=0;break;
                 case QUICK_RESUME:q->open=false;q->neutral=true;break;
                 case QUICK_REFRESH:q->refresh_request=true;break;
                 case QUICK_VOLUME:q->muted=!q->muted;break;

@@ -40,6 +40,10 @@ bool input_close_app_requested(void);
 void input_rumble(unsigned short controller, unsigned short low, unsigned short high);
 
 #ifdef _XBOX
+struct desktop_options;
+void input_configure_desktop(const struct desktop_options *options,bool enabled);
+unsigned input_desktop_snapshot(void);
+void input_desktop_ui_unavailable(void);
 bool input_mouse_active(void);
 void input_configure_pointer(int speed,int acceleration,int scroll_ms,bool stats);
 unsigned input_quick_snapshot(void);

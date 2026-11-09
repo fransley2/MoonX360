@@ -11,6 +11,7 @@
 void config_defaults(struct config *c)
 {
     memset(c, 0, sizeof(*c));
+    desktop_defaults(&c->desktop);
     c->ui_motion = true;
     c->menu_sounds = true;c->menu_volume = 18;
     c->width = 1280;
@@ -186,6 +187,16 @@ void config_load(struct config *c)
             c->history_enabled=atoi(eq+1)!=0;
         else if (!strcmp(line, "diagnostic_log"))
             c->diagnostic_log = atoi(eq + 1) != 0;
+        else if(!strcmp(line,"desktop_start"))c->desktop_start=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"desktop_host")){if(wake_identity_valid(eq+1))snprintf(c->desktop_host,sizeof(c->desktop_host),"%s",eq+1);}
+        else if(!strcmp(line,"desktop_app")){int v=atoi(eq+1);c->desktop_app=v>0?v:0;}
+        else if(!strcmp(line,"desktop_speed")){int v=atoi(eq+1);c->desktop.speed=v<25?25:v>200?200:v;}
+        else if(!strcmp(line,"desktop_deadzone")){int v=atoi(eq+1);c->desktop.deadzone=v<0?0:v>30?30:v;}
+        else if(!strcmp(line,"desktop_acceleration"))c->desktop.acceleration=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"desktop_precision")){int v=atoi(eq+1);c->desktop.precision=v<10?10:v>75?75:v;}
+        else if(!strcmp(line,"desktop_scroll")){int v=atoi(eq+1);c->desktop.scroll_speed=v<25?25:v>200?200:v;}
+        else if(!strcmp(line,"desktop_keyboard")){int v=atoi(eq+1);c->desktop.keyboard=v>=0 && v<=2?v:0;}
+        else if(!strncmp(line,"desktop_map_",12)){char *end;long slot=strtol(line+12,&end,10);if(end!=line+12 && !*end && slot>=0 && slot<DESKTOP_BINDINGS){char *tail;long v=strtol(eq+1,&tail,10);if(tail!=eq+1 && !*tail && v>=0 && v<DA_COUNT)desktop_remap(&c->desktop,(int)slot,(int)v);}}
         else if (!strcmp(line,"mouse_speed")){int v=atoi(eq+1);c->mouse_speed=v<25?25:v>200?200:v;}
         else if (!strcmp(line,"mouse_acceleration"))c->mouse_acceleration=atoi(eq+1)!=0;
         else if (!strcmp(line,"mouse_scroll_ms")){int v=atoi(eq+1);c->mouse_scroll_ms=v<50?50:v>400?400:v;}
@@ -272,7 +283,16 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         c->ui_safe_area,c->refresh_smoothing,c->smoothing_strength,c->crt_clarity,c->crt_display_backup,c->previous_display_mode,c->previous_ui_layout,c->previous_safe_area,c->adaptive_quality,c->refresh_interval_ms,c->display_mode,c->ui_layout,c->language,c->thread_layout,c->decode_workers,
         c->left_min,c->left_max,c->right_min,c->right_max,c->ui_background,c->ui_accent,c->ui_motion,c->menu_sounds,c->menu_volume,c->mouse_hud,c->stream_menu_style,
         c->aurora_enabled,c->aurora_direct_enabled,c->artwork_cache_enabled,c->artwork_cache_mb,c->aurora_cache_handling,c->aurora_shortcuts_folder,c->aurora_main_xex,c->aurora_path,c->aurora_default_profile);
-    return n >= 0 && (size_t)n < capacity ? (size_t)n : 0;
+    if(n<0 || (size_t)n>=capacity)return 0;
+    int added=snprintf(buf+n,capacity-n,
+        "desktop_start=%d\ndesktop_host=%s\ndesktop_app=%d\ndesktop_speed=%d\ndesktop_deadzone=%d\ndesktop_acceleration=%d\ndesktop_precision=%d\ndesktop_scroll=%d\ndesktop_keyboard=%d\n",
+        c->desktop_start,c->desktop_host,c->desktop_app,c->desktop.speed,c->desktop.deadzone,c->desktop.acceleration,c->desktop.precision,c->desktop.scroll_speed,c->desktop.keyboard);
+    if(added<0 || (size_t)added>=capacity-n)return 0;n+=added;
+    for(int i=0;i<DESKTOP_BINDINGS;i++){
+        added=snprintf(buf+n,capacity-n,"desktop_map_%d=%d\n",i,c->desktop.mapping[i]);
+        if(added<0 || (size_t)added>=capacity-n)return 0;n+=added;
+    }
+    return (size_t)n;
 }
 /* Read-only loading never rewrites settings. Before a legacy format-5 value 2
  * is saved as Boolean On/Off, keep the original bytes and verify the backup.
@@ -332,7 +352,7 @@ static bool config_backup_compat_fast(const char *name)
 }
 bool config_save(const struct config *c)
 {
-    char buf[3072];size_t n=config_serialize(c,buf,sizeof(buf));
+    char buf[4096];size_t n=config_serialize(c,buf,sizeof(buf));
     return n && config_backup_compat_fast("moonlight.ini") && storage_write("moonlight.ini",buf,n);
 }
 

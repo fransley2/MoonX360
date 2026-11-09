@@ -21,10 +21,16 @@
 #include "../../src/input_session.h"
 #include "../../src/input_shortcut.h"
 #include "../../src/input_hotplug.h"
-#include "../../src/remote_input.h"
+#include "../../src/desktop_input.h"
 #include "../../src/quick_menu.h"
 #include "../../src/audio.h"
 #include "../../src/video.h"
+static volatile LONG desktop_snapshot,desktop_available=1;
+static struct desktop_options desktop_settings;
+static bool desktop_initial;
+void input_configure_desktop(const struct desktop_options *options,bool enabled){desktop_settings=*options;desktop_initial=enabled;}
+unsigned input_desktop_snapshot(void){return (unsigned)InterlockedCompareExchange(&desktop_snapshot,0,0);}
+void input_desktop_ui_unavailable(void){InterlockedExchange(&desktop_available,0);}
 static volatile LONG mouse_mode;
 bool input_mouse_active(void) {return InterlockedCompareExchange(&mouse_mode,0,0)!=0;}
 
@@ -200,6 +206,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
 {
     struct pad pads[MAX_PADS];
     struct input_session session;
+    struct desktop_input desktop;memset(&desktop,0,sizeof(desktop));desktop.options=desktop_settings;desktop.enabled=desktop_initial;desktop.neutral=true;
     struct input_shortcut shortcut;memset(&shortcut,0,sizeof(shortcut));
     struct remote_input remote;memset(&remote,0,sizeof(remote));
     remote.speed=pointer_speed;remote.acceleration=pointer_acceleration;remote.scroll_ms=pointer_scroll_ms;
@@ -208,6 +215,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
     DWORD keyboard_probe[MAX_PADS]={0};
     bool keyboard_present[MAX_PADS]={false};
     for(int i=0;i<MAX_PADS;i++)keyboard_probe[i]=GetTickCount();
+    int desktop_pending=0;
     bool guide_seen=false,launch_neutral=true; /* also swallow the menu Play button if a zero-delay cover already ended */
     uint64_t previous_poll=0;
     (void)arg;
@@ -217,6 +225,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         uint64_t poll=perf_enabled()?perf_clock():0;
         if(poll && previous_poll)perf_record(PERF_INPUT_INTERVAL,poll-previous_poll);
         previous_poll=poll;
+        bool desktop_was_enabled=desktop.enabled;
         DWORD started = GetTickCount();
         int mask = input_poll(pads);
         video_progress_note(VP_INPUT);
@@ -239,9 +248,16 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         for(int i=0;i<MAX_PADS;i++)if(!physical_connected[i])quick_pads[i].present=false;
         bool quick_quit=false,quick_close_app=false;int mouse_action=-1;
         bool quick_was_open=quick.open;
+        const int overlay_combo=BACK_FLAG|LB_FLAG|RB_FLAG|X_FLAG;
+        bool overlay=false;for(int i=0;i<MAX_PADS;i++)if(quick_pads[i].present && (quick_pads[i].buttons&overlay_combo)==overlay_combo)overlay=true;
+        if(!guide && !block_launch && overlay && !desktop.overlay_latch)quick.stats=!quick.stats;
+        desktop.overlay_latch=overlay;
         if(!InterlockedCompareExchange(&quick_available,0,0)){if(quick.open){quick.open=false;quick.neutral=true;}quick.latch=true;}
         bool local=block_launch;
         if(!block_launch && !shortcut_fired)local=quick_step(&quick,quick_pads,guide,input_exit_mask(stream_settings.quit_combo),&quick_quit,&quick_close_app,&mouse_action,started);
+        if(quick.desktop_request){
+            remote_release(&remote);desktop.owner=quick.owner;desktop_pending=quick.desktop_request;
+        }
         if(quick.refresh_request)video_request_picture_refresh();
         video_refresh_tick(started);
         if(!quick_was_open && quick.open)plat_log("[INPUT] Quick Menu combo detected\n");
@@ -250,10 +266,19 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(quick_quit)plat_log("[INPUT] Quick Menu action consumed\n");
         for(int i=0;i<MAX_PADS;i++)if(shortcut_consumed[i]){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         if(mouse_action>=0) {
+            desktop_suspend(&desktop);desktop.enabled=false;remote_release(&remote);
             bool old=remote.mouse[mouse_action];
             for(int i=0;i<MAX_PADS;i++){if(remote.mouse[i])remote.suppress[i]=true;remote_mouse_release(&remote,i);remote.mouse[i]=false;}
             remote.mouse[mouse_action]=!old;if(!old)remote.suppress[mouse_action]=false;
         }
+        if(guide || local || overlay || shortcut_fired){desktop_suspend(&desktop);for(int i=0;i<MAX_PADS;i++)remote_mouse_release(&remote,i);}
+        if(!InterlockedCompareExchange(&desktop_available,0,0) && desktop.view){desktop_suspend(&desktop);}
+        if(desktop_pending && !local && !guide && !overlay){desktop_command(&desktop,desktop_pending);desktop_pending=0;}
+        /* Preserve Back+R3 as the legacy mouse toggle, including from Desktop. */
+        bool mouse_chord=false;
+        for(int i=0;i<MAX_PADS;i++)if(pads[i].present && (pads[i].buttons&(BACK_FLAG|RS_CLK_FLAG))==(BACK_FLAG|RS_CLK_FLAG))mouse_chord=true;
+        if(mouse_chord && !desktop.mouse_latch && desktop.enabled && !local && !guide){desktop_suspend(&desktop);desktop.enabled=false;remote_release(&remote);}
+        desktop.mouse_latch=mouse_chord;
         if(guide){for(int i=0;i<MAX_PADS;i++)if(remote.mouse[i])remote.suppress[i]=true;remote_release(&remote);}
         audio_set_volume(quick.muted?0:quick.volume);
         InterlockedExchange(&quick_snapshot,(LONG)quick_pack(&quick));
@@ -278,17 +303,27 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         }
         for(int k=0;k<256;k++)any=any || keys[k];
         if(launch_neutral && !cover_input && !any)launch_neutral=false;
-        remote_keys(&remote,keys,!guide && !local);
+        if(overlay)for(int i=0;i<MAX_PADS;i++)if((pads[i].buttons&overlay_combo)==overlay_combo){remote.suppress[i]=true;bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
+        if(desktop.enabled && !local && !guide){
+            struct pad owner=pads[desktop.owner];if(!physical_connected[desktop.owner])owner.present=false;
+            if(owner.buttons || desktop.view || desktop.neutral || !owner.present)remote_keys(&remote,keys,false);
+            desktop_step(&desktop,&owner,started,input_exit_mask(stream_settings.quit_combo));
+            /* All controllers neutral in Desktop Mode: no Steam double input. */
+            for(int i=0;i<MAX_PADS;i++){bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
+        }
+        remote_keys(&remote,keys,!guide && !local && !desktop.view && (!desktop.enabled || (!desktop.neutral && !quick_pads[desktop.owner].buttons && physical_connected[desktop.owner])) && !overlay);
+        if(desktop_was_enabled && !desktop.enabled && !mouse_chord)for(int i=0;i<MAX_PADS;i++)remote.suppress[i]=true;
         if(local)for(int i=0;i<MAX_PADS;i++){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;
             if(!physical_connected[i])pads[i].present=false;
-            if(!local && !shortcut_consumed[i])remote_pad(&remote,pads+i,i,started,guide,input_exit_mask(stream_settings.quit_combo));
+            if(!desktop.enabled && !overlay && !local && !shortcut_consumed[i])remote_pad(&remote,pads+i,i,started,guide,input_exit_mask(stream_settings.quit_combo));
             if(!InterlockedCompareExchange(&mouse_available,0,0) && remote.mouse[i]){remote_mouse_release(&remote,i);remote.mouse[i]=false;remote.suppress[i]=true;}
             pads[i].present=present;
         }
         bool mouse=false;for(int i=0;i<MAX_PADS;i++)mouse=mouse||remote.mouse[i];
-        InterlockedExchange(&mouse_mode,mouse?1:0);
+        InterlockedExchange(&desktop_snapshot,(LONG)desktop_pack(&desktop));
+        InterlockedExchange(&mouse_mode,mouse && !desktop.enabled?1:0);
         guide_seen=guide;
         if(guide)for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;
@@ -303,7 +338,8 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         DWORD elapsed = GetTickCount() - started;
         Sleep(elapsed < stream_interval_ms ? stream_interval_ms - elapsed : 1);
     }
-    remote_release(&remote);
+    desktop_release(&desktop);remote_release(&remote);
+    InterlockedExchange(&desktop_snapshot,0);
     InterlockedExchange(&mouse_mode,0);
     InterlockedExchange(&quick_snapshot,0);
     input_session_release(&session);
@@ -315,6 +351,8 @@ void input_stream_start(void)
     if (stream_thread) return;
     plat_log(stream_interval_ms==2 ? "[INPUT] polling target 2 ms; disconnected reprobe 100 ms\n" :
              "[INPUT] polling target 4 ms; disconnected reprobe 100 ms\n");
+    InterlockedExchange(&desktop_available,1);
+    InterlockedExchange(&desktop_snapshot,0);
     InterlockedExchange(&mouse_available,1);
     InterlockedExchange(&quick_available,1);
     InterlockedExchange(&quick_snapshot,0);

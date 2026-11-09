@@ -8,7 +8,7 @@ static void ui_present(){menu_restores++;}
 #include "../src/input_session.h"
 #include "../src/input_shortcut.h"
 #include "../src/input_hotplug.h"
-#include "../src/remote_input.h"
+#include "../src/desktop_input.h"
 #include "../src/quick_menu.h"
 #include "../src/system_ui.h"
 typedef uint32_t DWORD;typedef int32_t LONG;typedef uint16_t WORD;typedef void *HANDLE,*LPVOID;
@@ -77,13 +77,17 @@ static DWORD XInputGetKeyboardState(DWORD user,XINPUT_KEYBOARDSTATE *out){
 int LiSendMouseMoveEvent(short,short){return 0;}
 int LiSendMouseButtonEvent(char,int){return 0;}
 int LiSendScrollEvent(signed char){return 0;}
+int LiSendHighResScrollEvent(short){return 0;}
+int LiSendHighResHScrollEvent(short){return 0;}
+int LiSendUtf8TextEvent(const char*,unsigned){return 0;}
 int LiSendKeyboardEvent(short k,char action,char){assert(k=='A');if(action==KEY_ACTION_DOWN)keyboard_down++;else keyboard_up++;return 0;}
 void audio_set_volume(int){}
 static bool video_request_picture_refresh(){return false;}
 static void video_refresh_tick(uint32_t){}
 static bool ui_transition_active(){return false;}
 static void audio_menu_play(int){}
-static volatile LONG mouse_mode;
+static volatile LONG mouse_mode,desktop_snapshot,desktop_available=1;
+static desktop_options desktop_settings;static bool desktop_initial;
 static bool launch_active(){return false;}
 static void launch_command(bool,bool){}
 /* ACTUAL_INPUT */

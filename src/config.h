@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include "fast_decode.h"
+#include "desktop_options.h"
 #include <stddef.h>
 
 enum config_language { CONFIG_LANGUAGE_ENGLISH, CONFIG_LANGUAGE_SPANISH,
@@ -21,6 +22,10 @@ struct config {
     bool sops;          /* let the host change its resolution to match */
     int quit_combo;     /* 0: LB+RB+L3+R3; 1: legacy combo, both held 2 s */
     int mouse_speed,mouse_acceleration,mouse_scroll_ms; /* global input options */
+    struct desktop_options desktop;
+    bool desktop_start;
+    char desktop_host[80];
+    int desktop_app; /* explicit host + app ID binding; never inferred from title */
     int stick_deadzone; /* 0..30 percent; default 0 preserves input */
     bool session_report; /* write last-session.txt after stopping, never during video */
     bool stats_overlay;  /* optional SDK telemetry panel, off by default */

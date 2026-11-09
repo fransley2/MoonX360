@@ -43,6 +43,7 @@ for generator, name in [('make_fast_decode_test.py','fast-decode.cpp'),('make_sw
                         ('make_pthread_atomic_test.py', 'pthread_atomic.cpp'),
                         ('make_loopfilter_reference_test.py', 'loopfilter.c'),
                         ('make_benchmark_test.py', 'benchmark.cpp'),
+                        ('make_desktop_routing_test.py', 'desktop-routing.cpp'),
                         ('make_overlay_test.py', 'overlay.cpp'),
                         ('make_video_teardown_test.py', 'teardown.cpp'),
                         ('make_log_platform_test.py', 'log.cpp'),
@@ -95,6 +96,8 @@ jobs = [('app-restart',[OUT/'app-restart.cpp']),('focus-motion',[ROOT/'xdk/tests
         ('timing', [ROOT / 'xdk/tests/test_timing.cpp']),
         ('overlay', [OUT / 'overlay.cpp', *ui, OUT / 'fonts.obj']),
         ('home', [ROOT / 'xdk/tests/test_home_ui.cpp', *ui, OUT / 'fonts.obj'])]
+jobs.append(('desktop-routing',[OUT/'desktop-routing.cpp']))
+jobs.append(('desktop-input',[ROOT/'xdk/tests/test_desktop_input.cpp']))
 jobs.append(('fast-decode',[OUT/'fast-decode.cpp']))
 jobs.append(('wireless-crt',[ROOT/'xdk/tests/test_wireless_crt.cpp',ROOT/'src/config.c']))
 jobs.append(('video-smoothing',[ROOT/'xdk/tests/test_video_smoothing.cpp',ROOT/'src/config.c']))

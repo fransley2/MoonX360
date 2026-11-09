@@ -6,6 +6,7 @@
 #include <set>
 #include "src/video.h"
 #include "src/quick_menu.h"
+#include "src/desktop_keyboard_layout.h"
 typedef unsigned DWORD;
 #define FAILED(x) ((x)<0)
 #define D3DFMT_LIN_A8R8G8B8 1
@@ -13,6 +14,7 @@ typedef unsigned DWORD;
 #define FONT_REGULAR 0
 #define FONT_BOLD 1
 struct canvas_t {uint32_t *px;int w,h;};
+static unsigned desktop_snapshot;
 static unsigned snapshot,tick,allocations,releases,canvas_allocations,canvas_releases,uploads,draws,waits,unavailable;
 static bool guide,fail_texture,fail_upload;
 static const char *reason;
@@ -34,9 +36,11 @@ static int font_draw_wrapped(canvas_t *c,int,float,int x,int y,int width,float,u
 struct D3DTexture {DWORD fence;D3DTexture():fence(0){}void Release(){assert(!gfx_fence_pending(fence));releases++;delete this;}};
 struct D3DDevice {
  D3DTexture *bound;
- int CreateTexture(int w,int h,int,int,int,int,D3DTexture **out,void*){assert((w==448 && h==640) || (w==640 && h==600) || (w==512 && h==128));if(fail_texture){*out=NULL;return -1;}*out=new D3DTexture;allocations++;return 0;}
+ int CreateTexture(int w,int h,int,int,int,int,D3DTexture **out,void*){assert((w==448 && h==640) || (w==640 && h==600) || (w==512 && h==128) || (w==640 && h==300));if(fail_texture){*out=NULL;return -1;}*out=new D3DTexture;allocations++;return 0;}
  void SetTexture(int,D3DTexture *t){bound=t;}
 };
+static unsigned input_desktop_snapshot(){return desktop_snapshot;}
+static void input_desktop_ui_unavailable(){unavailable++;}
 static unsigned input_quick_snapshot(){return snapshot;}
 static bool input_mouse_active(){return false;}
 static bool video_xdk_is_streaming(){return true;}
@@ -57,14 +61,14 @@ static void plat_log(const char*){}
 static DWORD GetTickCount(){return tick;}
 static bool gfx_system_ui_active(){return guide;}
 static void gfx_wait_fence(D3DDevice*,DWORD fence){assert(fence);waits++;for(std::set<DWORD>::iterator i=pending.begin();i!=pending.end() && *i<=fence;)pending.erase(i++);}
-static bool gfx_upload(D3DTexture *t,const void*,int pitch,int row,int height){assert(!gfx_fence_pending(t->fence) && ((pitch==1792 && row==1792 && height==640)||(pitch==2560 && row==2560 && height==600)||(pitch==2048 && row==2048 && height==128)));uploads++;return !fail_upload;}
+static bool gfx_upload(D3DTexture *t,const void*,int pitch,int row,int height){assert(!gfx_fence_pending(t->fence) && ((pitch==1792 && row==1792 && height==640)||(pitch==2560 && row==2560 && height==600)||(pitch==2048 && row==2048 && height==128)||(pitch==2560 && row==2560 && height==300)));uploads++;return !fail_upload;}
 static void gfx_draw_rect(D3DDevice *d,int,float x,float y,float r,float b){assert(d->bound);last_x=x;last_y=y;last_right=r;last_bottom=b;draws++;}
 static void gfx_draw_layout_rect(D3DDevice *d,int mode,float x,float y,float r,float b){gfx_draw_rect(d,mode,x,y,r,b);}
 static unsigned hud_draws,hud_masks;
 static void gfx_draw_hud_rect(D3DDevice *d,float x,float y,float r,float b){hud_draws++;gfx_draw_rect(d,3,x,y,r,b);}
 static void gfx_hud_pixels(uint32_t *pixels,int w,int h){assert(pixels && w==512 && h==128);hud_masks++;}
 /* ACTUAL_STREAM_MENU */
-static void submit(DWORD fence){gfx_stream_menu_submitted(fence);for(int i=0;i<2;i++)if(panels[i].used){panels[i].texture->fence=fence;pending.insert(fence);}}
+static void submit(DWORD fence){gfx_stream_menu_submitted(fence);for(int i=0;i<3;i++)if(panels[i].used){panels[i].texture->fence=fence;pending.insert(fence);}}
 int main(){
  D3DDevice d={};gfx_stream_menu_draw(&d,1,1,0,1000,false);assert(!allocations && !draws);
  for(style=0;style<2;style++){
@@ -93,6 +97,16 @@ int main(){
   before=draws;gfx_stream_menu_draw(&d,4,4,0,1000,true);assert(draws==before);
   submit(10);gfx_stream_menu_reset(&d);pending.clear();assert(allocations==releases && canvas_allocations==canvas_releases);
  }
+ snapshot=0;desktop_snapshot=DESK_TOOLBAR;gfx_stream_menu_draw(&d,1,1,0,1000,false);
+ assert(panels[2].ready && last_bottom==680 && last_y==380);submit(30);
+ unsigned desktop_uploads=uploads,desktop_allocations=allocations;
+ for(int i=0;i<300;i++)gfx_stream_menu_draw(&d,1,1,0,1000,false);
+ assert(uploads==desktop_uploads && allocations==desktop_allocations);
+ desktop_snapshot=DESK_KEYBOARD|(10<<2)|(1<<8);gfx_stream_menu_draw(&d,1,1,0,1000,false);
+ assert(uploads==desktop_uploads+1);submit(31);
+ desktop_snapshot=0;unsigned closed_draws=draws;gfx_stream_menu_draw(&d,1,1,0,1000,false);
+ assert(draws==closed_draws && !panels[2].used); // no stale rectangle after closing
+ gfx_stream_menu_reset(&d);pending.clear();
  snapshot=1;fail_texture=true;unsigned before=draws;gfx_stream_menu_draw(&d,0,0,0,0,false);assert(unavailable==1 && draws==before);gfx_stream_menu_reset(&d);fail_texture=false;
  fail_upload=true;gfx_stream_menu_draw(&d,0,0,0,0,false);assert(unavailable==2 && draws==before);gfx_stream_menu_reset(&d);fail_upload=false;
  style=0;snapshot=1;gfx_stream_menu_draw(&d,1,1,0,1000,false);submit(20);

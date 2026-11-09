@@ -1,5 +1,6 @@
 #include "xdk.h"
 #include "../../src/input.h"
+#include "../../src/desktop_keyboard_layout.h"
 #include "../../src/audio.h"
 #include "../../src/video.h"
 #include "../../src/quick_menu.h"
@@ -22,14 +23,14 @@ struct stream_panel {
     unsigned last_decoded;
     float decoded_fps,presented_fps;
 };
-static stream_panel panels[2];
+static stream_panel panels[3];
 static const uint32_t C_BG=0xFF12191E,C_PANEL=0xFF1C2327,C_CARD=0xFF1D2934;
 static const uint32_t C_ICON=0xFF233038,C_TEXT=0xFFF2F5F3,C_SUB=0xFFA6B7C0;
 static const uint32_t C_MUTED=0xFF91A5AD,C_DIV=0xFF36444D,C_DANGER=0xFFEDB0AA;
 
 void gfx_stream_menu_reset(D3DDevice *d)
 {
-    for(int i=0;i<2;i++){
+    for(int i=0;i<3;i++){
         stream_panel *p=panels+i;
         if(p->fence)gfx_wait_fence(d,p->fence);
         if(p->spare_fence)gfx_wait_fence(d,p->spare_fence);
@@ -77,6 +78,7 @@ static void icon(stream_panel *p,int kind,int x,int y,uint32_t color)
     case QUICK_PERFORMANCE:
         cv_fill(c,x+3,y+13,4,8,color);cv_fill(c,x+10,y+8,4,13,color);
         cv_fill(c,x+17,y+4,4,17,color);break;
+    case QUICK_DESKTOP:
     case QUICK_SESSION_DETAILS:
         cv_rrect_outline(c,x+3,y+4,18,13,2,1.6f,color);
         cv_line(c,x+12,y+17,x+12,y+21,1.6f,color);
@@ -126,7 +128,7 @@ static void session_card(stream_panel *p,int w,bool compact,const video_stats *v
 static const char *row_labels[QUICK_ROW_COUNT]={
     "Resume Stream","Refresh Picture","Audio Volume","Mouse Mode",
     "Performance Overlay","Session Details","Disconnect Stream",
-    "Close Host App & Disconnect"
+    "Close Host App & Disconnect", "Desktop Controller Mode"
 };
 static const char *row_subs[6]={
     "Return to your game","Request a new keyframe",NULL,NULL,NULL,
@@ -187,17 +189,18 @@ static void main_page(stream_panel *p,int w,int h,unsigned state,const video_sta
     session_card(p,w,compact,vs,info);
     int quick_y=183;
     ink(p,FONT_REGULAR,12,20,quick_y,w-40,C_MUTED,"QUICK ACTIONS");
-    int row_h=compact?42:45;
+    int row_h=compact?36:39;
     int top=compact?193:199;
     for(int row=0;row<6;row++)
         action_row(p,w,top+row*row_h,row_h,row,selected==(unsigned)row,
                    state,audio,refresh);
-    int control=compact?455:479;
+    int control=compact?419:445;
     cv_fill(&p->canvas,20,control,w-40,1,C_DIV);
     ink(p,FONT_REGULAR,12,20,control+17,w-40,C_MUTED,"SESSION CONTROL");
-    int control_top=compact?482:506,control_h=compact?38:42;
+    int control_top=compact?448:474,control_h=compact?32:34;
     action_row(p,w,control_top,control_h,QUICK_DISCONNECT,selected==QUICK_DISCONNECT,state,audio,refresh);
     action_row(p,w,control_top+control_h,control_h,QUICK_CLOSE_APP,selected==QUICK_CLOSE_APP,state,audio,refresh);
+    action_row(p,w,control_top+control_h*2,control_h,QUICK_DESKTOP,selected==QUICK_DESKTOP,state,audio,refresh);
     cv_fill(&p->canvas,20,h-38,w-40,1,C_DIV);
     ink(p,FONT_REGULAR,12,20,h-14,w/4,C_SUB,"A Select");
     ink(p,FONT_REGULAR,12,w/4+12,h-14,w/4,C_SUB,"B Resume");
@@ -279,6 +282,55 @@ static void confirm_page(stream_panel *p,int w,int h)
     cv_fill(&p->canvas,20,h-38,w-40,1,C_DIV);
     ink(p,FONT_REGULAR,12,20,h-14,w-40,C_SUB,"A Confirm     B Cancel");
 }
+static void desktop_page(stream_panel *p,int w,int h,unsigned state)
+{
+    static const char *labels[]={"Desktop Mode On / Off","Desktop Toolbar","Keyboard","Windows OSK (Win+Ctrl+O)","Touch keyboard taskbar","Switch window (Alt+Tab)","Windows Explorer"};
+    header(p,w,"Desktop Controller Mode");
+    unsigned selected=(state>>QUICK_ROW_SHIFT)&QUICK_ROW_MASK;
+    for(int row=0;row<7;row++){
+        int y=111+row*55;
+        if(selected==(unsigned)row)cv_rrect(&p->canvas,18,(float)y,(float)(w-36),49,7,0xFF244D3A);
+        ink(p,FONT_BOLD,18,32,y+31,w-64,C_TEXT,labels[row]);
+    }
+    ink(p,FONT_REGULAR,12,20,h-25,w-40,C_SUB,"A Select     B Back     R3 Desktop Toolbar");
+}
+static void desktop_draw(D3DDevice *d,unsigned state)
+{
+    int view=state&3;if(!view)return;
+    stream_panel *p=panels+2;const int w=640,h=300;
+    if(p->failed)return;
+    if(!p->texture){
+        if(!cv_init(&p->canvas,w,h) || FAILED(d->CreateTexture(w,h,1,0,D3DFMT_LIN_A8R8G8B8,0,&p->texture,NULL))){p->failed=true;input_desktop_ui_unavailable();return;}
+        if(FAILED(d->CreateTexture(w,h,1,0,D3DFMT_LIN_A8R8G8B8,0,&p->spare,NULL)))p->spare_failed=true;
+        p->previous=~state;
+    }
+    bool swapped=false,update=state!=p->previous;
+    if(update && gfx_fence_pending(p->fence)){
+        if(p->spare && !gfx_fence_pending(p->spare_fence)){swap_panel(p);swapped=true;}
+        else update=false;
+    }
+    if(update){
+        cv_fill(&p->canvas,0,0,w,h,C_BG);
+        ink(p,FONT_BOLD,21,18,30,w-36,C_TEXT,view==DESK_TOOLBAR?"MoonX360 Desktop":"MoonX360 Keyboard");
+        static const char *tools[]={"Back","Forward","Refresh","Address / Search","Keyboard","Home","Windows","Tabs","Fullscreen"};
+        int selected=(state>>2)&63,cols=view==DESK_KEYBOARD?10:3,count=view==DESK_KEYBOARD?40:9;
+        int cell_w=view==DESK_KEYBOARD?61:201,cell_h=view==DESK_KEYBOARD?48:65;
+        for(int i=0;i<count;i++){
+            int x=15+(i%cols)*cell_w,y=45+(i/cols)*cell_h;
+            cv_rrect(&p->canvas,(float)x,(float)y,(float)(cell_w-4),(float)(cell_h-5),5,i==selected?0xFF244D3A:C_CARD);
+            if(i==selected)cv_rrect_outline(&p->canvas,(float)x,(float)y,(float)(cell_w-4),(float)(cell_h-5),5,1,ui_theme_accent());
+            const char *label=view==DESK_KEYBOARD?desktop_key_label((state>>8)&3,(state&(1<<10))!=0,i):tools[i];
+            ink(p,FONT_BOLD,view==DESK_KEYBOARD?14.0f:17.0f,x+5,y+cell_h/2+5,cell_w-14,C_TEXT,label);
+        }
+        ink(p,FONT_REGULAR,13,18,267,w-36,C_SUB,view==DESK_KEYBOARD?"A Type / confirm     B Cancel     Page: letters / accents / symbols":"A Select     B Close     D-Pad Navigate");
+        ink(p,FONT_REGULAR,12,18,289,w-36,C_SUB,state&(1<<12)?"Text queue failed. Try again or select OSK.":view==DESK_KEYBOARD?"Each A confirms a character. Enter sends Enter. Caps changes letter case.":"R3 opens this toolbar. Actions use Windows / browser shortcuts.");
+        if(gfx_upload(p->texture,p->canvas.px,w*4,w*4,h)){p->previous=state;p->ready=true;}
+        else {if(swapped)swap_panel(p);if(!p->ready){p->failed=true;input_desktop_ui_unavailable();}}
+    }
+    if(!p->ready)return;
+    float x=(float)(gfx_layout_width()-w)*0.5f,y=380.0f;
+    d->SetTexture(0,p->texture);gfx_draw_layout_rect(d,GFX_SHADER_RGB,x,y,x+w,y+h);d->SetTexture(0,NULL);p->used=true;
+}
 void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned dropped,unsigned decode_us,bool detailed)
 {
     unsigned state=input_quick_snapshot();
@@ -292,7 +344,8 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
             menu->spare?2u:1u);
         plat_log(report);menu->was_open=false;
     }
-    for(int i=0;i<2;i++)panels[i].used=false;
+    for(int i=0;i<3;i++)panels[i].used=false;
+    if(!gfx_system_ui_active() && !open)desktop_draw(d,input_desktop_snapshot());
     if(gfx_system_ui_active() || (!open && (!statistics || detailed)))return;
     bool sidebar=open && ui_stream_menu_style()==1;
     int which=open?0:1,width=open?(sidebar?448:640):512;
@@ -327,7 +380,8 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
             }
             cv_fill(&p->canvas,0,0,width,height,C_BG);
             int page=(state>>QUICK_PAGE_SHIFT)&QUICK_PAGE_MASK;
-            if(page==QUICK_DETAILS)details_page(p,width,height,state,&vs,&info,&rs);
+            if(page==QUICK_DESKTOP_PAGE)desktop_page(p,width,height,state);
+            else if(page==QUICK_DETAILS)details_page(p,width,height,state,&vs,&info,&rs);
             else if(page==QUICK_CONFIRM)confirm_page(p,width,height);
             else main_page(p,width,height,state,&vs,&info,rs.state);
         } else {
@@ -364,5 +418,5 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
 }
 void gfx_stream_menu_submitted(DWORD fence)
 {
-    for(int i=0;i<2;i++)if(panels[i].used)panels[i].fence=fence;
+    for(int i=0;i<3;i++)if(panels[i].used)panels[i].fence=fence;
 }
