@@ -93,12 +93,14 @@ static void vmx_ab_screen(void)
         char message[192];snprintf(message,sizeof(message),"%s | report rows: %ld | B: cancel",
             state.rows<970?"Checking full buffers and guards":"Timing isolated routines",(long)InterlockedCompareExchange(&state.rows,0,0));
         ui_draw_busy("VMX128 A/B experiment",message,GetTickCount());ui_present();
-        if((input_menu_pressed()&B_FLAG) || input_close_app_requested())InterlockedExchange(&state.cancel,1);
+        /* Close App is a latched command for the previous remote streaming
+         * session. It is not an exit request for this offline diagnostic. */
+        if(input_menu_pressed()&B_FLAG)InterlockedExchange(&state.cancel,1);
         Sleep(100);
     }
     WaitForSingleObject(thread,INFINITE);CloseHandle(thread);
     char message[400];snprintf(message,sizeof(message),"%s. %s\nNo candidate was installed for streaming.",
         state.result==0?"Integrity and benchmark completed":state.result==2?"Cancelled":state.result==1?"Mismatches: rejected entries were not timed":"Report or resource failure",state.path);
     ui_draw_message(state.result?ICON_ERROR:ICON_INFO,"VMX128 A/B experiment",message);ui_present();
-    while(!(input_menu_pressed()&(A_FLAG|B_FLAG)) && !input_close_app_requested())Sleep(16);
+    while(!(input_menu_pressed()&(A_FLAG|B_FLAG)))Sleep(16);
 }
