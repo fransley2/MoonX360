@@ -74,9 +74,19 @@ static void appearance_menu(){appearance_calls++;cfg.ui_background=4;}
 static int library_size=1,last_play_id,first_play_id,last_resume_id,last_featured_id;static bool add_recent_on_play;
 static int plays,details,pauses,library_calls,context_calls,loads,draws,settings_calls,host_panels,history_calls;
 static std::deque<int> keys;
+static int refresh_failure,refresh_restore_checks,refresh_error_draws,refresh_error_version,last_gallery_id;
+static bool gallery_visible,refresh_restore_pending;
+static void expect_refresh_restore(){refresh_restore_pending=true;refresh_error_draws=draws;refresh_error_version=art_version;}
 char *storage_read(const char*,size_t*){return NULL;}
 bool storage_write(const char*,const void*,size_t){config_writes++;return true;}
-static int input_menu_pressed(){if(keys.empty())throw Done();int key=keys.front();keys.pop_front();return key;}
+static int input_menu_pressed(){
+    if(keys.empty())throw Done();
+    if(refresh_restore_pending && !keys.front()) {
+        assert(gallery_visible && draws==refresh_error_draws+1 && art_version==refresh_error_version);
+        refresh_restore_pending=false;refresh_restore_checks++;
+    }
+    int key=keys.front();keys.pop_front();return key;
+}
 static void plat_sleep_ms(unsigned){}
 static const char *plat_console_ip(){return "192.168.1.2";}
 static void plat_shutdown_stage(const char*){}
@@ -86,13 +96,13 @@ static bool discovery_tick(){
     return false;
 }
 static void discovery_pause(){pauses++;}
-static void refresh_server(){server_ok=true;}
+static void refresh_server(){server_ok=refresh_failure!=1;}
 static void *refresh_task(void*){return NULL;}
 static void do_pair(){server.paired=true;}
 static void clear_apps(){app_count=0;app_cache.valid=false;}
 static void settings_menu(){settings_calls++;}
 static void app_menu(){library_calls++;}
-static void message(int,const char*,const char*){}
+static void message(int,const char*,const char*){gallery_visible=false;if(refresh_failure)expect_refresh_restore();}
 static void host_options_menu(){context_calls++;}
 static void hosts_menu(int page){assert(page==UI_HOME);host_panels++;}
 static void history_menu(){history_calls++;}
@@ -118,7 +128,7 @@ static bool app_details_for(int id,const char *name,int index){
 static void library_context(int*){context_calls++;}
 void ui_library_art_window(int count,int,int *first,int *end){*first=0;*end=count;}
 static int library_map(int,int *map){for(int i=0;i<app_count;i++)map[i]=i;return app_count;}
-static void draw_apps(int,int,const int*,int){draws++;}
+static void draw_apps(int selected,int,const int *map,int count){draws++;gallery_visible=true;last_gallery_id=count?apps[map[selected]].id:0;}
 static void stop_art_loader(plat_thread **p){*p=NULL;}
 static void plat_atomic_store(int *p,int v){*p=v;}
 static void *art_loader(void*){return NULL;}
@@ -130,7 +140,11 @@ static void run_busy(const char *title,const char*,void *(*)(void*),void *count)
     if(!strcmp(title,"Stopping app")){*(bool*)count=true;server.current_game=0;return;}
     app_list_cache_store(&app_cache,host_key(),plat_now_ms());loads++;*(int*)count=library_size;app_count=library_size;
     for(int i=0;i<library_size;i++){apps[i].id=42+i;sprintf(apps[i].name,"Library game %d",42+i);}}
-static void artwork_refresh_apps(const char *title,int *count){run_busy(title,NULL,applist_task,count);}
+static void artwork_refresh_apps(const char *title,int *count){
+    gallery_visible=false;
+    if(refresh_failure>=3){*count=-1;task_was_cancelled=refresh_failure==4;expect_refresh_restore();return;}
+    run_busy(title,NULL,applist_task,count);
+}
 static const char *gs_error(){return "Error";}
 int ui_location_enter(const char*){return 0;}
 void ui_location_restore(int){}
@@ -162,6 +176,7 @@ void ui_draw_dashboard(const ui_host*,const ui_menu_item*,int n,int sel,const ch
 }
 /* PRODUCTION */
 static void reset(){
+    refresh_failure=refresh_restore_checks=last_gallery_id=0;gallery_visible=refresh_restore_pending=task_was_cancelled=false;
     library_query[0]=0;
     app_cache.valid=false;
     wake_accept=true;wake_calls=0;
@@ -183,6 +198,16 @@ int main(){
     reset();details_play=true;keys={X_FLAG,B_FLAG};actual_app_menu();assert(plays==1 && details==1);
     reset();keys={Y_FLAG,B_FLAG};actual_app_menu();assert(loads==2 && plays==0);
     reset();library_size=6;keys={RIGHT_FLAG,RIGHT_FLAG,Y_FLAG,A_FLAG,B_FLAG};actual_app_menu();assert(last_play_id==44 && loads==2);
+    // Warm/stationary Library: neither artwork nor animation can mask a missed
+    // redraw after an error dialog is dismissed or refresh work is cancelled.
+    for(int failure=1;failure<=4;failure++) {
+        reset();library_size=6;int seeded=-1;run_busy("Seed cached list",NULL,applist_task,&seeded);
+        refresh_failure=failure;server_ok=failure!=1;server.paired=failure!=2;
+        keys={RIGHT_FLAG,RIGHT_FLAG,Y_FLAG,0,0,B_FLAG};actual_app_menu();
+        assert(refresh_restore_checks==1 && !refresh_restore_pending && gallery_visible);
+        assert(draws==refresh_error_draws+1 && last_gallery_id==44 && app_count==6 && !plays);
+    }
+    puts("PASS: actual Library refresh restores warm gallery before idle input after offline/unpaired/HTTP error/cancel; selection retained, no artwork-version or animation trigger.");
     reset();keys={PLAY_FLAG,B_FLAG};actual_app_menu();assert(context_calls==1 && plays==0);
     reset();home({RIGHT_FLAG,A_FLAG});assert(library_calls==1 && details==0);
     reset();home({RIGHT_FLAG,RIGHT_FLAG,A_FLAG});assert(host_panels==1);

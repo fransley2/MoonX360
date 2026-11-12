@@ -12,6 +12,45 @@ static void mark(canvas_t *c,int item)
     ui_outline(c,100,100,120,160,6,3,0xFF70B8FF);
     ui_focus_mark(0,item);
 }
+static void launch_snapshot_hides_selected_cover()
+{
+    ui_host host={"PC","10.0.0.1",HOST_PAIRED,NULL,NULL};
+    unsigned generation=1000;
+    for(int layout=0;layout<2;layout++)for(int motion=0;motion<2;motion++)
+    for(int fade=0;fade<=200;fade+=100)for(int tick_hidden=0;tick_hidden<2;tick_hidden++) {
+        ui_draw_enable(true);assert(ui_init_layout(layout?640:1280,layout?480:720,layout));
+        ui_set_motion(motion!=0);
+        int aw,ah;ui_art_size(&aw,&ah);
+        const uint32_t cover_color=0xffff00ff;
+        std::vector<uint32_t> art(aw*ah,cover_color);
+        ui_app apps[2]={};
+        apps[0].name="Selected snapshot cover";apps[1].name="Same image on another tile";
+        for(int i=0;i<2;i++){apps[i].art=art.data();apps[i].generation=generation;}
+        generation++;
+        ui_draw_library(&host,apps,2,0,"All Apps");
+        ui_focus_tick(2000);ui_focus_tick(2000+fade);
+        int count=0,images=0;const ui_draw_command *commands=ui_draw_commands(&count);
+        ui_draw_command covers[2];
+        for(int i=0;i<count;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==art.data()) {
+            assert(images<2);covers[images++]=commands[i];
+        }
+        assert(images==2 && covers[0].x<covers[1].x);
+        // Execute the actual launch UI and software snapshot, including shared
+        // fade state for a second occurrence of the very same image.
+        ui_launch_begin(apps,2000+fade,motion!=0);
+        if(tick_hidden)ui_focus_tick(2016+fade);
+        ui_draw_software();
+        canvas_t *canvas=ui_canvas();
+        int selected=(int)(covers[0].y+covers[0].h/2)*canvas->w+(int)(covers[0].x+covers[0].w/2);
+        int other=(int)(covers[1].y+covers[1].h/2)*canvas->w+(int)(covers[1].x+covers[1].w/2);
+        assert(canvas->px[selected]!=cover_color && canvas->px[other]==cover_color);
+        // Hiding is scoped to the outgoing command, not the image/fade cache.
+        ui_draw_library(&host,apps,2,0,"All Apps");ui_draw_software();
+        assert(canvas->px[selected]==cover_color && canvas->px[other]==cover_color);
+        ui_draw_suspend();
+    }
+    puts("PASS: real ui_launch_begin -> software snapshot hides only selected cover; shared image, idle tick, fade phases, motion on/off, 720p/4:3 and redraw restore (24 cases).");
+}
 int main()
 {
     canvas_t c={};assert(cv_init(&c,1280,720));ui_draw_enable(true);ui_set_motion(true);
@@ -88,5 +127,6 @@ int main()
     assert(ui_transition_tick(280));p=ui_draw_commands(&count);
     assert(!(p[1].color>>24) && !ui_transition_active() && !ui_transition_tick(296));
     ui_transition_begin();ui_set_motion(false);assert(!ui_transition_active());
+    launch_snapshot_hides_selected_cover();
     puts("PASS: 120ms focus, 180ms page fade, 200ms cover fade, retarget, motion disable, terminal frame and cache equality.");
 }

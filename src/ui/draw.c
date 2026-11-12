@@ -283,7 +283,12 @@ void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h)
 {
     if(!ready)return;
     for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels &&
-        commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h)commands[i].color&=0x00ffffffu;
+        commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h) {
+        commands[i].color&=0x00ffffffu;
+        /* Fade ticks and software snapshots restore this command's target
+         * opacity. Hide that too, without hiding another use of the image. */
+        for(unsigned j=0;j<art_ref_count;j++)if(art_refs[j].command==i)art_refs[j].color&=0x00ffffffu;
+    }
 }
 void ui_draw_retire_image(const void *pixels)
 {

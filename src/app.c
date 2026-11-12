@@ -3771,9 +3771,9 @@ static void app_menu(void)
         if(key&Y_FLAG) {
             if(count)restore_id=apps[map[sel]].id;
             if(!server_ok)refresh_server();
-            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");continue;}
+            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");seen_version=-1;continue;}
             art_host_online=true;int refreshed=-1;artwork_refresh_apps(title,&refreshed);
-            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());continue;}
+            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());seen_version=-1;continue;}
             count=refreshed;
             app_count=count;art_pause(false);art_loader_start();seen_version=-1;continue;
         }
