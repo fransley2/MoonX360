@@ -50,6 +50,7 @@ bool storage_write(const char *name,const void *data,size_t length) {assert(stop
 void video_get_stats(video_stats *out) {assert(stopped);*out=stats;}
 void video_get_session_performance(performance_sample *out) {assert(stopped);*out=sample;}
 static void plat_log(const char*) {}
+static void cl_log(const char*,...) {}
 static int wait_button() {assert(!buttons.empty());int b=buttons.front();buttons.pop_front();return b;}
 static void message(int,const char*,const char*) {messages++;}
 static void session_details(const session_record*) {details++;}
