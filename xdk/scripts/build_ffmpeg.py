@@ -48,6 +48,12 @@ COMMON = ["/nologo", "/c"] + OPTIMIZATION + ["/Oi", "/GF", "/Gy", "/MT", "/W3", 
 # Our VMX functions (xdk/ffmpeg_xbox), built into avcodec.lib.
 XBOX_DSP = os.path.join(ROOT, "ffmpeg_xbox")
 EXTRA_SOURCES = {"avcodec": [os.path.join(XBOX_DSP, "h264_vmx.c")]}
+VMX_AB_EXPERIMENT=os.environ.get('XDK_VMX_AB_EXPERIMENT','0')
+if VMX_AB_EXPERIMENT not in ('0','1'):raise SystemExit('XDK_VMX_AB_EXPERIMENT must be 0 or 1')
+COMMON += ['/D','XDK_VMX_AB_EXPERIMENT='+VMX_AB_EXPERIMENT]
+VMX_AB_INPUTS=('h264_vmx.c','vmx_ab.h','vmx_ab_store.h','vmx_ab.c','multiplex_qpel.c','multiplex_chroma.c')
+if VMX_AB_EXPERIMENT=='1':
+    EXTRA_SOURCES['avcodec'] += [os.path.join(XBOX_DSP,p) for p in ('vmx_ab.c','multiplex_qpel.c','multiplex_chroma.c')]
 
 # Hooks at the end of FFmpeg's DSP init functions (after the per-arch ones)
 # that install the VMX functions. (file, exact text, replacement)
@@ -213,6 +219,8 @@ if __name__ == "__main__":
     if ok and 'avcodec' in names:
         with open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),encoding='utf-8') as f:worker_text=f.read()
         manifest = {'profile': PROFILE,'worker_map':WORKER_MAP,'source_root':FFMPEG,
+                    'vmx_ab_experiment':int(VMX_AB_EXPERIMENT),
+                    'vmx_ab_inputs':{p:hashlib.sha256(open(os.path.join(XBOX_DSP,p),'rb').read()).hexdigest() for p in VMX_AB_INPUTS} if VMX_AB_EXPERIMENT=='1' else {},
                     'h264_stage_profile': int(STAGE_PROFILE),
                     'slice_dispatch':SLICE_DISPATCH,
                     'slice_dispatch_sha256':hashlib.sha256(generate(worker_text).encode('utf-8')).hexdigest() if SLICE_DISPATCH=='batched' else None,

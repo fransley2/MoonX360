@@ -2159,8 +2159,16 @@ bool plat_benchmark_available(void)
     return storage_dir() != NULL;
 }
 
+#if XDK_VMX_AB_EXPERIMENT
+#include "vmx_ab_xdk.h"
+#endif
+
 void plat_run_benchmark(void)
 {
+#if XDK_VMX_AB_EXPERIMENT
+    vmx_ab_screen();
+    return;
+#endif
     struct bench b;
     struct ui_stat rows[BENCH_RUNS + 1];
     HANDLE th;
