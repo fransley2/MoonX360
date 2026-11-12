@@ -16,7 +16,9 @@ def function(signature):
 
 fixture = (root / 'xdk/tests/session_profile_fixture.cpp').read_text()
 fixture = fixture.replace('/* ACTUAL_SETUP */', '\n'.join(function(name) for name in
-    ['void video_set_options(', 'int video_colorspace(', 'void video_init_callbacks(']))
+    ['void video_set_options(', 'int video_colorspace(', 'static void video_ffmpeg_init_callbacks(',
+     'static const struct video_decoder_backend *video_find_decoder_backend(',
+     'static int video_decoder_unavailable_setup(', 'void video_init_callbacks(']))
 start = source.index('    d = gfx_begin();', source.index('static DWORD WINAPI render_main('))
 end = source.index('    gfx_end();', start) + len('    gfx_end();')
 fixture = fixture.replace('/* ACTUAL_RENDER_SETUP */', source[start:end])
@@ -32,5 +34,11 @@ for member, value in [('width','cfg.width'), ('height','cfg.height'),
                       ('target_fps','cfg.fps'), ('slice_count','cfg.slice_count'),
                       ('color_space','lj.sc.colorSpace')]:
     assert f'vo.{member} = {value};' in app
+assert 'vo.decoder_backend = cfg.decoder_backend;' in app
+stream = app[app.index('static void stream(int app_id,'):]
+assert stream.index('video_decoder_resolve(cfg.decoder_backend)') < stream.index('prepare_selected_app(app_id)')
+assert stream.index('video_decoder_resolve(cfg.decoder_backend)') < stream.index('launch_selected_begin(')
 assert app.index('video_set_options(&vo);') < app.index('video_init_callbacks(&dr);')
+prefix = stream[:stream.index('    char selected_title[64];')]
+fixture = fixture.replace('/* ACTUAL_DECODER_PREFLIGHT */', prefix + '\n    decoder_preflight_passed=true;\n}\n')
 Path(sys.argv[1]).write_text(fixture)

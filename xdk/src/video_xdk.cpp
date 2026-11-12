@@ -29,6 +29,7 @@
 #include "../../src/input.h"
 #include "../../src/platform.h"
 #include "../../src/video.h"
+#include "video_decoder_backend.h"
 #include "../../src/launch_cover.h"
 #include "../../src/video_session.h"
 #include "../../src/video_gpu_policy.h"
@@ -1539,6 +1540,7 @@ static void video_cleanup(void)
         char report[8192];
         int n = snprintf(report, sizeof(report),
             "telemetry_schema=4\nbuild_profile=%s\nworker_map=%s\nworkers_requested=%d\nworkers_active=%d\nthread_layout=%s\n"
+            "decoder_requested=%s\ndecoder_active=ffmpeg\nsystem_gpu_compiled=0\n"
             "video=%dx%d@%d\nbitrate_kbps=%d\nfast_decode_config=%d\nfast_decode_active=%s\nfast_decode_change=next_session\n"
             "h264_fast_flag=%d\nh264_rfi=%d\nh264_workers_effective=%d\nh264_reference_mode=%d\n"
             "frame_budget_us=%u\ndecode_current_us=%u\ndecode_ema_us=%u\n"
@@ -1553,6 +1555,7 @@ static void video_cleanup(void)
             "pipeline_percentiles=rolling_256_samples; CPU_wall_times; overlay_required\n",
             XDK_BUILD_PROFILE_LABEL,XDK_WORKER_MAP_LABEL,options.decode_workers==3?3:4,stats.decode_threads,
             options.thread_layout?"balanced":"legacy_aux",
+            video_decoder_key(options.decoder_backend),
             vid_w, vid_h, options.target_fps, options.bitrate_kbps, options.fast_decode,fast_decode_name(options.fast_decode),
             h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
             h264_diagnostic.rfi && !XDK_H264_NO_RFI,h264_workers(),XDK_H264_REFERENCE_MODE,
@@ -1891,7 +1894,7 @@ static int video_submit(PDECODE_UNIT du)
     return DR_OK;
 }
 
-void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
+static void video_ffmpeg_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
 {
     LiInitializeVideoCallbacks(cb);
     cb->setup = video_setup;
@@ -1910,6 +1913,39 @@ void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
          XDK_H264_REFERENCE_MODE,h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
          h264_workers(),h264_diagnostic.rfi && !XDK_H264_NO_RFI,
          h264_diagnostic.capture_yuv,session_slices);
+}
+
+static const struct video_decoder_backend *video_find_decoder_backend(int requested)
+{
+    static const struct video_decoder_backend backends[] = {
+        {VIDEO_DECODER_FFMPEG, video_ffmpeg_init_callbacks}
+    };
+    int selected=video_decoder_resolve(requested);
+    for(unsigned i=0;i<sizeof(backends)/sizeof(backends[0]);i++)
+        if(backends[i].decoder==selected)return backends+i;
+    return NULL;
+}
+
+static int video_decoder_unavailable_setup(int format,int width,int height,int fps,void *ctx,int flags)
+{
+    (void)format;(void)width;(void)height;(void)fps;(void)ctx;(void)flags;
+    vlog("[DECODER] setup rejected: %s\n",video_decoder_unavailable_reason());
+    return -1;
+}
+
+void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
+{
+    const struct video_decoder_backend *backend=video_find_decoder_backend(options.decoder_backend);
+    if(!backend) {
+        /* A second boundary for non-UI callers: reject setup, advertise no
+         * capabilities, and never install callbacks for a nonexistent backend. */
+        LiInitializeVideoCallbacks(cb);
+        cb->setup=video_decoder_unavailable_setup;
+        return;
+    }
+    if(options.decoder_backend==VIDEO_DECODER_AUTO)
+        vlog("[DECODER] Auto selected FFmpeg: system GPU ABI unavailable in this build\n");
+    backend->init_callbacks(cb);
 }
 
 /* ---------------------------------------------------- benchmark */

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include "fast_decode.h"
+#include "video_decoder.h"
 #include "desktop_options.h"
 #include <stddef.h>
 
@@ -18,6 +19,7 @@ struct config {
     int refresh_interval_ms; /* optional periodic IDR: 0, 125, 250, 1000..60000 ms */
     int fast_decode; /* On/Off; format-5 value 2 loads as On */
     int renderer;       /* enum video_renderer: 0 GPU, 1 CPU, 2 CPU + display colour matrix */
+    int decoder_backend; /* global next-session preference; absent config = FFmpeg */
     bool vsync;
     bool sops;          /* let the host change its resolution to match */
     int quit_combo;     /* 0: LB+RB+L3+R3; 1: legacy combo, both held 2 s */

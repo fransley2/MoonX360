@@ -71,6 +71,7 @@ int main(){
     streaming_start_us=100;streaming_end_us=20000100;
     rtp_counter_duration_us=2000000;last_complete_frames=110;
     actual_report();assert(writes==1);
+    assert(strstr(saved,"decoder_requested=ffmpeg\ndecoder_active=ffmpeg\nsystem_gpu_compiled=0\n"));
     assert(strstr(saved,"rtp_counter_scope=performance_window\nrtp_counter_duration_us=2000000\n"));
     assert(strstr(saved,"requested_fps=60\n") && strstr(saved,"setup_fps_argument=60\n"));
     assert(strstr(saved,"h264_fast_flag=1\nh264_rfi=1\nh264_workers_effective=4\n"));
@@ -79,7 +80,8 @@ int main(){
     assert(strstr(saved,"vsync_enabled=1\n") && strstr(saved,"not_scanout_or_visible_frames"));
     assert(strstr(saved,"idr_received=0\nidr_decoded=0\nperiodic_refresh_requests=0\n"));
     assert(strstr(saved,"callback_gap_p99_us=0\n")); // report tail was not truncated
-    setup_fps_argument=30;streaming_end_us=0;actual_report();
+    setup_fps_argument=30;streaming_end_us=0;options.decoder_backend=VIDEO_DECODER_AUTO;actual_report();
+    assert(strstr(saved,"decoder_requested=auto\ndecoder_active=ffmpeg\nsystem_gpu_compiled=0\n"));
     assert(writes==2 && strstr(saved,"setup_fps_argument=30\n") && strstr(saved,"negotiated_fps=unknown\n"));
     assert(strstr(saved,"callback_fps=0.000\n") && strstr(saved,"decoded_fps=0.000\n") && strstr(saved,"presented_fps=0.000\n"));
     options.stats_overlay=false;actual_report();assert(writes==2);

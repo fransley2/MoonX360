@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include "fast_decode.h"
+#include "video_decoder.h"
 #include <stdint.h>
 #include <Limelight.h>
 #include "performance_advisor.h"
@@ -34,6 +35,7 @@ struct video_options {
     bool crt_clarity; /* opt-in spatial interlace filter, hardware/output-gated */
     char host_name[64]; /* selected host label, copied before connection */
     uint32_t connection_started_ms; /* cold trace origin, before host launch */
+    int decoder_backend; /* enum video_decoder; frozen before connection setup */
 };
 
 const char *video_renderer_name(int renderer);

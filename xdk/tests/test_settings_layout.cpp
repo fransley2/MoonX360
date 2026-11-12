@@ -32,6 +32,9 @@ int main(void)
     assert(settings_node(SET_HISTORY_VIEW)==MENU_HISTORY && settings_node(SET_OVERLAY)==MENU_HISTORY);
     assert(settings_node(SET_RESTART)==MENU_POWER && settings_node(SET_SHUTDOWN)==MENU_POWER);
     assert(settings_node(SET_FAST)==MENU_DECODER && settings_node(SET_WORKERS)==MENU_DECODER);
+    assert(settings_node(SET_DECODER_BACKEND)==MENU_DECODER_BACKEND);
+    assert(settings_pages[MENU_DECODER_BACKEND].parent==MENU_ADVANCED);
+    assert(settings_kind(SET_DECODER_BACKEND)==UI_OPTION_CYCLE);
     assert(settings_node(SET_PACKET)==MENU_NETWORK && settings_node(SET_SOPS)==MENU_NETWORK && settings_node(SET_TEST_BITRATE)==MENU_NETWORK);
     assert(settings_node(SET_NETWORK_INFO)==MENU_TECHNICAL && settings_node(SET_RECOVERY_INFO)==MENU_TECHNICAL);
     assert(settings_node(SET_LOG_CAPTURE)==MENU_LOGGING && settings_node(SET_REPORT)==MENU_LOGGING);

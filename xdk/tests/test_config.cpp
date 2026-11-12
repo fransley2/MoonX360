@@ -31,6 +31,7 @@ int main(void)
     config_load(&c);
     assert(c.width == 1280 && c.height == 720 && c.fps == 60 && c.bitrate_kbps == 12000 && c.ui_layout==0);
     assert(c.artwork_cache_enabled && c.artwork_cache_mb==128);
+    assert(c.decoder_backend==VIDEO_DECODER_FFMPEG);
     assert(writes == 0 && c.ui_motion && c.menu_sounds && c.menu_volume==18);
     assert(!c.desktop_start && !c.desktop_app && !c.desktop_host[0] && c.desktop.speed==100 && c.desktop.deadzone==18);
     c.desktop_start=true;strcpy(c.desktop_host,"desktop-test-pc");c.desktop_app=42;c.desktop.speed=175;c.desktop.deadzone=24;c.desktop.precision=15;c.desktop.scroll_speed=150;c.desktop.keyboard=1;
@@ -42,6 +43,25 @@ int main(void)
     config_load(&loaded);assert(loaded.desktop.speed==200 && loaded.desktop.deadzone==0 && loaded.desktop.precision==10);
     for(int i=0;i<DESKTOP_BINDINGS;i++)assert(loaded.desktop.mapping[i]==i);
     ini.clear();writes=0;config_defaults(&c);
+    const char *decoder_keys[]={"ffmpeg","system_gpu","auto","invalid","1","system_gpu-extra"};
+    for(int decoder=0;decoder<6;decoder++) {
+        ini=std::string("decoder_backend=")+decoder_keys[decoder]+"\n";
+        config_load(&loaded);
+        assert(loaded.decoder_backend==(decoder<3?decoder:VIDEO_DECODER_FFMPEG));
+        assert(config_save(&loaded));config_load(&c);
+        assert(c.decoder_backend==loaded.decoder_backend);
+        assert(video_decoder_resolve(c.decoder_backend)==(decoder==1?-1:VIDEO_DECODER_FFMPEG));
+    }
+    ini.clear();config_load(&c);assert(c.decoder_backend==VIDEO_DECODER_FFMPEG);
+    assert(video_decoder_validate(-1)==VIDEO_DECODER_FFMPEG && video_decoder_validate(99)==VIDEO_DECODER_FFMPEG);
+    assert(video_decoder_parse(NULL)==VIDEO_DECODER_FFMPEG);
+    struct user_profiles decoder_profiles={};decoder_profiles.count=1;
+    strcpy(decoder_profiles.items[0].name,"Decoder stays global");
+    config_profile_capture(&decoder_profiles.items[0].options,&c);
+    c.decoder_backend=VIDEO_DECODER_AUTO;
+    assert(config_profiles_apply(&decoder_profiles,0,&c));assert(c.decoder_backend==VIDEO_DECODER_AUTO);
+    config_select_factory(&c,CONFIG_PRESET_720_60);assert(c.decoder_backend==VIDEO_DECODER_AUTO);
+    config_defaults(&c);writes=0;
     const int refresh_values[]={0,125,250,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,30000,45000,60000};
     for(int i=0;i<18;i++){
         assert(config_refresh_interval_supported(refresh_values[i]));

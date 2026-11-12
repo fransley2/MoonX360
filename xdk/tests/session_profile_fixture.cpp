@@ -4,8 +4,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include "../src/video_session.h"
+#include "../src/config.h"
 #include "../src/video_h264_diagnostic.h"
 #include "../src/h264_reference_policy.h"
+#include "../xdk/src/video_decoder_backend.h"
 #ifndef XDK_H264_REFERENCE_MODE
 #define XDK_H264_REFERENCE_MODE 0
 #endif
@@ -27,6 +29,16 @@ static void video_cleanup() {}
 static int video_submit(PDECODE_UNIT) { return 0; }
 void LiInitializeVideoCallbacks(PDECODER_RENDERER_CALLBACKS cb) { memset(cb,0,sizeof(*cb)); }
 static void xdk_set_thread_layout(int){}
+static config cfg;
+static bool stream_return_home,decoder_preflight_passed;
+static unsigned decoder_messages,decoder_logs;
+enum {ICON_ERROR=1};
+static void message(int,const char *title,const char *reason) {
+    assert(!strcmp(title,"Video decoder unavailable"));
+    assert(strstr(reason,"unavailable") && strstr(reason,"ABI"));decoder_messages++;
+}
+static void cl_log(const char*,...) {decoder_logs++;}
+/* ACTUAL_DECODER_PREFLIGHT */
 /* ACTUAL_SETUP */
 /* ACTUAL_SHADER */
 #define D3DRS_PRESENTINTERVAL 0
@@ -67,6 +79,14 @@ static void check_matrix(int space)
 }
 int main()
 {
+    const int decoders[]={VIDEO_DECODER_FFMPEG,VIDEO_DECODER_SYSTEM_GPU,VIDEO_DECODER_AUTO};
+    for(int i=0;i<3;i++) {
+        cfg.decoder_backend=decoders[i];decoder_preflight_passed=false;
+        decoder_messages=decoder_logs=0;stream_return_home=true;stream(42,"Game");
+        assert(!stream_return_home);
+        assert(decoder_preflight_passed==(i!=1));
+        assert(decoder_messages==(i==1?1:0) && decoder_logs==(i==1?0:1));
+    }
     assert(strstr(ps_yuv_src,"float4 chroma : register(c0)"));
     assert(strstr(ps_yuv_src,"y + chroma.y * u + chroma.z * v"));
     assert(video_colorspace(1280,720)==COLORSPACE_REC_709);
@@ -96,7 +116,22 @@ int main()
     }
     video_options vo={};vo.width=1920;vo.height=1080;vo.target_fps=30;
     video_set_options(&vo);video_init_callbacks(&cb);assert((unsigned)cb.capabilities>>24==8);
+    DECODER_RENDERER_CALLBACKS stable=cb;
+    vo.decoder_backend=VIDEO_DECODER_AUTO;
+    video_set_options(&vo);video_init_callbacks(&cb);
+    assert(cb.setup==stable.setup && cb.start==stable.start && cb.stop==stable.stop);
+    assert(cb.cleanup==stable.cleanup && cb.submitDecodeUnit==stable.submitDecodeUnit && cb.capabilities==stable.capabilities);
+    running=true;vo.decoder_backend=VIDEO_DECODER_SYSTEM_GPU;video_set_options(&vo);
+    video_init_callbacks(&cb);assert(cb.setup==stable.setup && options.decoder_backend==VIDEO_DECODER_AUTO);
+    running=false;video_set_options(&vo);video_init_callbacks(&cb);
+    assert(cb.setup==video_decoder_unavailable_setup && cb.setup(VIDEO_FORMAT_H264,1280,720,60,NULL,0)<0);
+    assert(!cb.start && !cb.stop && !cb.cleanup && !cb.submitDecodeUnit && !cb.capabilities);
+    assert(!video_find_decoder_backend(VIDEO_DECODER_SYSTEM_GPU));
+    assert(video_find_decoder_backend(VIDEO_DECODER_AUTO)==video_find_decoder_backend(VIDEO_DECODER_FFMPEG));
+    vo.decoder_backend=VIDEO_DECODER_FFMPEG;video_set_options(&vo);video_init_callbacks(&cb);
+    assert(cb.setup==stable.setup && cb.capabilities==stable.capabilities);
     check_matrix(COLORSPACE_REC_601);check_matrix(COLORSPACE_REC_709);
     puts("PASS: real options/callback negotiation: Auto 720p60=8 / 1080p60=12, all overrides, frozen while running, RFI retained.");
     puts("PASS: host matrix selection + actual renderer constant setup; 686 limited-range YUV reference samples for 601/709.");
+    puts("PASS: actual decoder registry: FFmpeg/Auto callback identity, session freeze, explicit unavailable rejection without capabilities/resources, stable reinitialization.");
 }

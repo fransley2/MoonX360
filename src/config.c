@@ -21,6 +21,7 @@ void config_defaults(struct config *c)
     c->packet_size = 1024;
     c->fast_decode = true;
     c->renderer = 0;
+    c->decoder_backend = VIDEO_DECODER_FFMPEG;
     c->vsync = true;
     c->sops = true;
     c->history_enabled = true;
@@ -156,6 +157,8 @@ void config_load(struct config *c)
             c->packet_size = atoi(eq + 1);
         else if (!strcmp(line, "fast_decode"))
             c->fast_decode = fast_decode_parse(eq + 1);
+        else if (!strcmp(line, "decoder_backend"))
+            c->decoder_backend = video_decoder_parse(eq + 1);
         else if (!strcmp(line, "renderer")) {
             if (!strcmp(eq + 1, "cpu"))
                 c->renderer = 1;
@@ -264,6 +267,8 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "fast_decode=%d\n"
         "# gpu (default), cpu, or cpu_hwcolor (experimental)\n"
         "renderer=%s\n"
+        "# next-session decoder: ffmpeg (default), system_gpu (unavailable), auto\n"
+        "decoder_backend=%s\n"
         "# GPU renderer: wait for vertical blank before showing a frame (no tearing)\n"
         "vsync=%d\n"
         "sops=%d\n"
@@ -280,6 +285,7 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "aurora_enabled=%d\naurora_direct_enabled=%d\nartwork_cache_enabled=%d\nartwork_cache_mb=%d\naurora_cache_handling=%d\naurora_shortcuts_folder=%s\naurora_main_xex=%s\naurora_path=%s\naurora_default_profile=%s\n",
         c->host,c->host_uuid, c->width, c->height, c->fps, c->bitrate_kbps, c->packet_size, c->slice_count,
         c->fast_decode, c->renderer == 1 ? "cpu" : c->renderer == 2 ? "cpu_hwcolor" : "gpu",
+        video_decoder_key(c->decoder_backend),
         c->vsync, c->sops, c->local_audio, c->audio_mode,c->mouse_speed,c->mouse_acceleration,c->mouse_scroll_ms, c->quit_combo, c->stick_deadzone, c->session_report,
         config_overlay_mode(c)!=0, c->diagnostic_log,config_overlay_mode(c),c->image_quality,c->history_enabled,
         c->user_profile,c->launch_cover_ms,c->launch_animation,config_profile_key(config_video_preset(c)),c->mdns_discovery?"true":"false",

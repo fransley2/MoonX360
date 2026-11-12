@@ -1209,7 +1209,7 @@ static void settings_menu(void)
             "On-screen statistics", "Diagnostic capture", "View logs", "H.264 slices", "Bitrate comparisons",
             "Image quality", "Record session history", "Recent sessions", "Performance analysis",
             "Find PCs automatically (mDNS)", "UI resources", "Recovery information", "Network diagnostics",
-            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Desktop Mode", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength",
+            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Desktop Mode", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength", "Video decoder",
         };
         static const char *helps[SET_COUNT] = {
             "Requested host resolution. Compare measured decode and queue time on hardware; lower resolution alone does not guarantee better performance.",
@@ -1273,8 +1273,10 @@ static void settings_menu(void)
             "Restore only the app target, layout and UI margin saved before CRT setup. Other preferences remain unchanged. App restart required.",
             "Off by default. GPU Smooth (Experimental) mixes two raw YUV pictures for two presentations after a selected decoded IDR. Cached pipeline and an extra YUV slot are required. Failure bypasses to Fast. Check smoothing-session.txt for actual blended Present calls. Next session.",
             "Low uses at most 10% then 4% previous picture; Medium at most 15% then 7%. Motion/difference gates may bypass. This heuristic cannot guarantee clean history. Does not change refresh frequency. Next session.",
+            "FFmpeg is the stable default. System GPU is unavailable in this build and blocks connection. Auto uses FFmpeg. Applies next session; independent of renderer and saved stream profiles.",
         };
         char val[SET_COUNT][128];
+        snprintf(val[SET_DECODER_BACKEND],128,"%s",cfg.decoder_backend==VIDEO_DECODER_AUTO?"Auto (FFmpeg)":video_decoder_name(cfg.decoder_backend));
         snprintf(val[SET_REFRESH_SMOOTHING],128,"%s",cfg.refresh_smoothing?"GPU Smooth (Experimental)":"Off");
         snprintf(val[SET_SMOOTHING_STRENGTH],128,"%s",cfg.smoothing_strength?"Medium":"Low");
         snprintf(val[SET_UI_SAFE_AREA],128,"%d%% / edge",cfg.ui_safe_area);
@@ -1510,6 +1512,7 @@ static void settings_menu(void)
             case SET_TEST_BITRATE: config_customize_stream(&cfg);cfg.bitrate_kbps = config_test_bitrate(&cfg,d); break;
             case SET_SLICES: cfg.slice_count = config_cycle_slices(cfg.slice_count, d); break;
             case SET_FAST: config_customize_stream(&cfg);cfg.fast_decode = !cfg.fast_decode; break;
+            case SET_DECODER_BACKEND: cfg.decoder_backend=(video_decoder_validate(cfg.decoder_backend)+d+VIDEO_DECODER_COUNT)%VIDEO_DECODER_COUNT; break;
             case SET_RENDERER: cfg.renderer = (cfg.renderer + d + RENDERER_COUNT) % RENDERER_COUNT; break;
             case SET_VSYNC: cfg.vsync = !cfg.vsync; break;
             case SET_SOPS: cfg.sops = !cfg.sops; break;
@@ -2228,6 +2231,7 @@ static bool stream_once(int app_id, const char *app_title)
     struct stream_options effective;
     config_profile_capture(&effective,&cfg);
     vo.fast_decode = effective.fast_decode!=0;
+    vo.decoder_backend = cfg.decoder_backend;
     vo.renderer = cfg.renderer;
     vo.vsync = cfg.vsync;
     vo.stats_overlay = cfg.stats_overlay && plat_has_diagnostics();
@@ -2630,6 +2634,15 @@ static void offer_stream_environment(void)
 static void stream(int app_id, const char *app_title)
 {
     stream_return_home=false;
+    /* Reject an unavailable explicit backend before preflight can switch or
+     * launch a host app. No partial decoder or GPU queue exists to unwind. */
+    int decoder=video_decoder_resolve(cfg.decoder_backend);
+    if(decoder<0) {
+        message(ICON_ERROR,"Video decoder unavailable",video_decoder_unavailable_reason());
+        return;
+    }
+    cl_log("[DECODER] requested=%s active=%s system_gpu_compiled=0\n",
+           video_decoder_key(cfg.decoder_backend),video_decoder_key(decoder));
     char selected_title[64];history_text(selected_title,sizeof(selected_title),app_title);
 #ifdef _XBOX
     launch_selected_begin(app_id,selected_title);
