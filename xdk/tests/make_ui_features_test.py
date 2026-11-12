@@ -43,6 +43,8 @@ int main(){
   assert(*ui_translations[i].es && !strcmp(ui_translate(ui_translations[i].en),ui_translations[i].es));
  }
  ui_set_language(CONFIG_LANGUAGE_PT_BR);
+ assert(!strcmp(ui_translate("Video decoder"),"Decodificador de v\303\255deo"));
+ assert(!strcmp(ui_translate("FFmpeg (Stable)"),"FFmpeg (Est\303\241vel)"));
  for(unsigned i=0;i<sizeof(ui_translations)/sizeof(ui_translations[0]);i++)
   assert(*ui_translations[i].pt_br && !strcmp(ui_translate(ui_translations[i].en),ui_translations[i].pt_br));
  assert(!strcmp(ui_translate("Language"),"Idioma") && !strcmp(ui_translate("Save"),"Salvar"));
