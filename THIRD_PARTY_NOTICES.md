@@ -43,3 +43,16 @@ to distribute an SDK-linked executable. Review the actual SDK terms and the
 GPL's applicable linking/System Library provisions for that distribution.
 See the [GNU GPLv3 text](https://www.gnu.org/licenses/gpl.en.html) and
 [GNU license FAQ](https://www.gnu.org/licenses/gpl-faq.en.html).
+
+## Optional Multiplex360 VMX experiment
+
+`xdk/ffmpeg_xbox/multiplex_qpel.c` and `multiplex_chroma.c` adapt only the
+pixel kernels from HG-ERIK/multiplex360, commit
+`bda33b8602b9a0b9869effdd5cd7c0fadcb34216`:
+`external/ffmpeg360/libavcodec/xbox360/h264_qpel_xb.c` and
+`h264_chroma_xb.c`. The repository supplies GPL-3.0; see this project's GPL-3.0
+LICENSE and <https://github.com/HG-ERIK/multiplex360/tree/bda33b8602b9a0b9869effdd5cd7c0fadcb34216>.
+The modified files identify their origin and changes. No FFmpeg 0.7 context,
+initialization, threading or complete decoder is imported. These routines are
+compiled only with `XDK_VMX_AB_EXPERIMENT=1` and remain offline benchmark
+candidates; they are not installed in streaming dispatch tables.
