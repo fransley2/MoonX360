@@ -26,3 +26,7 @@ for style in ('0','1'):
     for language in ('0','1','2'):
         r=subprocess.run([OUT/'quick-panel-preview.exe',OUT/f'quick-panel-preview-{style}-{language}.png',style,language],cwd=OUT)
         if r.returncode:raise SystemExit(r.returncode)
+
+for aspect in ('0','1'):
+    r=subprocess.run([OUT/'quick-panel-preview.exe',OUT/f'desktop-layout-{aspect}.png','0','2',aspect],cwd=OUT)
+    if r.returncode:raise SystemExit(r.returncode)

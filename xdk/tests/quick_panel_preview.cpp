@@ -5,6 +5,7 @@
 #include <chrono>
 #include <string>
 #include "src/video.h"
+#include "src/performance.h"
 #include "src/quick_menu.h"
 #include "src/desktop_keyboard_layout.h"
 #include "src/ui/canvas.h"
@@ -15,10 +16,13 @@ typedef unsigned DWORD;
 #define FAILED(x) ((x)<0)
 #define D3DFMT_LIN_A8R8G8B8 1
 #define GFX_SHADER_RGB 0
-struct D3DTexture {void Release(){delete this;}};
+static canvas_t screen;
+static int preview_layout=960;
+struct D3DTexture {int w,h;std::vector<uint32_t> pixels;D3DTexture(int width,int height):w(width),h(height),pixels(width*height){}void Release(){delete this;}};
+static D3DTexture *bound;
 struct D3DDevice {
-    int CreateTexture(int,int,int,int,int,int,D3DTexture **out,void*){*out=new D3DTexture;return 0;}
-    void SetTexture(int,D3DTexture*){}
+    int CreateTexture(int w,int h,int,int,int,int,D3DTexture **out,void*){*out=new D3DTexture(w,h);return 0;}
+    void SetTexture(int,D3DTexture *t){bound=t;}
 };
 static unsigned snapshot,tick,desktop_snapshot;
 static unsigned input_desktop_snapshot(){return desktop_snapshot;}
@@ -28,12 +32,18 @@ struct ui_translation {const char *en,*es,*pt_br;};
 #include "src/ui/quick_translations.h"
 static bool gfx_fence_pending(DWORD){return false;}
 static void gfx_wait_fence(D3DDevice*,DWORD){}
-static bool gfx_upload(D3DTexture*,const void*,int,int,int){return true;}
-static void gfx_draw_layout_rect(D3DDevice*,int,float,float,float,float){}
+static bool gfx_upload(D3DTexture *t,const void *p,int pitch,int,int rows){for(int y=0;y<rows;y++)memcpy(t->pixels.data()+y*t->w,(const char*)p+y*pitch,t->w*4);return true;}
+static void gfx_draw_layout_rect(D3DDevice*,int,float x0,float y0,float x1,float y1){
+    if(!screen.px || !bound)return;
+    assert(x0>=0 && y0>=0 && x1<=preview_layout && y1<=720);
+    int left=(int)(x0*screen.w/preview_layout),right=(int)(x1*screen.w/preview_layout);
+    int top=(int)(y0*screen.h/720),bottom=(int)(y1*screen.h/720);
+    for(int y=top;y<bottom;y++)for(int x=left;x<right;x++)screen.px[y*screen.w+x]=bound->pixels[(y-top)*bound->h/(bottom-top)*bound->w+(x-left)*bound->w/(right-left)];
+}
 static void gfx_draw_hud_rect(D3DDevice*,float,float,float,float){}
 static void gfx_hud_pixels(uint32_t*,int,int){}
 static bool gfx_system_ui_active(){return false;}
-static int gfx_layout_width(){return style?1280:960;}
+static int gfx_layout_width(){return preview_layout;}
 static void gfx_backbuffer_size(int *w,int *h){*w=640;*h=480;}
 static unsigned input_quick_snapshot(){return snapshot;}
 static bool input_mouse_active(){return false;}
@@ -65,21 +75,26 @@ static void video_get_refresh_snapshot(video_refresh_snapshot *out){
     memset(out,0,sizeof(*out));out->state=VIDEO_REFRESH_IDLE;
 }
 /* ACTUAL_STREAM_MENU */
-static void write_panel(const char *path,int which=0){
-    stream_panel *p=panels+which;
-    std::vector<unsigned char> rgb(p->canvas.w*p->canvas.h*3);
-    for(int i=0;i<p->canvas.w*p->canvas.h;i++){
-        uint32_t v=p->canvas.px[i];
+static void write_canvas(const char *path,canvas_t *c){
+    std::vector<unsigned char> rgb(c->w*c->h*3);
+    for(int i=0;i<c->w*c->h;i++){
+        uint32_t v=c->px[i];
         rgb[i*3]=(unsigned char)(v>>16);
         rgb[i*3+1]=(unsigned char)(v>>8);
         rgb[i*3+2]=(unsigned char)v;
     }
-    if(!stbi_write_png(path,p->canvas.w,p->canvas.h,3,rgb.data(),p->canvas.w*3))abort();
+    if(!stbi_write_png(path,c->w,c->h,3,rgb.data(),c->w*3))abort();
+}
+static void write_panel(const char *path,int which=0){
+    write_canvas(path,&panels[which].canvas);
+    if(screen.px){std::string frame=path;frame.resize(frame.size()-4);write_canvas((frame+"-screen.png").c_str(),&screen);cv_fill(&screen,0,0,screen.w,screen.h,0xff343a40);}
 }
 int main(int argc,char **argv){
-    if(argc!=4 || !font_init())return 1;
+    if((argc!=4 && argc!=5) || !font_init())return 1;
+    preview_layout=argc==5 && argv[4][0]=='1'?1280:960;
+    if(argc==5){assert(cv_init(&screen,preview_layout==960?640:1280,preview_layout==960?480:720));cv_fill(&screen,0,0,screen.w,screen.h,0xff343a40);}
     tick=1000;style=argv[2][0]=='1';language=argv[3][0]-'0';
-    snapshot=QUICK_OPEN|(80<<QUICK_VOLUME_SHIFT);
+    snapshot=QUICK_OPEN|(QUICK_DESKTOP<<QUICK_ROW_SHIFT)|(80<<QUICK_VOLUME_SHIFT);
     D3DDevice d;gfx_stream_menu_draw(&d,60,60,0,1000,false);write_panel(argv[1]);
     std::string stem=argv[1];stem.resize(stem.size()-4);
     snapshot=QUICK_OPEN|(QUICK_DETAILS<<QUICK_PAGE_SHIFT)|(80<<QUICK_VOLUME_SHIFT);
@@ -90,8 +105,11 @@ int main(int argc,char **argv){
     write_panel((stem+"-confirm.png").c_str());
     snapshot=QUICK_OPEN|(QUICK_DESKTOP_PAGE<<QUICK_PAGE_SHIFT);
     gfx_stream_menu_draw(&d,1,1,0,1000,false);write_panel((stem+"-desktop-menu.png").c_str());
+    snapshot=QUICK_STOPPING;gfx_stream_menu_draw(&d,1,1,0,1000,false);write_panel((stem+"-stopping.png").c_str());
     snapshot=0;desktop_snapshot=DESK_TOOLBAR|(3<<2);
     gfx_stream_menu_draw(&d,1,1,0,1000,false);write_panel((stem+"-toolbar.png").c_str(),2);
+    desktop_snapshot=DESK_MORE|(6<<2);
+    gfx_stream_menu_draw(&d,1,1,0,1000,false);write_panel((stem+"-more.png").c_str(),2);
     desktop_snapshot=DESK_KEYBOARD|(0<<2)|(1<<8);
     gfx_stream_menu_draw(&d,1,1,0,1000,false);write_panel((stem+"-keyboard.png").c_str(),2);
     desktop_snapshot=0;
@@ -107,5 +125,6 @@ int main(int argc,char **argv){
     printf("host_canvas_style=%d language=%d mean_ms=%.3f peak_ms=%.3f updates=%u\n",
         style,language,total_ms/100,peak_ms,panels[0].updates);
     gfx_stream_menu_reset(&d);
+    if(screen.px)cv_free(&screen);
     return 0;
 }

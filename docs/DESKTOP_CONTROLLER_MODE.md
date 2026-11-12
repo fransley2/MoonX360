@@ -1,170 +1,113 @@
-# Desktop Controller Mode
+# Desktop Mode
 
-Feature branch: `feature/desktop-controller-mode`. Baseline commit: `efae2fc`.
-This baseline preserves the pre-existing stabilization work, including its
-decoder changes. The Desktop feature does not change decoding, audio, bitrate,
-FEC, refresh policy, stream presets, or the bundled Moonlight library.
+The unified Desktop Mode replaces the separate legacy mouse and Desktop entries.
+The native renderer, GameStream transport, video/audio pipeline, stream profiles,
+pairing, Aurora shortcut identity and Direct Launch ABI remain unchanged.
 
-## Using the feature
+## Starting and stopping
 
-During a stream, open **Back + L3 → Desktop Controller Mode**. Select Desktop
-Mode On / Off, Desktop Toolbar, Keyboard, Windows OSK, Touch keyboard taskbar,
-Switch window, or Windows Explorer. Toolbar and Keyboard explicitly select
-Desktop Mode. OSK, taskbar access, Alt+Tab and Explorer can also be requested
-without changing the current mode. Runtime mode changes last for that session.
+Open **Back + L3** during a stream. **Desktop Mode** is the fourth Quick Menu row,
+between Audio Volume and Performance Overlay. It shows On/Off. **A** toggles it
+and returns to streaming; **X** opens the Desktop options. There is no duplicate
+Desktop row under session controls.
 
-Before streaming, use **Settings → Remote mouse and keyboard → Desktop
-Controller Mode** to configure the initial mode, pointer controls, keyboard and
-button mapping. Settings save through the existing settings persistence flow.
-To select automatic Desktop launch, first load the selected PC's app library,
-then choose its application in this menu. The binding stores **host UUID +
-numeric app ID**, even if the application is renamed. An app called Desktop on
-another PC or with another ID does not match. Only one explicit launch binding
-is stored; changing server application IDs requires choosing the app again.
+**Back + R3** toggles the same mode directly. The configured two-second exit chord
+always wins. Releasing a chord in stages must not send Escape, clicks or gamepad
+buttons to the PC. Menu/Guide transitions and mode changes release held input and
+wait for neutral controls before resuming.
 
-Desktop preferences are global INI options and are excluded from saved stream
-profiles. Old configuration files default to gamepad input. Game profiles and
-the existing legacy mouse sensitivity remain independent.
+Desktop Mode sends neutral gamepad state for every connected controller to avoid
+duplicate Steam/game input. The activating controller owns the pointer and panels.
+Automatic startup chooses a connected controller rather than assuming port zero.
+If the owner disconnects, held clicks are released and another connected control
+can take over after neutralization. If none is connected, no gamepad input leaks
+through the hotplug grace samples. Returning to game mode restores gamepad input.
 
-| Control | Default Desktop action |
+## Controls
+
+| Control | Default action |
 | --- | --- |
-| Left stick | Mouse, configurable deadzone, sensitivity and acceleration |
-| Right stick | High resolution horizontal / vertical wheel |
-| A | Left click; hold to drag |
-| B / X | Right / middle click |
-| Y | Selected keyboard |
-| D-pad | One arrow key tap per press |
-| LB / RB | Alt+Left / Alt+Right |
-| LT / RT | Precision / proportional boost; LT wins if both are held |
+| Left stick | Mouse pointer |
+| Right stick | Horizontal and vertical scrolling |
+| A / B / X | Left / right / middle click; hold a click to drag |
+| Y | Preferred keyboard; MoonX360 keyboard by default |
+| R3 | Desktop actions |
+| LT / RT | Precision / speed boost; precision takes priority |
+| D-pad | Arrow key taps |
+| LB / RB | Browser Back / Forward |
 | Start | Enter |
 | Back alone | Escape on release |
-| R3 alone | Desktop Toolbar |
 
-The twelve button actions can be remapped. Assigning an occupied action swaps
-its old binding, so no action becomes unreachable through a duplicate.
-Back-bound actions execute on release; a click assigned to Back becomes a tap.
-Continuous drag remains available on any other click binding. Stick axes,
-triggers, R3 toolbar and the reserved chords stay reserved.
+The twelve button actions can be remapped by swapping occupied actions. Reserved
+chords, R3, sticks and triggers retain their functions. A click assigned to Back
+is a tap on release; other click bindings can drag continuously.
 
-## Chord priority and input ownership
+The existing Compact / Text / Hidden indicator preference applies to Desktop.
+Text mode includes the Y keyboard and R3 actions hints. Keyboard and toolbar
+panels use the existing canvas/font/GPU fence path, with retained textures and
+no per-poll allocations, waits or additional input threads.
 
-The configured two-second exit chord remains authoritative. Back+L3 opens the
-existing Quick Menu. Back+R3 selects the existing legacy mouse mode, including
-when leaving Desktop Mode. Back+LB+RB+X toggles the performance overlay once per
-chord press and consumes the chord until neutral. Back participates in no
-Desktop action until released alone. A reserved chord cannot send Escape,
-browser navigation, middle click or Enter as a Desktop side effect.
+## Desktop actions and keyboard
 
-Desktop Mode sends neutral gamepad state for every controller, avoiding Steam
-or gamepad-enabled desktop applications receiving both mapped and gamepad
-input. Game mode retains the existing polling, calibration, hotplug, rumble
-and gamepad forwarding. Selecting legacy mouse restores that existing policy.
-Mode changes, disconnect, Guide, Quick Menu, keyboard and toolbar entry release
-held mouse buttons. Controller actions are gated until neutral on local UI
-transitions. Physical keyboard forwarding uses the existing aggregate snapshot
-policy and is suspended during local input capture; held physical keys must be
-released before forwarding resumes. Generated shortcuts are bounded down/up
-sequences with reverse modifier release and no repeat timer.
+R3 offers Keyboard, Address/Search, Back, Forward, Switch window and More actions.
+More actions contains Explorer, Refresh (F5), Home, Windows, Next tab, Fullscreen,
+Windows keyboard and Notification area. B returns from More actions to the main
+bar; B on the main bar closes it. Actions normally close the panel. Address/Search
+sends Ctrl+L and opens the preferred keyboard. Refresh here means F5, separately
+from the Quick Menu's Refresh Picture video recovery command.
 
-## Keyboard and toolbar
+The local keyboard supports letters, Portuguese accents, digits, symbols, space,
+backspace, Enter, Caps and page selection. D-pad moves focus; A sends a character
+immediately through the existing UTF-8 API. Enter sends Enter and closes the panel.
+B closes without undoing text already sent. Queue errors are displayed explicitly.
+Physical keyboard forwarding is suspended while local UI captures input; held
+physical keys must be released before forwarding resumes.
 
-Windows OSK uses **Win+Ctrl+O**: Win down, Ctrl down, O down, O up, Ctrl up,
-Win up. Explicit modifier masks and extended-key flags accompany the events.
-The [Microsoft accessibility shortcut reference](https://support.microsoft.com/en-us/accessibility/windows/windows-keyboard-shortcuts-for-accessibility)
-documents this OSK command. It toggles OSK; it does not report whether Windows
-accepted or displayed it.
+Windows keyboard sends Win+Ctrl+O. Notification area sends Win+B and lets the user
+select an enabled Windows keyboard icon with the pointer; it does not claim to
+open the touch keyboard automatically. Window/browser actions depend on PC focus
+and host support. No host helper, privileged action or streaming XAM keyboard loop
+is introduced.
 
-The XDK SDK declares `XShowKeyboardUI` in `include/xbox/xbox.h`. MoonX360's
-existing `plat_edit_text()` in `xdk/src/main_xdk.cpp` expressly rejects streaming
-and otherwise waits for overlapped completion while presenting its own UI.
-That path has no certified streaming presentation/input ownership. We preserve
-the guard and use the local keyboard instead; this is a conservative integration
-decision, not proof that the XAM API is universally unsafe during streaming.
-No XAM call or waiting loop was added to the streaming thread.
+## Settings and existing installations
 
-The local keyboard has letters, uppercase, Portuguese accents (including ç,
-ã, õ, á/à/â, é/ê, í, ó/ô, ú and ü), digits and common symbols. D-pad moves focus;
-A confirms each character immediately through `LiSendUtf8TextEvent`. Space,
-backspace, Enter, Caps, Page, Tab and Windows are explicit keys. Enter sends an
-Enter key and closes the keyboard. B / Close cancels further input; already
-confirmed characters remain on the PC. The UTF-8 byte strings are independent
-of the XDK compiler's source codepage. Queue failure displays an error and
-leaves OSK available. The bundled library has this API; successful queueing is
-not a host acknowledgement of text insertion. The existing library owns UTF-8
-packet synchronization on its send thread, outside decode/audio callbacks.
+Open **Settings > Controller > Desktop Mode**. Preferences are grouped into:
 
-Touch keyboard access is optional and intentionally limited: enable Windows'
-touch keyboard taskbar icon, then select Taskbar / Touch keyboard taskbar.
-MoonX360 sends **Win+B** to focus the notification area; use the Desktop mouse
-to select the keyboard icon. This does not automatically invoke the touch
-keyboard or guarantee that Windows exposes its icon. There is no TabTip.exe
-launch, undocumented COM activation, Run command, installed host helper,
-privilege elevation or security prompt bypass. Local UTF-8 and OSK remain the
-basic keyboard paths.
+- Behavior: initial mode and an optional app on the selected PC that starts Desktop
+  automatically. Open that PC's Library before choosing the app. Identity uses the
+  real host UUID and App ID, independently of the display name.
+- Pointer and scrolling: sensitivity, deadzone, acceleration, precision and scroll
+  speed, independent of gamepad calibration.
+- Keyboard: MoonX360, Windows keyboard or Notification area. Existing choices are
+  retained; new installations default to MoonX360.
+- Control mapping: button actions and reserved-control help.
+- Restore Desktop defaults: confirmation defaults to Cancel and resets only Desktop
+  preferences and its automatic app binding.
 
-The toolbar provides Back, Forward, Refresh (F5), Address/Search (Ctrl+L),
-Keyboard, Home (Alt+Home), Windows, Tabs (Ctrl+Tab) and Fullscreen (F11).
-These act on the focused Windows application; browser-specific commands depend
-on its shortcuts. Toolbar Refresh is unrelated to Quick Menu Refresh Picture.
-A executes; B closes. Closing omits all Desktop draw calls on the next sampled
-frame, leaving no persistent overlay.
+Preferences remain global INI values, outside saved streaming profiles. Old INIs
+with explicit mouse speed/acceleration inherit those values only when their
+corresponding Desktop values are absent. Desktop values win regardless of INI
+ordering. Loading does not rewrite configuration. Existing legacy mouse keys are
+preserved for compatibility. Runtime Quick Menu toggles last for that session.
 
-## Architecture and cost
+## Artwork reliability
 
-- `src/desktop_options.h`: bounded preferences and conflict-free action swaps.
-- `src/desktop_input.h`: input-thread state, edges, mouse accumulation, keyboard
-  shortcuts and cleanup. No new threads, waits, per-poll allocations or I/O.
-- `src/desktop_keyboard_layout.h`: UTF-8 labels shared with the renderer.
-- `xdk/src/input_xdk.cpp`: integrates after reserved chords and local UI routing,
-  before the existing gamepad sender. Publishes one atomic Desktop UI word.
-- `src/config.h`, `src/config.c`, `src/app.c`: additive INI persistence, settings,
-  controller mapping and explicit launch binding; saved profile schema unchanged.
-- `src/quick_menu.h`, `xdk/src/gfx_stream_menu.cpp`: Desktop action page and
-  retained toolbar/keyboard using the existing canvas, fonts, theme and fences.
+The disk reader preserves valid artwork and its index on temporary allocation or
+I/O errors and retries after one second. Missing files and confirmed invalid
+payloads are distinct outcomes. A failed network refresh keeps existing artwork.
+The selected image is prioritized, then the exact rendered library window, then
+nearby images. Visible buffers are protected from eviction; borrowed draw commands
+are retired before pixels are freed. Cache identity and disk formats are unchanged.
 
-The Desktop panel uses one 640×300 CPU canvas and at most two retained GPU
-textures, allocated on first use. It uploads only on state changes. When both
-textures are busy it retains the last complete image rather than waiting.
-The existing renderer cleanup owns all three panels. No video upload code,
-decoder code, new GPU effects or external dependencies are introduced.
+GPU images are staged and uploaded before replacing a resident texture. An image
+failure gets a placeholder and a bounded retry; other images, text and navigation
+continue through the native renderer. Shader/glyph failures retain the existing
+complete software-frame fallback. Diagnostics distinguish disk, download, format,
+decode and texture stages without exposing credentials.
 
-## Validation and hardware acceptance
+## Validation
 
-See the accompanying `TEST_RESULTS.md`, `audit.json`, SHA-256 and build logs in
-`dist/MoonX360-Desktop-Controller-test-20261108/`. The package deliberately
-contains no replacement INI, pairing keys or certificates.
-
-Automated tests exercise the actual policy and actual XDK input loop with
-simulated XInput and Moonlight send functions. Renderer tests cover bounded
-allocations, unchanged-state upload suppression, fences and zero drawing after
-closing. Host fixtures do not establish physical latency, CPU/GPU cost, correct
-Windows focus, real text insertion or visual stream performance.
-
-The local Sunshine HTTP server and Xbox XBDM were reachable during this run.
-Only read-only availability checks were made; the candidate has not been
-deployed or launched on Xbox. Apollo and Vibepollo have simulated protocol
-coverage from the existing regression suite, with no live instances validated.
-
-Before accepting this exact XEX on hardware, record its hash and test:
-
-1. Sunshine Desktop selected by its stored host/ID, including a renamed app and
-   a similarly named app on a different host. Confirm default game mode for games.
-2. Slow cursor motion, deadzone, acceleration, LT precision, RT boost, diagonal
-   motion and both scroll axes at the actual console poll rate.
-3. Left/right/middle clicks, drag outside the initial window, disconnect and
-   Guide while dragging. Confirm no stuck button on reconnect.
-4. Edge: Back/Forward/F5, Ctrl+L with accented search text, tabs, Home and F11.
-   Confirm the toolbar leaves no pixels after B or executing an action.
-5. Explorer navigation, context menu, dragging a harmless test file, Enter and
-   Escape. Test Alt+Tab and Win+E from the Desktop Quick Menu page.
-6. OSK down/up behavior, Portuguese UTF-8, backspace, space, symbols, caps,
-   Enter, cancel and an attached USB keyboard held across local UI transitions.
-7. Enable the Windows touch keyboard taskbar icon and test its optional access.
-   If unavailable, retain Local UTF-8 / OSK.
-8. Steam and a controller game: Desktop has no duplicate gamepad actions;
-   game mode restores normal gamepad input; Back+R3 restores legacy mouse.
-9. Both exit chord settings, Back+L3, Back+R3 and Back+LB+RB+X, including staggered
-   key releases, multiple controllers and hot-unplug.
-10. Repeat on Apollo and Vibepollo when available. Compare video/audio behavior
-    with the preserved baseline at identical stream settings; record controller
-    responsiveness and frame/audio continuity separately from build success.
+The local candidate package includes `docs/RELATORIO.md` and `docs/VALIDATION.json`.
+Host fixtures, mock GPU checks and preview images are separate from real Xbox
+validation. The exact candidate XEX hash and pending console checklist are recorded
+in that package.

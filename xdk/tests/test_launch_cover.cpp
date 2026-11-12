@@ -25,6 +25,13 @@ int main()
     launch_visual_begin(&v,0,false,0,0,150,200,false);launch_visual_art_ready(&v,0);
     launch_visual_get(&v,0,&frame);assert(frame.art==1 && frame.dim==1 && frame.title==1 && frame.x==514);
     puts("PASS: visual clock: real origin, 400ms easing, title 250ms, late art starts at usability, no movement restart, static and wrap");
+    launch_segments segments={};float prior=0;
+    for(uint32_t now=0;now<2000;now+=8){
+        unsigned completed=now<200?1:now<400?2:now<800?5:7;
+        float value=launch_segments_tick(&segments,completed,now);
+        assert(value>=prior && value<=completed);prior=value;
+    }
+    assert(prior==7 && launch_segments_tick(&segments,1,2200)==7);
     launch_cover s;
     for(int motion=0;motion<2;motion++)for(unsigned wait=0;wait<=10000;wait+=1000) {
         launch_cover_begin(&s,wait,motion!=0);

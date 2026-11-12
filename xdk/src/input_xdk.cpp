@@ -206,9 +206,10 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
 {
     struct pad pads[MAX_PADS];
     struct input_session session;
-    struct desktop_input desktop;memset(&desktop,0,sizeof(desktop));desktop.options=desktop_settings;desktop.enabled=desktop_initial;desktop.neutral=true;
+    struct desktop_input desktop;memset(&desktop,0,sizeof(desktop));desktop.options=desktop_settings;desktop.enabled=desktop_initial;desktop.neutral=true;desktop.owner=-1;
     struct input_shortcut shortcut;memset(&shortcut,0,sizeof(shortcut));
     struct remote_input remote;memset(&remote,0,sizeof(remote));
+    remote.desktop_only=true;
     remote.speed=pointer_speed;remote.acceleration=pointer_acceleration;remote.scroll_ms=pointer_scroll_ms;
     struct quick_menu quick;memset(&quick,0,sizeof(quick));quick.volume=100;quick.stats=initial_stats;
     XINPUT_KEYBOARDSTATE keyboards[MAX_PADS];memset(keyboards,0,sizeof(keyboards));
@@ -246,6 +247,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(guide && !guide_seen)for(int i=0;i<MAX_PADS;i++)input_rumble((unsigned short)i,0,0);
         struct pad quick_pads[MAX_PADS];memcpy(quick_pads,pads,sizeof(pads));
         for(int i=0;i<MAX_PADS;i++)if(!physical_connected[i])quick_pads[i].present=false;
+        if(desktop.enabled)desktop_select_owner(&desktop,quick_pads);
         bool quick_quit=false,quick_close_app=false;int mouse_action=-1;
         bool quick_was_open=quick.open;
         const int overlay_combo=BACK_FLAG|LB_FLAG|RB_FLAG|X_FLAG;
@@ -265,23 +267,28 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(quick_close_app)InterlockedExchange(&close_app_requested,1);
         if(quick_quit)plat_log("[INPUT] Quick Menu action consumed\n");
         for(int i=0;i<MAX_PADS;i++)if(shortcut_consumed[i]){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
-        if(mouse_action>=0) {
-            desktop_suspend(&desktop);desktop.enabled=false;remote_release(&remote);
-            bool old=remote.mouse[mouse_action];
-            for(int i=0;i<MAX_PADS;i++){if(remote.mouse[i])remote.suppress[i]=true;remote_mouse_release(&remote,i);remote.mouse[i]=false;}
-            remote.mouse[mouse_action]=!old;if(!old)remote.suppress[mouse_action]=false;
-        }
         if(guide || local || overlay || shortcut_fired){desktop_suspend(&desktop);for(int i=0;i<MAX_PADS;i++)remote_mouse_release(&remote,i);}
         if(!InterlockedCompareExchange(&desktop_available,0,0) && desktop.view){desktop_suspend(&desktop);}
         if(desktop_pending && !local && !guide && !overlay){desktop_command(&desktop,desktop_pending);desktop_pending=0;}
-        /* Preserve Back+R3 as the legacy mouse toggle, including from Desktop. */
+        /* One state for the Quick Menu and Back+R3. The exit chord wins. */
         bool mouse_chord=false;
-        for(int i=0;i<MAX_PADS;i++)if(pads[i].present && (pads[i].buttons&(BACK_FLAG|RS_CLK_FLAG))==(BACK_FLAG|RS_CLK_FLAG))mouse_chord=true;
-        if(mouse_chord && !desktop.mouse_latch && desktop.enabled && !local && !guide){desktop_suspend(&desktop);desktop.enabled=false;remote_release(&remote);}
+        int mouse_owner=-1;
+        for(int i=0;i<MAX_PADS;i++)if(quick_pads[i].present &&
+            (quick_pads[i].buttons&(BACK_FLAG|RS_CLK_FLAG))==(BACK_FLAG|RS_CLK_FLAG) &&
+            (quick_pads[i].buttons&input_exit_mask(stream_settings.quit_combo))!=input_exit_mask(stream_settings.quit_combo)){mouse_chord=true;mouse_owner=i;break;}
+        if(mouse_chord && !desktop.mouse_latch && !local && !guide && !overlay && !shortcut_fired){
+            remote_release(&remote);desktop.owner=mouse_owner;desktop_command(&desktop,DESK_TOGGLE);
+            for(int i=0;i<MAX_PADS;i++)remote.suppress[i]=true;
+        }
         desktop.mouse_latch=mouse_chord;
         if(guide){for(int i=0;i<MAX_PADS;i++)if(remote.mouse[i])remote.suppress[i]=true;remote_release(&remote);}
         audio_set_volume(quick.muted?0:quick.volume);
-        InterlockedExchange(&quick_snapshot,(LONG)quick_pack(&quick));
+        unsigned packed=quick_pack(&quick);
+        if(InterlockedCompareExchange(&quit_requested,0,0))packed|=QUICK_STOPPING;
+        unsigned previous=(unsigned)InterlockedExchange(&quick_snapshot,(LONG)packed);
+        if(packed!=previous && ((packed|previous)&(QUICK_OPEN|QUICK_STOPPING)) && perf_enabled()) {
+            char trace[128];snprintf(trace,sizeof(trace),"[UX] quick input_ms=%u state=%u\n",started,packed);plat_log(trace);
+        }
         bool keys[256]={false};
         /* Snapshot avoids repeat duplication and releases vanished devices. Bound: four
          * users, six keys each. State is aggregated before sending to handle shared keys. */
@@ -305,14 +312,16 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(launch_neutral && !cover_input && !any)launch_neutral=false;
         if(overlay)for(int i=0;i<MAX_PADS;i++)if((pads[i].buttons&overlay_combo)==overlay_combo){remote.suppress[i]=true;bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         if(desktop.enabled && !local && !guide){
-            struct pad owner=pads[desktop.owner];if(!physical_connected[desktop.owner])owner.present=false;
-            if(owner.buttons || desktop.view || desktop.neutral || !owner.present)remote_keys(&remote,keys,false);
-            desktop_step(&desktop,&owner,started,input_exit_mask(stream_settings.quit_combo));
+            if(desktop.owner>=0){
+                struct pad owner=pads[desktop.owner];if(!physical_connected[desktop.owner])owner.present=false;
+                if(owner.buttons || desktop.view || desktop.neutral || !owner.present)remote_keys(&remote,keys,false);
+                desktop_step(&desktop,&owner,started,input_exit_mask(stream_settings.quit_combo));
+            }
             /* All controllers neutral in Desktop Mode: no Steam double input. */
             for(int i=0;i<MAX_PADS;i++){bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         }
-        remote_keys(&remote,keys,!guide && !local && !desktop.view && (!desktop.enabled || (!desktop.neutral && !quick_pads[desktop.owner].buttons && physical_connected[desktop.owner])) && !overlay);
-        if(desktop_was_enabled && !desktop.enabled && !mouse_chord)for(int i=0;i<MAX_PADS;i++)remote.suppress[i]=true;
+        remote_keys(&remote,keys,!guide && !local && !desktop.view && (!desktop.enabled || (desktop.owner>=0 && !desktop.neutral && !quick_pads[desktop.owner].buttons && physical_connected[desktop.owner])) && !overlay);
+        if(desktop_was_enabled && !desktop.enabled)for(int i=0;i<MAX_PADS;i++)remote.suppress[i]=true;
         if(local)for(int i=0;i<MAX_PADS;i++){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;
@@ -321,9 +330,8 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
             if(!InterlockedCompareExchange(&mouse_available,0,0) && remote.mouse[i]){remote_mouse_release(&remote,i);remote.mouse[i]=false;remote.suppress[i]=true;}
             pads[i].present=present;
         }
-        bool mouse=false;for(int i=0;i<MAX_PADS;i++)mouse=mouse||remote.mouse[i];
         InterlockedExchange(&desktop_snapshot,(LONG)desktop_pack(&desktop));
-        InterlockedExchange(&mouse_mode,mouse && !desktop.enabled?1:0);
+        InterlockedExchange(&mouse_mode,desktop.enabled?1:0);
         guide_seen=guide;
         if(guide)for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;
@@ -341,7 +349,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
     desktop_release(&desktop);remote_release(&remote);
     InterlockedExchange(&desktop_snapshot,0);
     InterlockedExchange(&mouse_mode,0);
-    InterlockedExchange(&quick_snapshot,0);
+    InterlockedExchange(&quick_snapshot,InterlockedCompareExchange(&quit_requested,0,0)?QUICK_STOPPING:0);
     input_session_release(&session);
     return 0;
 }

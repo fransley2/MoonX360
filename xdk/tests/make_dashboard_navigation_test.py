@@ -12,6 +12,7 @@ def function(source,signature):
 fixture=r"""
 #include <assert.h>
 #include <stdio.h>
+static void cl_log(const char*,...){}
 #include <stdlib.h>
 #include <string.h>
 #include <deque>
@@ -23,6 +24,8 @@ static app_list_cache app_cache;
 static uint32_t plat_now_ms();
 #include "../src/settings_layout.h"
 #include "../src/ui/ui.h"
+#include "../src/ui/draw.h"
+void ui_draw_memory(ui_memory_info *out){memset(out,0,sizeof(*out));}
 #include "../src/session_history.h"
 #include "../src/library_state.h"
 #include "../src/host_cache.h"
@@ -39,7 +42,8 @@ static void art_home_update(int,int,const int*,int){}
 static void art_pause(bool){}
 static void art_loader_start(){}
 static plat_thread *art_worker;
-static struct {} art_cache;
+static struct {unsigned clock;} art_cache;
+static unsigned art_disk_hits,art_memory_hits,art_downloads,art_failures,art_stale_used;
 static void ui_cover_invalidate(void*,const char*){}
 static int selected_host_index();
 static bool wake_accept=true;static int wake_calls;
@@ -112,6 +116,7 @@ static bool app_details_for(int id,const char *name,int index){
     else assert(id==server.current_game && !strcmp(name,"Running app"));
     details++;return details_play;}
 static void library_context(int*){context_calls++;}
+void ui_library_art_window(int count,int,int *first,int *end){*first=0;*end=count;}
 static int library_map(int,int *map){for(int i=0;i<app_count;i++)map[i]=i;return app_count;}
 static void draw_apps(int,int,const int*,int){draws++;}
 static void stop_art_loader(plat_thread **p){*p=NULL;}

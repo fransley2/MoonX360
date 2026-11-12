@@ -175,13 +175,14 @@ enum {XINPUT_MAX_KEYBOARD_STATE=6,ERROR_SUCCESS=0,
  XINPUT_MODIFIER_LALT=16,XINPUT_MODIFIER_RALT=32,XINPUT_MODIFIER_LGUI=64,XINPUT_MODIFIER_RGUI=128};
 struct XINPUT_KEYBOARDSTATE {WORD VKCodes[6];BYTE bModifiers;};
 static int XInputGetKeyboardState(DWORD,XINPUT_KEYBOARDSTATE *state){memset(state,0,sizeof(*state));if(!test_cover)return 1;if(polls<=3)state->VKCodes[0]=65;return ERROR_SUCCESS;}
-struct remote_input {bool mouse[4],suppress[4];int speed,acceleration,scroll_ms;};
+struct remote_input {bool desktop_only,mouse[4],suppress[4];int speed,acceleration,scroll_ms;};
 struct quick_menu {bool open,neutral,latch,muted,stats,refresh_request;int volume,owner,desktop_request;};
-enum {QUICK_STATS=1u<<13};
+enum {QUICK_OPEN=1u,QUICK_STATS=1u<<13,QUICK_STOPPING=1u<<18,DESK_TOGGLE=1};
 struct desktop_input {int options,owner,view;bool enabled,neutral,overlay_latch,mouse_latch;};
 static int desktop_settings;static bool desktop_initial;
 static volatile LONG desktop_snapshot,desktop_available=1;
 static void desktop_suspend(desktop_input *d){d->neutral=true;d->view=0;}
+static void desktop_select_owner(desktop_input*,const pad*){assert(false);}
 static void desktop_command(desktop_input*,int){assert(false);}
 static void desktop_step(desktop_input*,pad*,DWORD,int){assert(false);}
 static unsigned desktop_pack(desktop_input*){return 0;}

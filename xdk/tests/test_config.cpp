@@ -320,5 +320,11 @@ int main(void)
     assert(config_save(&c));config_load(&loaded);assert(config_video_preset(&loaded)==CONFIG_PROFILE_1080_SMOOTH);
     ini="stream_profile=smooth\nwidth=1280\nheight=720\nfps=60\nbitrate=18000\n";config_load(&c);assert(c.bitrate_kbps==18000 && config_video_preset(&c)==0);
     config_apply_preset(&c,CONFIG_PROFILE_SMOOTH);assert(c.bitrate_kbps==12000 && c.fps==60);
+    ini="mouse_speed=175\nmouse_acceleration=0\n";config_load(&c);
+    assert(c.desktop.speed==175 && !c.desktop.acceleration && !c.desktop_start && c.desktop.keyboard==0);
+    ini="desktop_speed=50\nmouse_speed=175\ndesktop_acceleration=1\nmouse_acceleration=0\n";config_load(&c);
+    assert(c.desktop.speed==50 && c.desktop.acceleration);
+    ini="mouse_speed=175\nmouse_acceleration=0\ndesktop_speed=75\ndesktop_acceleration=1\n";config_load(&c);
+    assert(c.desktop.speed==75 && c.desktop.acceleration);
     puts("PASS: old INI preservation, new defaults, save/load, bounds, preset isolation and custom values.");
 }

@@ -1,5 +1,11 @@
 #pragma once
-enum { DESK_TOOLBAR=1, DESK_KEYBOARD=2 };
+enum { DESK_TOOLBAR=1, DESK_KEYBOARD=2, DESK_MORE=3 };
+static int desktop_view_count(int view) {return view==DESK_KEYBOARD?40:view==DESK_MORE?8:6;}
+static const char *desktop_tool_label(int view,int index) {
+    static const char *basic[]={"Keyboard","Address / Search","Back","Forward","Switch window","More actions"};
+    static const char *more[]={"Windows Explorer","Refresh","Home","Windows","Next tab","Fullscreen","Windows keyboard","Notification area"};
+    return view==DESK_MORE?more[index]:basic[index];
+}
 static const char *desktop_key_label(int page,bool caps,int index) {
     static const char *letters[]={"q","w","e","r","t","y","u","i","o","p","a","s","d","f","g","h","j","k","l","\xc3\xa7","z","x","c","v","b","n","m",",",".","?"};
     static const char *upper[]={"Q","W","E","R","T","Y","U","I","O","P","A","S","D","F","G","H","J","K","L","\xc3\x87","Z","X","C","V","B","N","M",",",".","?"};

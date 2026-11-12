@@ -55,7 +55,9 @@ int main(){
     text_result=-1;press(d,p,A_FLAG);assert(d.text_error);text_result=0;
     press(d,p,B_FLAG);assert(!d.view);step(d,p,0);
     step(d,p,RS_CLK_FLAG);assert(d.view==DESK_TOOLBAR);step(d,p,0);
-    for(int i=0;i<9;i++){d.view=DESK_TOOLBAR;d.neutral=false;d.selected=i;desktop_toolbar_action(&d);paired();}
+    for(int i=0;i<6;i++){d.view=DESK_TOOLBAR;d.neutral=false;d.selected=i;desktop_toolbar_action(&d);paired();}
+    for(int i=0;i<8;i++){d.view=DESK_MORE;d.neutral=false;d.selected=i;desktop_toolbar_action(&d);paired();}
+    d.view=DESK_MORE;d.neutral=false;press(d,p,B_FLAG);assert(d.view==DESK_TOOLBAR);press(d,p,B_FLAG);assert(!d.view);
     // Disconnect, Guide/Quick Menu suspension, mode changes release held buttons.
     d=fresh();step(d,p,A_FLAG|B_FLAG|X_FLAG);assert(d.held[0] && d.held[1] && d.held[2]);
     p.present=false;step(d,p,0);assert(!d.held[0] && !d.held[1] && !d.held[2] && d.neutral);
@@ -73,8 +75,16 @@ int main(){
     bool quit=false,close=false;int mouse=-1;
     assert(quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,0) && q.open);
     pads[0].buttons=0;quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,4);
-    q.row=QUICK_DESKTOP;pads[0].buttons=A_FLAG;quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,8);assert(q.page==QUICK_DESKTOP_PAGE);
+    q.row=QUICK_DESKTOP;pads[0].buttons=X_FLAG;quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,8);assert(q.page==QUICK_DESKTOP_PAGE);
     pads[0].buttons=0;quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,12);
     pads[0].buttons=A_FLAG;quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,16);assert(q.desktop_request==DESK_TOGGLE && !q.open);
+    q={};q.open=true;q.row=QUICK_DESKTOP;pads[0].buttons=A_FLAG;
+    quick_step(&q,pads,false,input_exit_mask(0),&quit,&close,&mouse,20);
+    assert(q.desktop_request==DESK_TOGGLE && !q.open && mouse==-1 && QUICK_ROW_COUNT==8);
+    d=fresh();d.owner=-1;memset(pads,0,sizeof(pads));pads[2].present=true;
+    desktop_select_owner(&d,pads);assert(d.owner==2 && d.neutral);
+    d.held[0]=true;pads[2].present=false;pads[3].present=true;
+    desktop_select_owner(&d,pads);assert(d.owner==3 && !d.held[0] && d.neutral);
+    pads[3].present=false;desktop_select_owner(&d,pads);assert(d.owner==-1);
     puts("PASS: Desktop mouse/drag/deadzone/precision/boost/two-axis scrolling, paired OSK/modifiers, edge shortcuts, reserved Back chords, UTF-8 accents/symbols/caps/cancel, toolbar, disconnect and mode neutralization, mapping conflicts and Quick Menu.");
 }

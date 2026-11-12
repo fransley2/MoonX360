@@ -40,6 +40,7 @@ static void plat_sleep_ms(unsigned ms){tick+=ms;}
 static int plat_atomic_load(volatile int *v){return *v;}
 static bool plat_system_ui_active(){return scenario==2;}
 static void plat_shutdown_stage(const char*){}
+static void cl_log(const char*,...){}
 static void plat_log(const char*){}
 static void plat_diagnostics_flush(){}
 static void plat_connection_trace_flush(){}
@@ -78,7 +79,7 @@ static void run_case(int which,bool automatic){
  config_defaults(&cfg);config_apply_preset(&cfg,CONFIG_PROFILE_1080_SMOOTH);cfg.fps=60;cfg.bitrate_kbps=20000;cfg.stream_profile=0;cfg.adaptive_quality=automatic;
  config saved=cfg;stream(42,"Test game");assert(!memcmp(&saved,&cfg,sizeof(cfg)));
  assert(stops==sessions && reports==sessions);
- assert(stream_return_home && !live);
+ assert(!stream_return_home && !live); // Clean disconnect returns to the calling gallery/Home.
 }
 int main(){
  for(int which=0;which<5;which++) {

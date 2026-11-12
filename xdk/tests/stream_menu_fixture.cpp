@@ -5,6 +5,7 @@
 #include <string.h>
 #include <set>
 #include "src/video.h"
+#include "src/performance.h"
 #include "src/quick_menu.h"
 #include "src/desktop_keyboard_layout.h"
 typedef unsigned DWORD;
@@ -113,6 +114,12 @@ int main(){
  unsigned no_failure=unavailable;D3DTexture *retained=panels[0].texture;fail_texture=true;snapshot|=2;
  gfx_stream_menu_draw(&d,1,1,0,1000,false);assert(panels[0].texture==retained && panels[0].ready && unavailable==no_failure);
  fail_texture=false;pending.clear();gfx_stream_menu_draw(&d,1,1,0,1000,false);gfx_stream_menu_reset(&d);
+ // Stopping feedback remains after the input owner closes the menu; no success claim.
+ snapshot=QUICK_STOPPING;gfx_stream_menu_draw(&d,1,1,0,1000,false);
+ assert(panels[0].ready && panels[0].previous==QUICK_STOPPING && panels[0].used);
+ unsigned stop_allocations=allocations;submit(30);tick+=16;
+ gfx_stream_menu_draw(&d,1,1,0,1000,false);assert(allocations==stop_allocations);
+ gfx_stream_menu_reset(&d);
  assert(allocations==releases && canvas_allocations==canvas_releases && waits);
  puts("PASS: compact/sidebar, per-texture fences, progress with current texture busy, both-busy retention, failed-spare-upload rollback, 100 reopens/style, no recurring allocations, 1 Hz, Guide, stats and cleanup.");
 }

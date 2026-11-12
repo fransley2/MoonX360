@@ -260,7 +260,8 @@ static void draw_busy(void *ctx, uint32_t t)
     struct busy_view *v = (struct busy_view *)ctx;
     int phase=plat_atomic_load(&task_phase);
 #ifdef _XBOX
-    if(launch_active()){launch_set_status(phase==HOST_CANCELLING?LAUNCH_CANCELLING:LAUNCH_RESOLVING);return;}
+    if(launch_active()){launch_set_status(phase==HOST_CANCELLING?LAUNCH_CANCELLING:
+        phase==HOST_FETCHING_APPS || phase==HOST_SWITCHING?LAUNCH_PREPARING:LAUNCH_RESOLVING);return;}
 #endif
     ui_draw_busy(v->title,phase!=HOST_IDLE?host_phase_text(phase):v->message[0]?v->message:"B cancels.",t);
 }
@@ -280,6 +281,9 @@ static void *run_busy(const char *title, const char *message, void *(*fn)(void *
 
 static void message(int icon, const char *title, const char *body)
 {
+#ifdef _XBOX
+    if(launch_active())launch_end();
+#endif
     ui_draw_message(icon, title, body);
     ui_present();
     while (!(wait_button() & (A_FLAG | B_FLAG)))
@@ -780,7 +784,7 @@ static void desktop_mapping_menu(void)
     static const char *buttons[]={"A","B","X","Y","D-Pad Up","D-Pad Down","D-Pad Left","D-Pad Right","LB","RB","Start","Back (release)"};
     int selected=0;
     for(;;){struct ui_setting rows[DESKTOP_BINDINGS];int kinds[DESKTOP_BINDINGS];
-        for(int i=0;i<DESKTOP_BINDINGS;i++){rows[i].label=buttons[i];rows[i].value=desktop_action_name(cfg.desktop.mapping[i]);rows[i].help="Changes swap actions. Back chords, R3 toolbar and stick/trigger axes stay reserved.";kinds[i]=UI_OPTION_CYCLE;}
+        for(int i=0;i<DESKTOP_BINDINGS;i++){rows[i].label=buttons[i];rows[i].value=desktop_action_name(cfg.desktop.mapping[i]);rows[i].help="Assigning an action swaps its previous button. Back chords, R3 and axes stay reserved.";kinds[i]=UI_OPTION_CYCLE;}
         ui_draw_settings_options("Desktop controls",rows,kinds,DESKTOP_BINDINGS,selected);ui_present();int key=wait_button();
         if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+DESKTOP_BINDINGS-1)%DESKTOP_BINDINGS;if(key&DOWN_FLAG)selected=(selected+1)%DESKTOP_BINDINGS;
         if(key&(A_FLAG|LEFT_FLAG|RIGHT_FLAG))desktop_remap(&cfg.desktop,selected,(cfg.desktop.mapping[selected]+(key&LEFT_FLAG?DA_COUNT-1:1))%DA_COUNT);
@@ -788,67 +792,94 @@ static void desktop_mapping_menu(void)
 }
 static void desktop_settings_menu(void)
 {
-    int selected=0;
-    for(;;){char speed[24],zone[24],precision[24],scroll[24],binding[160];
+    int page=-1,selected=0,category=0;
+    for(;;) {
+        char speed[24],zone[24],precision[24],scroll[24],binding[160];
         snprintf(speed,sizeof(speed),"%d%%",cfg.desktop.speed);snprintf(zone,sizeof(zone),"%d%%",cfg.desktop.deadzone);
         snprintf(precision,sizeof(precision),"%d%%",cfg.desktop.precision);snprintf(scroll,sizeof(scroll),"%d%%",cfg.desktop.scroll_speed);
         snprintf(binding,sizeof(binding),"%s",cfg.desktop_app?"Bound to another PC / ID":"Off");
-        if(cfg.desktop_app && !strcmp(cfg.desktop_host,server.uuid)){
+        if(cfg.desktop_app && !strcmp(cfg.desktop_host,server.uuid)) {
             snprintf(binding,sizeof(binding),"App ID %d",cfg.desktop_app);
             for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)snprintf(binding,sizeof(binding),"%s [ID %d]",apps[i].name,apps[i].id);
         }
-        const char *keyboards[]={"Local UTF-8","Windows OSK","Touch keyboard taskbar"};
-        struct ui_setting rows[]={
-          {"Start in Desktop Mode",cfg.desktop_start?"On":"Off","Manual default for new streams. Quick Menu can switch at any time."},
-          {"Desktop launch application",binding,"Choose the real application ID on the selected paired PC. Off disables automatic selection."},
-          {"Sensitivity",speed,"Left stick mouse speed. LT precision takes priority over RT boost."},
-          {"Deadzone",zone,"0-30 percent, independent of gamepad calibration."},
-          {"Acceleration",cfg.desktop.acceleration?"On":"Off","Continuous acceleration toward the edge of the stick."},
-          {"Precision speed",precision,"LT reduces speed to this fraction; RT smoothly boosts up to 2x."},
-          {"Scroll speed",scroll,"Right stick: smooth horizontal and vertical wheels."},
-          {"Keyboard",keyboards[cfg.desktop.keyboard],"Y opens local UTF-8, Win+Ctrl+O, or Win+B to focus the taskbar touch keyboard icon (enable it in Windows first)."},
-          {"Control mapping","Configure","Conflict-free action swaps. Existing Back chords always take priority."}};
-        int kinds[]={UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_CYCLE,UI_OPTION_ACTION};
-        ui_draw_settings_options("Desktop Controller Mode",rows,kinds,9,selected);ui_present();int key=wait_button();
-        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+8)%9;if(key&DOWN_FLAG)selected=(selected+1)%9;
-        if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)){int direction=key&LEFT_FLAG?-1:1;
-            if(selected==0)cfg.desktop_start=!cfg.desktop_start;
-            if(selected==1 && server.uuid[0] && app_count){int index=-1;
+        const char *keyboards[]={"MoonX360 keyboard","Windows keyboard","Notification area"};
+        struct ui_setting rows[5];int kinds[5],n=0;const char *title="Desktop Mode";
+        if(page<0) {
+            struct ui_setting groups[]={
+                {"Behavior","Configure","Choose when Desktop Mode starts. Runtime toggles last for this session."},
+                {"Pointer and scrolling","Configure","Left stick moves, right stick scrolls. LT precision, RT boost."},
+                {"Keyboard","Configure","Y opens your selected keyboard. MoonX360 keyboard is the default."},
+                {"Control mapping","Configure","Edit button actions. Back chords and R3 actions stay reserved."},
+                {"Restore Desktop defaults","Reset","Reset only Desktop controls and its automatic launch binding."}};
+            n=5;memcpy(rows,groups,sizeof(groups));
+        } else if(page==0) {
+            title="Desktop behavior";
+            struct ui_setting options[]={
+                {"Start in Desktop Mode",cfg.desktop_start?"On":"Off","Applies to new sessions. Games otherwise start with normal gamepad input."},
+                {"Desktop launch application",binding,"Choose an app from this PC's library. The binding uses PC identity and App ID."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else if(page==1) {
+            title="Pointer and scrolling";
+            struct ui_setting options[]={
+                {"Sensitivity",speed,"Left stick mouse speed. LT precision takes priority over RT boost."},
+                {"Deadzone",zone,"0-30 percent, independent of gamepad calibration."},
+                {"Acceleration",cfg.desktop.acceleration?"On":"Off","Increase speed toward the edge of the stick."},
+                {"Precision speed",precision,"LT reduces speed to this fraction; RT boosts up to 2x."},
+                {"Scroll speed",scroll,"Right stick scrolls vertically and horizontally."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else if(page==2) {
+            title="Desktop keyboard";
+            struct ui_setting options[]={
+                {"Keyboard",keyboards[cfg.desktop.keyboard],"MoonX360 types directly. Windows keyboard sends Win+Ctrl+O; Notification area only focuses Win+B."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else {
+            title="Restore Desktop defaults?";
+            struct ui_setting options[]={
+                {"Cancel","Back","Keep your Desktop preferences."},
+                {"Restore Desktop defaults","Reset","Other app settings, pairing and stream profiles are preserved."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        }
+        for(int i=0;i<n;i++)kinds[i]=page<0 || page==4?UI_OPTION_ACTION:UI_OPTION_CYCLE;
+        if(page==0){
+            kinds[0]=UI_OPTION_TOGGLE;
+            if(!server.uuid[0] || !app_count){kinds[1]=UI_OPTION_INFO;rows[1].help="Open this PC's Library first to choose its Desktop application.";}
+        }
+        if(page==1)kinds[2]=UI_OPTION_TOGGLE;
+        ui_draw_settings_options(title,rows,kinds,n,selected);ui_present();int key=wait_button();
+        if(key&B_FLAG){if(page<0)return;page=-1;selected=category;continue;}
+        if(key&UP_FLAG)selected=(selected+n-1)%n;if(key&DOWN_FLAG)selected=(selected+1)%n;
+        if(!(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)))continue;
+        int direction=key&LEFT_FLAG?-1:1;
+        if(page<0) {
+            if(!(key&A_FLAG))continue;
+            category=selected;
+            if(selected==3){desktop_mapping_menu();continue;}
+            page=selected;selected=0;continue;
+        }
+        if(page==0) {
+            if(!selected)cfg.desktop_start=!cfg.desktop_start;
+            else if(server.uuid[0] && app_count) {
+                int index=-1;
                 if(!strcmp(cfg.desktop_host,server.uuid))for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)index=i;
                 index+=direction;if(index>=app_count)index=-1;if(index< -1)index=app_count-1;
                 cfg.desktop_app=index<0?0:apps[index].id;snprintf(cfg.desktop_host,sizeof(cfg.desktop_host),"%s",index<0?"":server.uuid);
             }
-            if(selected==2){cfg.desktop.speed+=direction*25;if(cfg.desktop.speed<25)cfg.desktop.speed=200;if(cfg.desktop.speed>200)cfg.desktop.speed=25;}
-            if(selected==3){cfg.desktop.deadzone+=direction*2;if(cfg.desktop.deadzone<0)cfg.desktop.deadzone=30;if(cfg.desktop.deadzone>30)cfg.desktop.deadzone=0;}
-            if(selected==4)cfg.desktop.acceleration=!cfg.desktop.acceleration;
-            if(selected==5){cfg.desktop.precision+=direction*5;if(cfg.desktop.precision<10)cfg.desktop.precision=75;if(cfg.desktop.precision>75)cfg.desktop.precision=10;}
-            if(selected==6){cfg.desktop.scroll_speed+=direction*25;if(cfg.desktop.scroll_speed<25)cfg.desktop.scroll_speed=200;if(cfg.desktop.scroll_speed>200)cfg.desktop.scroll_speed=25;}
-            if(selected==7)cfg.desktop.keyboard=(cfg.desktop.keyboard+(direction>0?1:2))%3;
-            if(selected==8)desktop_mapping_menu();
+        } else if(page==1) {
+            if(selected==0){cfg.desktop.speed+=direction*25;if(cfg.desktop.speed<25)cfg.desktop.speed=200;if(cfg.desktop.speed>200)cfg.desktop.speed=25;}
+            if(selected==1){cfg.desktop.deadzone+=direction*2;if(cfg.desktop.deadzone<0)cfg.desktop.deadzone=30;if(cfg.desktop.deadzone>30)cfg.desktop.deadzone=0;}
+            if(selected==2)cfg.desktop.acceleration=!cfg.desktop.acceleration;
+            if(selected==3){cfg.desktop.precision+=direction*5;if(cfg.desktop.precision<10)cfg.desktop.precision=75;if(cfg.desktop.precision>75)cfg.desktop.precision=10;}
+            if(selected==4){cfg.desktop.scroll_speed+=direction*25;if(cfg.desktop.scroll_speed<25)cfg.desktop.scroll_speed=200;if(cfg.desktop.scroll_speed>200)cfg.desktop.scroll_speed=25;}
+        } else if(page==2)cfg.desktop.keyboard=(cfg.desktop.keyboard+(direction>0?1:2))%3;
+        else if(key&A_FLAG) {
+            if(selected){desktop_defaults(&cfg.desktop);cfg.desktop_start=false;cfg.desktop_app=0;cfg.desktop_host[0]=0;}
+            page=-1;selected=category;
         }
     }
 }
 static void pointer_settings_menu(void)
 {
-    int selected=0;
-    for(;;){
-        char speed[32],scroll[32];snprintf(speed,sizeof(speed),"%d%%",cfg.mouse_speed);snprintf(scroll,sizeof(scroll),"%d ms",cfg.mouse_scroll_ms);
-        struct ui_setting rows[]={{"Mouse sensitivity",speed,"25-200%. Small movements accumulate instead of being discarded."},
-            {"Mouse acceleration",cfg.mouse_acceleration?"On":"Off","Optional extra speed near the edge of the stick."},
-            {"Scroll interval",scroll,"50-400 ms per wheel step."},
-            {"Quick menu","Back + L3","Opens during streaming. A selects, B resumes. The full exit shortcut keeps priority."},
-            {"Remote input","Back + R3","USB keyboard forwarding is suspended while the quick menu or Guide is open."},
-            {"Desktop Controller Mode","Configure","Separate desktop mapping, keyboard and explicit application binding."}};
-        int kinds[]={UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_INFO,UI_OPTION_INFO,UI_OPTION_ACTION};
-        ui_draw_settings_options("Remote mouse and keyboard",rows,kinds,6,selected);ui_present();int key=wait_button();
-        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+5)%6;if(key&DOWN_FLAG)selected=(selected+1)%6;
-        if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)){int d=key&LEFT_FLAG?-1:1;
-            if(selected==0){cfg.mouse_speed+=d*25;if(cfg.mouse_speed<25)cfg.mouse_speed=200;if(cfg.mouse_speed>200)cfg.mouse_speed=25;}
-            if(selected==1)cfg.mouse_acceleration=!cfg.mouse_acceleration;
-            if(selected==5)desktop_settings_menu();
-            if(selected==2){cfg.mouse_scroll_ms+=d*50;if(cfg.mouse_scroll_ms<50)cfg.mouse_scroll_ms=400;if(cfg.mouse_scroll_ms>400)cfg.mouse_scroll_ms=50;}
-        }
-    }
+    desktop_settings_menu();
 }
 static void power_menu(bool restart)
 {
@@ -1110,7 +1141,7 @@ static void overlay_options_menu(void)
     int selected=0,location=ui_location_enter("Streaming interface");
     for(;;) {
         struct ui_setting rows[]={
-            {"Mouse indicator",indicators[cfg.mouse_hud],"Compact badge, text without background, or hidden. Applied next session."},
+            {"Desktop indicator",indicators[cfg.mouse_hud],"Compact badge, text without background, or hidden. Applied next session."},
             {"Quick menu style",menus[cfg.stream_menu_style],"Compact uses fewer pixels. Sidebar keeps the larger layout. Applied next session."}};
         const int kinds[]={UI_OPTION_CYCLE,UI_OPTION_CYCLE};
         ui_draw_settings_options("Streaming interface",rows,kinds,2,selected);ui_present();
@@ -1178,7 +1209,7 @@ static void settings_menu(void)
             "On-screen statistics", "Diagnostic capture", "View logs", "H.264 slices", "Bitrate comparisons",
             "Image quality", "Record session history", "Recent sessions", "Performance analysis",
             "Find PCs automatically (mDNS)", "UI resources", "Recovery information", "Network diagnostics",
-            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Remote mouse and keyboard", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength",
+            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Desktop Mode", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength",
         };
         static const char *helps[SET_COUNT] = {
             "Requested host resolution. Compare measured decode and queue time on hardware; lower resolution alone does not guarantee better performance.",
@@ -1231,7 +1262,7 @@ static void settings_menu(void)
             "Shut down the console after a confirmation. No action is sent to the PC.",
             "Use, edit, rename or delete profiles from Stream Profile.",
             "Stereo by default. 5.1 requires a configured surround output; unavailable outputs use stereo.",
-            "Back + R3: mouse mode. Left stick moves; A/B click; right stick scrolls. USB keyboard forwards only during streaming.",
+            "Back + R3 toggles Desktop. Y opens the keyboard, R3 opens actions. Configure pointer, scrolling and buttons here.",
             "Save effective stream, decoder, presentation and audio parameters as a new named profile.",
             "Cover time after first decoded frame. This timer does not detect game readiness.",
             "Last stopped session: local input, network, decode, presentation and audio timing. Enable Diagnostic capture for a bounded 45-second report.",
@@ -2002,15 +2033,19 @@ static void advisor_menu(void)
     }
 }
 
-static bool stream_once(int app_id, const char *app_title)
-{
-    struct video_watchdog watchdog;memset(&watchdog,0,sizeof(watchdog));
-    struct video_progress_snapshot progress;memset(&progress,0,sizeof(progress));
-    uint32_t last_watchdog_ms=0;
-    bool watchdog_reconnect=false;
-    uint32_t connection_begun=plat_now_ms();
-    stream_return_home=false;
 #ifdef _XBOX
+static unsigned launch_validated_operation;
+static int launch_validated_app;
+static bool launch_preflight_consume(int app_id)
+{
+    bool valid=launch_validated_operation && launch_validated_operation==task_generation+1 && launch_validated_app==app_id &&
+        launch_active() && !launch_cancelled() && server_ok && server.paired && server.uuid[0] &&
+        !strcmp(server.uuid,cfg.host_uuid) && !strcmp(server.address,cfg.host);
+    launch_validated_operation=0;return valid;
+}
+static char launch_identity[96];
+static int launch_selected_delay(int app_id,const char *app_title)
+{
     int cover_delay=cfg.launch_cover_ms;
     struct launch_settings prefs;launch_settings_load(&prefs);
     int pref=launch_setting_find(&prefs,host_key(),app_id);
@@ -2019,7 +2054,15 @@ static bool stream_once(int app_id, const char *app_title)
     /* Explicit per-host/app Desktop flag is authoritative. English protocol
      * title is a convenience fallback for previously configured hosts. */
     if(pref<0 && !strcmp(app_title,"Desktop"))cover_delay=0;
-    launch_begin(cover_delay,cfg.launch_animation);launch_connecting=false;plat_atomic_store(&launch_handoff,0);
+    return cover_delay;
+}
+/* A single launch owner starts at Play and survives preflight and handoff. */
+static void launch_selected_begin(int app_id,const char *app_title)
+{
+    launch_validated_operation=0;
+    snprintf(launch_identity,sizeof(launch_identity),"%s",host_key());
+    int cover_delay=launch_selected_delay(app_id,app_title);
+    launch_begin(cover_delay,cfg.launch_animation);launch_set_status(LAUNCH_RESOLVING);launch_connecting=false;plat_atomic_store(&launch_handoff,0);
     memset(&launch_app,0,sizeof(launch_app));launch_app.name=app_title;
     for(int i=0;i<app_count;i++)if(apps[i].id==app_id){launch_app.art=app_art[i];launch_app.generation=art_generation[i];break;}
     if(!aurora_direct_active && !launch_app.art)launch_app.art=home_art_get(&home_art,home_key(),app_id,&launch_app.generation);
@@ -2041,12 +2084,29 @@ static bool stream_once(int app_id, const char *app_title)
     }
     int aw,ah;ui_art_size(&aw,&ah);launch_offer_art(launch_app.art,aw,ah,launch_app.generation);
     launch_prepare();draw_launch(NULL,launch_ui_started);launch_present();
+}
+#endif
+
+static bool stream_once(int app_id, const char *app_title)
+{
+    struct video_watchdog watchdog;memset(&watchdog,0,sizeof(watchdog));
+    struct video_progress_snapshot progress;memset(&progress,0,sizeof(progress));
+    uint32_t last_watchdog_ms=0;
+    bool watchdog_reconnect=false;
+    uint32_t connection_begun=plat_now_ms();
+    stream_return_home=false;
+#ifdef _XBOX
+    if(!launch_active())launch_selected_begin(app_id,app_title);
 #endif
     discovery_pause();
 #ifdef _XBOX
     if(launch_cancelled()){launch_end();return false;}
 #endif
+#ifdef _XBOX
+    if(!launch_preflight_consume(app_id))refresh_server();
+#else
     refresh_server();
+#endif
     if(task_was_cancelled || !server_ok || !server.paired) {
 #ifdef _XBOX
         if(!aurora_direct_active && !task_was_cancelled && server_ok && !server.paired) {
@@ -2381,6 +2441,7 @@ static bool stream_once(int app_id, const char *app_title)
 #ifdef _XBOX
     if(launch_cancelled())local_exit=true;
 #endif
+    uint32_t teardown_started=plat_now_ms(),teardown_input_ms;
     plat_log("[STREAM] Disconnect requested\n");
     plat_shutdown_stage("Stopping controller forwarding\n");
     perf_mark(PERF_STOP_BEGIN);
@@ -2388,11 +2449,14 @@ static bool stream_once(int app_id, const char *app_title)
     if(cfg.diagnostic_log && !capture_closed){perf_capture_close();video_get_stats(&capture_last);capture_closed=true;}
 #endif
     input_stream_stop();
+    teardown_input_ms=plat_now_ms()-teardown_started;
     plat_log("[STREAM] Input forwarding stopped\n");
     elapsed = plat_now_ms() - started;
     plat_shutdown_stage("Stopping Moonlight transport\n");
     plat_diagnostics_flush();
+    uint32_t transport_stop_started=plat_now_ms();
     LiStopConnection();
+    cl_log("[UX] teardown input_ms=%u transport_ms=%u total_ms=%u\n",teardown_input_ms,plat_now_ms()-transport_stop_started,plat_now_ms()-teardown_started);
     plat_log("[STREAM] Moonlight session terminated; video, audio and decoder stopped\n");
 #ifdef _XBOX
     /* Final counters include work completed while transport workers drained.
@@ -2401,6 +2465,7 @@ static bool stream_once(int app_id, const char *app_title)
     last_video_progress_at_ms=plat_now_ms();
     launch_end();
 #endif
+    cl_log("[UX] teardown resources_total_ms=%u\n",plat_now_ms()-teardown_started);
     perf_mark(PERF_RETURN_MENU);
     perf_flush();
     perf_begin(cfg.diagnostic_log || cfg.stats_overlay);
@@ -2439,7 +2504,8 @@ static bool stream_once(int app_id, const char *app_title)
     }
     if (local_exit) {
         plat_log("[UI] Returning to MoonX360\n");
-        stream_return_home = true;
+        /* Resume the calling Library/Home with its selection and warm cache. */
+        stream_return_home = false;
         return false;
     }
     return show_stream_stats(elapsed);
@@ -2502,6 +2568,7 @@ static bool prepare_selected_app(int app_id)
 {
     /* One synchronous menu operation, with HTTP owned by the existing worker.
      * No input from Library/Home/Aurora is dispatched until it has joined. */
+    uint32_t validation_started=plat_now_ms();
     discovery_pause();refresh_server();
     if(task_was_cancelled || task_start_failed)return false;
     if(!server_ok){if(!aurora_direct_active)recover_host_ui();return false;}
@@ -2534,6 +2601,7 @@ static bool prepare_selected_app(int app_id)
         !strcmp(server.uuid,job.host.uuid) && !strcmp(server.address,job.host.address);
     if(ok)server.current_game=job.host.current_game;
     if(!ok && !task_was_cancelled)message(ICON_ERROR,"Couldn't start app",job.error[0]?job.error:"The operation timed out or the selected PC changed. Refresh and try again.");
+    cl_log("[UX] preflight app=%d total_ms=%u switched=%d ok=%d\n",app_id,plat_now_ms()-validation_started,job.confirmed,ok);
     gs_server_free(&job.host);return ok;
 }
 #ifdef _XBOX
@@ -2563,7 +2631,15 @@ static void stream(int app_id, const char *app_title)
 {
     stream_return_home=false;
     char selected_title[64];history_text(selected_title,sizeof(selected_title),app_title);
-    if(!prepare_selected_app(app_id))return;
+#ifdef _XBOX
+    launch_selected_begin(app_id,selected_title);
+#endif
+    if(!prepare_selected_app(app_id)) {
+#ifdef _XBOX
+        if(launch_active())launch_end();
+#endif
+        return;
+    }
     struct config requested=cfg;
     int binding=aurora_direct_active && aurora_direct_data.profile_id[0]?-1:binding_find(&game_bindings,host_key(),app_id);
     if(binding>=0) {
@@ -2577,6 +2653,15 @@ static void stream(int app_id, const char *app_title)
     }
 #ifdef _XBOX
     offer_stream_environment();
+    if(launch_active() && strcmp(launch_identity,host_key()))launch_set_wait(launch_selected_delay(app_id,selected_title));
+    /* Pairing may have upgraded the stable host key before profile lookup.
+     * Update only the existing text atlas if the effective profile changed. */
+    if(launch_active() && memcmp(&requested,&cfg,sizeof(cfg))) {
+        ui_launch_session(selected_profile_name(),cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps);
+        ui_launch_crt_note(config_crt_profile(&cfg) && plat_crt_output_status()!=1);
+        launch_refresh_text();
+    }
+    launch_validated_app=app_id;launch_validated_operation=task_generation+1;
 #endif
     adaptive_reconnects=0;
     video_reconnects=0;
@@ -2686,7 +2771,7 @@ static uint32_t *art_result;
 static volatile int art_finished,art_persist,art_serial;
 static const uint32_t *art_persist_pixels;
 static bool art_aborted;
-static bool art_network,art_disk_hit;
+static bool art_network,art_disk_hit,art_resource_retry;
 static uint32_t art_fetched;
 static struct cover_disk_cache art_disk;
 static bool art_persistent_enabled=true;
@@ -2747,16 +2832,20 @@ static void art_drain(void)
     if(network && !art_aborted){if(pixels)art_downloads++;else {art_failures++;if(job.stale)art_stale_used++;}}
     if(job.context!=art_context || strcmp(job.host_identity,host_key())) {
         if(job.slot>=0 && ui_cover_same(&art_cache.items[job.slot].key,&job.key))art_cache.items[job.slot].inflight=false;
+        if(perf_enabled())cl_log("[ART] app=%d stage=publish outcome=context-rejected context=%u\n",job.protocol_app,job.context);
         free(pixels);plat_atomic_store(&art_ready,-1);return;
     }
-    ui_drop_main_cache();
     bool has_result=pixels!=NULL;
+    const uint32_t *old=art_cache.items[job.slot].pixels;
+    if(pixels && (!old || memcmp(old,pixels,(size_t)job.key.w*job.key.h*4))) {ui_drop_main_cache();ui_draw_retire_image(old);}
     bool published=ui_cover_publish(&art_cache,job.slot,&job.key,pixels,now);
     if(published)art_version++;
+    if(perf_enabled())cl_log("[ART] app=%d stage=publish changed=%d generation=%u stale=%d context=%u\n",job.protocol_app,published,art_cache.items[job.slot].generation,old!=NULL,job.context);
     /* Prevent eviction or refresh while the worker reads the published pixels.
      * No extra full-size allocation; UI owns them after publication. */
     art_cache.items[job.slot].inflight=true;
     if(art_aborted) {art_cache.items[job.slot].disk_checked=false;art_cache.items[job.slot].attempt=false;}
+    if(art_resource_retry){struct ui_cover_entry *e=art_cache.items+job.slot;e->resource_retry=true;e->disk_checked=false;e->attempt=false;e->attempted=now;}
     art_persist_pixels=has_result?art_cache.items[job.slot].pixels:NULL;
     plat_atomic_store(&art_persist,has_result && network && job.persist && !art_aborted?1:0);
     if(disk && pixels)art_cache.items[job.slot].updated=fetched;
@@ -2772,15 +2861,21 @@ static void *art_loader(void *arg)
         /* Immutable host/app/size/context, never an index into mutable apps[]. */
         struct art_work job=art_job;handled=serial;
         unsigned char *png=NULL;size_t len=0;uint32_t *scaled=NULL;
-        bool network=false,disk=false;uint32_t loaded=0;
-        if(job.disk && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_cancel)) {scaled=cover_disk_read(&art_disk,storage_dir(),&job.key,plat_now_ms(),&loaded);disk=scaled!=NULL;}
+        bool network=false,disk=false,retry=false;uint32_t loaded=0;
+        uint32_t job_started=plat_now_ms(),disk_ms=0,decode_ms=0;
+        if(job.disk && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_cancel)) {
+            scaled=cover_disk_read(&art_disk,storage_dir(),&job.key,plat_now_ms(),&loaded);disk=scaled!=NULL;
+            retry=art_disk.read_result==COVER_DISK_RETRY;disk_ms=plat_now_ms()-job_started;
+        }
+        if(retry || (job.disk && art_disk.read_result==COVER_DISK_CORRUPT))cl_log("[ART] app=%d stage=disk outcome=%s\n",job.protocol_app,retry?"retry":"corrupt");
         if(job.disk && perf_enabled())cl_log("[ART] app=%d disk_hit=%d\n",job.protocol_app,disk);
-        if(!scaled && job.network && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {
+        if(!scaled && !retry && job.network && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {
             network=true;uint64_t fetched=perf_enabled()?perf_clock():0;
             bool available=gs_app_art(&job.host,job.protocol_app,&png,&len);
             if(fetched)perf_record(PERF_COVER_HTTP,perf_clock()-fetched);
             bool allowed=available && cover_decode_allowed(png,len);
-            if(allowed && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming))scaled=plat_decode_art(png,len,job.key.w,job.key.h);
+            if(allowed && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {uint32_t decode_started=plat_now_ms();scaled=plat_decode_art(png,len,job.key.w,job.key.h);decode_ms=plat_now_ms()-decode_started;}
+            if(!scaled && !plat_atomic_load(&art_io_cancel))cl_log("[ART] app=%d stage=%s outcome=failed\n",job.protocol_app,!available?"download":!allowed?"format":"decode");
 
             if(!scaled && job.stale)plat_log("[Artwork] refresh failed, keeping cached artwork\n");
             if(perf_enabled())cl_log("[ART] app=%d http=%d bytes=%u source=%d thumbnail=%d\n",job.protocol_app,available,(unsigned)len,allowed,scaled!=NULL);
@@ -2790,13 +2885,15 @@ static void *art_loader(void *arg)
         art_aborted=plat_atomic_load(&art_io_cancel)!=0;
         if(art_aborted){free(scaled);scaled=NULL;}
         plat_atomic_store(&art_persist,0);
-        art_network=network;art_disk_hit=disk;art_fetched=loaded;
+        art_network=network;art_disk_hit=disk;art_fetched=loaded;art_resource_retry=retry;
+        if(perf_enabled())cl_log("[ART] app=%d stage=ready total_ms=%u disk_ms=%u decode_ms=%u disk_hit=%d network=%d cancelled=%d\n",job.protocol_app,plat_now_ms()-job_started,disk_ms,decode_ms,disk,network,art_aborted);
         art_result=scaled;plat_atomic_store(&art_ready,slot);
         while(plat_atomic_load(&art_ready)>=0 && !plat_atomic_load(&art_cancel))plat_sleep_ms(4);
         if(plat_atomic_load(&art_cancel))break; /* unclaimed pixels are released after join */
         if(plat_atomic_load(&art_persist) && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_io_cancel)) {
+            uint32_t persist_started=plat_now_ms();
             bool stored=cover_disk_write(&art_disk,storage_dir(),&job.key,art_persist_pixels,plat_now_ms());
-            if(perf_enabled())cl_log("[ART] app=%d disk_persist=%d after_publish=1\n",job.protocol_app,stored);
+            if(perf_enabled())cl_log("[ART] app=%d disk_persist=%d after_publish=1 persist_ms=%u\n",job.protocol_app,stored,plat_now_ms()-persist_started);
         }
         plat_atomic_store(&art_finished,1);
     }
@@ -2812,12 +2909,21 @@ static void art_pause(bool pause){plat_atomic_store(&art_streaming,pause?1:0);if
 static bool art_request_app(int id,bool selected,bool evict)
 {
     art_drain();
-    if(selected && plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id && !art_job.priority)
-        plat_atomic_store(&art_io_cancel,1);
+    if(selected && plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id) {
+        struct ui_cover_key selected_key;art_key(&selected_key,id);
+        int selected_slot=ui_cover_find(&art_cache,&selected_key);uint32_t now=plat_now_ms();
+        bool needs_work=selected_slot<0 || (!art_cache.items[selected_slot].pixels && !art_cache.items[selected_slot].disk_checked) ||
+            (art_host_online && ui_cover_retry(&art_cache,&selected_key,now) && ui_cover_due(&art_cache.items[selected_slot],now));
+        /* A warm selection must not cancel every neighbor on each UI tick. */
+        if(needs_work)plat_atomic_store(&art_io_cancel,1);
+    }
     if(plat_atomic_load(&art_streaming) || plat_atomic_load(&art_request)>=0 || plat_atomic_load(&art_ready)>=0 || !art_worker)return false;
     struct ui_cover_key key;art_key(&key,id);int slot=ui_cover_find(&art_cache,&key);
     if(slot<0) {
-        ui_drop_main_cache();slot=ui_cover_slot(&art_cache,&key,evict);if(slot<0)return false;
+        int victim=ui_cover_candidate(&art_cache,&key,evict);if(victim<0)return false;
+        if(perf_enabled() && art_cache.items[victim].used)cl_log("[ART] app=%d stage=evict victim=%d generation=%u\n",id,art_cache.items[victim].key.app,art_cache.items[victim].generation);
+        ui_drop_main_cache();ui_draw_retire_image(art_cache.items[victim].pixels);
+        slot=ui_cover_slot(&art_cache,&key,evict);if(slot<0)return false;
         uint32_t generation=0;const uint32_t *home=home_art_get(&home_art,home_key(),id,&generation);
         if(home) {
             struct ui_cover_entry *e=art_cache.items+slot;size_t bytes=(size_t)key.w*key.h*4;
@@ -2825,9 +2931,11 @@ static bool art_request_app(int id,bool selected,bool evict)
         }
         art_sync_views();art_memory();
     }
-    struct ui_cover_entry *e=art_cache.items+slot;e->pinned=selected || (opening_art_pin && ui_cover_same(&key,&opening_art_key));if(selected || evict)e->lru=++art_cache.clock;
+    struct ui_cover_entry *e=art_cache.items+slot;e->pinned=e->visible || selected || (opening_art_pin && ui_cover_same(&key,&opening_art_key));if(selected || evict)e->lru=++art_cache.clock;
     if(e->pixels)art_memory_hits++;
-    uint32_t now=plat_now_ms();bool disk=art_persistent_enabled && !strncmp(key.host,"uuid:",5) && !e->pixels && !e->disk_checked;
+    uint32_t now=plat_now_ms();
+    if(e->resource_retry){if(now-e->attempted<1000u)return false;e->resource_retry=false;}
+    bool disk=art_persistent_enabled && !strncmp(key.host,"uuid:",5) && !e->pixels && !e->disk_checked;
     bool network=art_host_online && ui_cover_retry(&art_cache,&key,now);
     if(!disk && (!network || !ui_cover_due(e,now)))return false;
     memset(&art_job,0,sizeof(art_job));art_job.key=key;snprintf(art_job.host_identity,sizeof(art_job.host_identity),"%s",host_key());art_job.slot=slot;art_job.context=art_context;
@@ -2843,18 +2951,19 @@ static bool art_request_app(int id,bool selected,bool evict)
 static void art_update(const int *map,int count,int selected,int columns)
 {
     art_drain();
-    for(int i=0;i<UI_COVER_LIMIT;i++)art_cache.items[i].pinned=opening_art_pin && ui_cover_same(&art_cache.items[i].key,&opening_art_key);
+    for(int i=0;i<UI_COVER_LIMIT;i++){art_cache.items[i].visible=false;art_cache.items[i].pinned=opening_art_pin && ui_cover_same(&art_cache.items[i].key,&opening_art_key);}
     if(count<=0 || selected<0 || selected>=count)return;
     struct ui_cover_key key;art_key(&key,apps[map[selected]].id);int pinned=ui_cover_find(&art_cache,&key);
     if(pinned>=0)art_cache.items[pinned].pinned=true;
-    int first=selected>=5?selected-4:0,n=count-first;if(n>6)n=6;
-    (void)columns;
-    for(int i=first;i<first+n;i++){art_key(&key,apps[map[i]].id);int slot=ui_cover_find(&art_cache,&key);if(slot>=0)art_cache.items[slot].lru=++art_cache.clock;}
+    int first=0,end=count;if(columns>0)ui_library_art_window(count,selected,&first,&end);
+    if(end-first>UI_COVER_LIMIT-2)end=first+UI_COVER_LIMIT-2;
+    int n=end-first;
+    for(int i=first;i<end;i++){art_key(&key,apps[map[i]].id);int slot=ui_cover_find(&art_cache,&key);if(slot>=0){art_cache.items[slot].lru=++art_cache.clock;art_cache.items[slot].visible=true;art_cache.items[slot].pinned=true;}}
     if(art_request_app(apps[map[selected]].id,true,true))return;
     for(int i=first;i<first+n;i++)if(i!=selected && art_request_app(apps[map[i]].id,false,true))return;
     /* Neighbor work only occupies free capacity; it never evicts useful images. */
-    int start=first>=2?first-2:0,end=first+n+3;if(end>count)end=count;
-    for(int i=start;i<end;i++)if((i<first || i>=first+n) && art_request_app(apps[map[i]].id,false,false))return;
+    int start=first>0?first-1:0,near_end=end+2;if(near_end>count)near_end=count;
+    for(int i=start;i<near_end;i++)if((i<first || i>=end) && art_request_app(apps[map[i]].id,false,false))return;
 }
 static void remember_played_art(int id)
 {
@@ -3602,7 +3711,7 @@ static void library_context(int *filter)
 static void app_menu(void)
 {
     int count=-1,sel=0,seen_version=-1,cols=ui_apps_columns(),filter=2,map[MAX_APPS],restore_id=0;
-    int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms();
+    int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms(),library_started=wall_focus_ms;bool first_art_logged=false;
     char title[96];snprintf(title,sizeof(title),ui_translate("Loading apps from %s"),host_display_name());
     art_host_online=server_ok && server.paired;
     if(app_list_cache_valid(&app_cache,host_key(),plat_now_ms()))count=app_count;
@@ -3614,6 +3723,7 @@ static void app_menu(void)
     else {artwork_refresh_apps(title,&count);}
     if(count<0) {if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't load the app list",gs_error());return;}
     app_count=count;for(int i=0;i<app_count;i++)if(apps[i].id==server.current_game)sel=i;
+    cl_log("[UX] library list_ms=%u count=%d ram_clock=%u disk_hits=%u\n",plat_now_ms()-library_started,count,art_cache.clock,art_disk_hits);
     art_pause(false);art_loader_start();
     for(;;) {
         if(seen_version<0){
@@ -3623,6 +3733,10 @@ static void app_menu(void)
         }
         if(art_worker)art_update(map,count,sel,cols);
         uint32_t now=plat_now_ms();bool backdrop_changed=false;
+        if(!first_art_logged && count>0){
+            int first=0,end=count;ui_library_art_window(count,sel,&first,&end);
+            for(int i=first;i<end;i++)if(app_art[map[i]]){first_art_logged=true;cl_log("[UX] library first_cover_ms=%u\n",now-library_started);break;}
+        }
         if(cfg.ui_background==4 && count>0) {
             int index=map[sel];
             if(wall_focus!=apps[index].id){wall_focus=apps[index].id;wall_focus_ms=now;ui_home_cancel_prepare();}
@@ -3665,11 +3779,16 @@ static void app_menu(void)
             if(navigation_pending>=0)break;
             if(play) {
                 stream(apps[index].id,apps[index].name);
-                if(stream_return_home)break;refresh_server();
+                if(stream_return_home)break;
+                /* Teardown has joined. Draw the warm gallery immediately; the
+                 * next Play still validates authoritative host/app state. */
+                art_host_online=server_ok && server.paired;art_pause(false);art_loader_start();
             }
         }
         seen_version=-1;
     }
+    if(cfg.diagnostic_log){struct ui_memory_info memory;ui_draw_memory(&memory);
+        cl_log("[ART] stage=gallery-exit ram_hits=%u disk_hits=%u downloads=%u failures=%u stale_used=%u fade_starts=%u fade_reuses=%u\n",art_memory_hits,art_disk_hits,art_downloads,art_failures,art_stale_used,memory.cover_fade_starts,memory.cover_fade_reuses);}
     art_pause(false);
 }
 
@@ -4208,7 +4327,7 @@ static void art_home_update(int selected,int resume_id,const int *recent_ids,int
         }
     }
     for(int i=0;i<n;i++)if(apps[map[i]].id==selected)focus=i;
-    if(n){art_loader_start();art_update(map,n,focus,n);}
+    if(n){art_loader_start();art_update(map,n,focus,0);}
 }
 static void home_search(void)
 {

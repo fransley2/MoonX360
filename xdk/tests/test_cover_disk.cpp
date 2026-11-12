@@ -1,4 +1,5 @@
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 static bool fail_promotion;
@@ -6,6 +7,11 @@ static int test_rename(const char *from,const char *to){
  if(fail_promotion && strstr(from,"cover-stage.tmp")){errno=EACCES;return -1;}
  return std::rename(from,to);
 }
+static bool fail_allocation,fail_read_open;
+static void *test_alloc(size_t n){return fail_allocation?NULL:std::malloc(n);}
+static FILE *test_open(const char *path,const char *mode){if(fail_read_open){errno=EACCES;return NULL;}return fopen(path,mode);}
+#define COVER_DISK_ALLOC test_alloc
+#define COVER_DISK_OPEN test_open
 #define COVER_DISK_RENAME test_rename
 #include "../../src/cover_disk.h"
 #include <assert.h>
@@ -35,6 +41,12 @@ int main(){
   FILE *incomplete=fopen(stage,"wb");assert(incomplete);fputs("incomplete",incomplete);fclose(incomplete);
   uint32_t *old=cover_disk_read(&c,dir.c_str(),&k,101,&fetched);assert(old);free(old);
   std::filesystem::remove(stage);}
+ int saved_slot=cover_disk_find(&c,&k);char saved_path[256];cover_disk_path(saved_path,sizeof(saved_path),dir.c_str(),saved_slot);
+ size_t saved_bytes=c.bytes;
+ fail_allocation=true;assert(!cover_disk_read(&c,dir.c_str(),&k,150,&fetched));fail_allocation=false;
+ assert(c.read_result==COVER_DISK_RETRY && c.bytes==saved_bytes && cover_disk_find(&c,&k)==saved_slot && std::filesystem::exists(saved_path));
+ fail_read_open=true;assert(!cover_disk_read(&c,dir.c_str(),&k,151,&fetched));fail_read_open=false;
+ assert(c.read_result==COVER_DISK_RETRY && c.bytes==saved_bytes && std::filesystem::exists(saved_path));
  uint32_t *p=cover_disk_read(&c,dir.c_str(),&k,200,&fetched);assert(p && fetched==100 && !memcmp(p,pixels.data(),120000));free(p);
  k.app=2;assert(!cover_disk_read(&c,dir.c_str(),&k,200,&fetched));k=key(1,200,150);assert(!cover_disk_read(&c,dir.c_str(),&k,200,&fetched));
  k=key(1);strcpy(k.host,"uuid:other");assert(!cover_disk_read(&c,dir.c_str(),&k,200,&fetched));k=key(1);

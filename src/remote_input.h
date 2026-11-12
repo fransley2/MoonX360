@@ -2,6 +2,7 @@
 #pragma once
 #include "input_session.h"
 struct remote_input {
+    bool desktop_only; /* XDK routes the mouse chord through the unified Desktop owner. */
     bool mouse[MAX_PADS],latch[MAX_PADS],left[MAX_PADS],right[MAX_PADS];
     bool suppress[MAX_PADS]; /* consumed controls must become neutral before game use */
     uint32_t scroll_at[MAX_PADS];
@@ -46,7 +47,7 @@ static void remote_pad(struct remote_input *r,struct pad *p,int i,uint32_t now,b
 {
     /* Back + R3 conflicts with neither exit combo nor the system Guide. */
     const int shortcut=BACK_FLAG|RS_CLK_FLAG;
-    bool toggle=p->present && (p->buttons&shortcut)==shortcut;
+    bool toggle=!r->desktop_only && p->present && (p->buttons&shortcut)==shortcut;
     bool exiting=(p->buttons&exit_combo)==exit_combo;
     if(guide || !p->present) {
         if(r->mouse[i])r->suppress[i]=true;

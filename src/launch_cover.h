@@ -21,11 +21,21 @@ static enum launch_status launch_display_status(enum launch_status status,bool f
 static unsigned launch_status_progress(enum launch_status status)
 {
     switch(status){
-    case LAUNCH_PREPARING:return 1;case LAUNCH_CONNECTING:return 2;
-    case LAUNCH_RESOLVING:return 3;case LAUNCH_NEGOTIATING:return 4;
+    case LAUNCH_RESOLVING:case LAUNCH_PAIRING:return 1;
+    case LAUNCH_PREPARING:return 2;case LAUNCH_CONNECTING:return 3;case LAUNCH_NEGOTIATING:return 4;
     case LAUNCH_AUDIO:case LAUNCH_VIDEO:case LAUNCH_CONTROL:case LAUNCH_INPUT:return 5;
     case LAUNCH_WAITING:return 6;case LAUNCH_READY:return 7;default:return 0;
     }
+}
+
+/* Interpolate only toward completed callback milestones; no clock-based ETA. */
+struct launch_segments {float shown,from;unsigned target;uint32_t changed;};
+static float launch_segments_tick(struct launch_segments *s,unsigned completed,uint32_t now)
+{
+    float t=(now-s->changed)>=160?1.0f:(float)(now-s->changed)/160;
+    s->shown=s->from+((float)s->target-s->from)*t*t*(3-2*t);
+    if(completed>s->target){s->from=s->shown;s->target=completed>7?7:completed;s->changed=now;}
+    return s->shown;
 }
 
 struct launch_visual {uint32_t started,art_started;float x,y,w,h;bool motion,art,initial_art;};
@@ -98,6 +108,7 @@ bool launch_cancelled(void);
 void launch_command(bool cancel,bool reveal);
 void launch_decoded(void);
 bool launch_prepare(void);
+bool launch_refresh_text(void); /* menu owner only; reuse the existing atlas after profile selection */
 void launch_present(void); /* menu owner only, before the acknowledged handoff */
 void launch_set_status(enum launch_status status); /* atomic callback publication */
 bool launch_offer_art(const uint32_t *pixels,int w,int h,uint32_t generation);

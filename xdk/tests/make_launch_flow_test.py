@@ -11,12 +11,14 @@ def function(signature):
 
 once=function('static bool stream_once(')
 prefix=once[:once.index('    /* A cached online')]+ '\nreturn true;\n}'
-assert once.count('launch_begin(cover_delay')==1 and once.count('art_launch_begin(app_id)')==1 and once.count('ui_launch_begin(&launch_app')==1
-assert once.index('launch_present();')<once.index('discovery_pause();')<once.index('refresh_server();')
+begin=function('static void launch_selected_begin(')
+assert begin.count('launch_begin(cover_delay')==1 and begin.count('art_launch_begin(app_id)')==1 and begin.count('ui_launch_begin(&launch_app')==1
+assert once.index('launch_selected_begin(app_id,app_title)')<once.index('discovery_pause();')<once.index('refresh_server();')
 retry=once[once.index('    if(cj.ret!=0 && !launch_cancelled()'):once.index('    if(task_was_cancelled || task_timed_out)',once.index('    if(cj.ret!=0 && !launch_cancelled()'))]
 assert 'launch_begin(' not in retry and 'launch_end(' not in retry and 'launch_prepare(' not in retry
 assert 'ui_draw_launch' not in source
 stream=function('static void stream(int app_id,')
+assert stream.index('launch_selected_begin(app_id,selected_title)')<stream.index('prepare_selected_app(app_id)')
 assert 'offer_crt_display' not in stream and 'config_crt_display' not in stream
 environment=function('static void offer_stream_environment(')
 assert 'config_crt_profile' not in environment and 'message(' not in environment
@@ -30,11 +32,14 @@ fixture=r'''
 #include <errno.h>
 #include "../src/config.h"
 #include "../src/connection_flow.h"
+#include "../src/product_features.h"
+#include "../src/aurora_launch.h"
 #include "../src/launch_settings.h"
 #include "../src/launch_cover.h"
 #include "../src/ui/ui.h"
 static config cfg;
-static unsigned session_generation;
+static unsigned session_generation,task_generation,launch_validated_operation;
+static int launch_validated_app;static char launch_identity[96];
 static void cl_log(const char*,...){}
 static bool stream_return_home,launch_connecting,task_was_cancelled,server_ok,active,cancelled,aurora_direct_active;
 static bool fail_host,cancel_refresh,pair_needed,pair_cancel,pair_failure;
@@ -45,7 +50,7 @@ static char launch_pair_pin[5];static ui_app launch_app;
 static struct {int id;} apps[1]={{42}};
 static int app_count=1,home_art;
 static uint32_t pixels=123,*app_art[1]={&pixels},art_generation[1]={1};
-static struct {bool paired;int current_game;} server;
+static struct {bool paired;int current_game;char uuid[80],address[64];} server;
 static const char *host_key(){return "uuid:PC";}
 static const char *home_key(){return host_key();}
 static const uint32_t *home_art_get(int*,const char*,int,uint32_t*){return NULL;}
@@ -56,6 +61,7 @@ static void crypto_random(void *p,size_t n){memset(p,1,n);}
 static uint32_t plat_now_ms(){return 100;}
 static void plat_atomic_store(volatile int *p,int n){*p=n;}
 static int plat_atomic_load(volatile int *p){return *p;}
+void launch_set_wait(unsigned){}
 void launch_begin(unsigned wait,bool){assert(!active);assert(wait==0 || wait==5000);active=true;cancelled=false;begins++;}
 bool launch_active(){return active;}
 bool launch_cancelled(){return cancelled;}
@@ -63,6 +69,7 @@ void launch_end(){assert(active);active=false;ends++;}
 void launch_command(bool cancel,bool){cancelled|=cancel;}
 void launch_set_status(launch_status status){assert(active);phase=status;}
 bool launch_prepare(){assert(active);return true;}
+bool launch_refresh_text(){assert(active);return true;}
 void launch_present(){assert(active);presents++;}
 bool launch_offer_art(const uint32_t*,int,int,uint32_t){return true;}
 void ui_art_size(int *w,int *h){*w=*h=1;}
@@ -91,6 +98,19 @@ static void do_pair(){assert(active);launch_set_status(LAUNCH_PAIRING);assert(st
 static void message(int,const char*,const char*){assert(!active);}
 #define ICON_INFO 1
 /* PREFLIGHT */
+static moonx_launch_data aurora_direct_data;static struct game_bindings game_bindings;
+static unsigned adaptive_reconnects,video_reconnects;static bool preflight_reject;
+static int preflights,transports;
+static void history_text(char *out,size_t size,const char *text){snprintf(out,size,"%s",text);}
+static void offer_stream_environment(){}
+static bool prepare_selected_app(int){assert(active && presents);preflights++;refresh_server();return !preflight_reject;}
+static bool stream_session(int id,const char *name){transports++;assert(stream_once(id,name));launch_end();return false;}
+static bool input_close_app_requested(){return false;}
+static void remember_played_art(int){assert(!active);}
+static void *quit_task(void*){return NULL;}
+static const char *gs_error(){return "fixture";}
+static void run_busy(const char*,const char*,void *(*)(void*),void*){assert(false);}
+/* ENTRY */
 int main(){
     cfg.width=1280;cfg.height=720;cfg.fps=60;cfg.bitrate_kbps=12000;cfg.launch_cover_ms=5000;
     const char *titles[]={"Desktop","Steam Big Picture","Normal game"};
@@ -111,7 +131,32 @@ int main(){
     pair_needed=pair_cancel=true;task_was_cancelled=false;assert(!stream_once(42,"Game") && !active && pair_draws==2);
     pair_needed=pair_failure=true;pair_cancel=false;task_was_cancelled=false;int prior=refreshes;assert(!stream_once(42,"Game") && !active && refreshes==prior+1);pair_failure=false;
     pair_needed=pair_cancel=false;task_was_cancelled=false;server.current_game=99;assert(!stream_once(42,"Game") && !active);
+    // One-shot proof expires on app/operation/UUID/address/state/cancel drift.
+    server_ok=server.paired=true;server.current_game=0;active=true;cancelled=false;
+    strcpy(cfg.host_uuid,"pc-one");strcpy(server.uuid,"pc-one");strcpy(cfg.host,"10.0.0.1");strcpy(server.address,cfg.host);
+    launch_validated_app=42;launch_validated_operation=task_generation+1;
+    assert(launch_preflight_consume(42) && !launch_preflight_consume(42));
+    for(int mode=0;mode<7;mode++){
+        launch_validated_app=42;launch_validated_operation=task_generation+1;
+        if(mode==0)launch_validated_app=99;
+        if(mode==1)launch_validated_operation++;
+        if(mode==2)strcpy(server.uuid,"pc-two");
+        if(mode==3)strcpy(server.address,"10.0.0.2");
+        if(mode==4)server_ok=false;
+        if(mode==5)server.paired=false;
+        if(mode==6)cancelled=true;
+        assert(!launch_preflight_consume(42) && !launch_validated_operation);
+        strcpy(server.uuid,cfg.host_uuid);strcpy(server.address,cfg.host);server_ok=server.paired=true;cancelled=false;
+    }
+    task_generation=0xffffffffu;launch_validated_operation=0;assert(!launch_preflight_consume(42));
+    launch_end();task_generation=0;
+    // The actual outer Play route starts one cover BEFORE preparation and
+    // consumes its exact proof without another discovery/server refresh.
+    server.current_game=0;begins=ends=refreshes=presents=0;
+    stream(42,"Game");assert(begins==1 && ends==1 && refreshes==1 && preflights==1 && transports==1);
+    config requested=cfg;preflight_reject=true;begins=ends=refreshes=presents=0;
+    stream(42,"Game");assert(begins==1 && ends==1 && transports==1 && preflights==2 && !active && !memcmp(&requested,&cfg,sizeof(cfg)));
     puts("PASS: actual Desktop/Steam/game entry starts exactly one owner before discovery/HTTP, no busy overlay; cancel/offline/pairing/other-app exits; stereo retry retains owner");
 }
 '''
-Path(sys.argv[1]).write_text(fixture.replace('/* BUSY */',function('static void draw_busy(')).replace('/* PREFLIGHT */',prefix),encoding='utf-8')
+Path(sys.argv[1]).write_text(fixture.replace('/* BUSY */',function('static void draw_busy(')).replace('/* PREFLIGHT */',function('static bool launch_preflight_consume(')+'\n'+function('static int launch_selected_delay(')+'\n'+begin+'\n'+prefix).replace('/* ENTRY */',stream),encoding='utf-8')

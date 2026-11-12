@@ -88,6 +88,7 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
 void ui_set_exit_shortcut(int choice);
 /* Release the optional static home-screen cache before allocating stream buffers. */
 void ui_drop_main_cache(void);
+void ui_library_art_window(int count,int selected,int *first,int *end);
 void ui_draw_log(const char *title, const char *const *lines, int count, int first);
 
 /* Platform: shows the canvas on screen (present_xenon.c / the PC preview). */

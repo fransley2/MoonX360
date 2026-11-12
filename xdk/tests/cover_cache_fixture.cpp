@@ -39,6 +39,8 @@ static void plat_sleep_ms(unsigned){std::this_thread::yield();}
 static void ui_art_size(int *w,int *h){*w=150;*h=200;}
 static int ui_apps_rows(){return 1;}
 static void ui_drop_main_cache(){}
+static void ui_draw_retire_image(const void*){}
+static void ui_library_art_window(int count,int selected,int *first,int *end){*first=selected>=5?selected-5:0;*end=*first+8;if(*end>count)*end=count;}
 static void ui_draw_cover_memory(unsigned count,unsigned bytes){assert(bytes==count*150*200*4);cache_count=count;if(count>peak)peak=count;assert(count<=12);}
 static std::atomic<int> requests(0),inflight(0),max_inflight(0),fail_id(-1),hold(0),content(7);
 static std::atomic<bool> decoder_allowed(true);
@@ -74,6 +76,9 @@ static void home_art_remember(void*,const char*,int,const uint32_t*,int,int,uint
 #define malloc fixture_alloc
 #define free fixture_free
 #include "../src/ui/cover_cache.h"
+static std::atomic<bool> fail_disk_allocation(false);
+static void *disk_alloc(size_t bytes){return fail_disk_allocation?NULL:fixture_alloc(bytes);}
+#define COVER_DISK_ALLOC disk_alloc
 #include "../src/cover_disk.h"
 static std::atomic<int> hold_write(0),writing(0);static std::atomic<bool> fail_write(false);
 static bool fixture_disk_write(cover_disk_cache *c,const char *dir,const ui_cover_key *key,const uint32_t *p,uint32_t now){
@@ -95,6 +100,10 @@ int main(){
  app_count=40;int map[MAX_APPS];for(int i=0;i<app_count;i++){apps[i].id=i+1;map[i]=i;}
  art_loader_start();plat_thread *same=art_worker;art_loader_start();assert(same==art_worker);
  art_update(map,app_count,4,6);assert(art_job.key.app==5);finish();
+ // A warm selected cover must let visible/prefetch HTTP finish across UI ticks.
+ hold=1;assert(art_request_app(6,false,true));while(!inflight)Sleep(1);
+ for(int i=0;i<20;i++)assert(!art_request_app(5,true,true) && !art_io_cancel);
+ hold=0;finish();
  int baseline=requests;uint32_t *pixels=app_art[4];unsigned generation=art_generation[4];
  for(tick=1;tick<UI_COVER_VALID_MS;tick+=UI_COVER_VALID_MS/10){assert(!art_request_app(5,true,true));assert(app_art[4]==pixels);}
  assert(requests==baseline);
@@ -140,6 +149,11 @@ int main(){
  assert(!art_request_app(92,true,true));hold=0;finish();
  assert(ui_cover_retry(&art_cache,&(other=key(91)),tick));
  assert(art_request_app(92,true,true));finish();
+ // Superseded foreground work must cancel as well, without a cooldown.
+ hold=1;assert(art_request_app(94,true,true));while(!inflight)Sleep(1);
+ assert(!art_request_app(95,true,true));hold=0;finish();
+ assert(ui_cover_retry(&art_cache,&(other=key(94)),tick));
+ assert(art_request_app(95,true,true));finish();
  // Actual disk warm-up, eviction and restart avoid both HTTP and decode.
  char temp[MAX_PATH];GetTempPathA(MAX_PATH,temp);disk_dir=std::string(temp)+"moonx-art-worker-"+std::to_string(GetCurrentProcessId());
  std::filesystem::create_directories(disk_dir);tick+=UI_COVER_VALID_MS;
@@ -183,6 +197,32 @@ int main(){
  for(int id=0;id<app_count;id++)art_update(map,app_count,id,6);
  stop_art_loader(&art_worker);assert(!art_worker && !art_result && art_ready==-1 && art_request==-1);
  stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);art_memory();assert(!cache_count && allocations.empty() && max_inflight==1);
+ // A temporary allocation failure must keep offline artwork and retry after 1s.
+ art_pause(false);art_host_online=false;art_loader_start();baseline=requests;
+ fail_disk_allocation=true;assert(art_request_app(22,true,true));finish();
+ ui_cover_key saved=key(22);assert(cover_disk_find(&art_disk,&saved)>=0);
+ int saved_slot=ui_cover_find(&art_cache,&saved);assert(saved_slot>=0 && art_cache.items[saved_slot].resource_retry && !app_art[0]);
+ fail_disk_allocation=false;tick+=999;assert(!art_request_app(22,true,true));tick++;
+ assert(art_request_app(22,true,true));finish();assert(app_art[0] && requests==baseline);
+ // Fill the actual visible windows while jumping around a library > RAM cache.
+ art_host_online=true;app_count=40;for(int i=0;i<app_count;i++){apps[i].id=i+1;map[i]=i;}
+ const int positions[]={0,6,25,4,39};
+ for(int selected:positions){
+  for(int pass=0;pass<32;pass++){art_update(map,app_count,selected,6);if(art_request>=0)finish();}
+  int first,end;ui_library_art_window(app_count,selected,&first,&end);
+  for(int i=first;i<end;i++)assert(app_art[map[i]]);
+ }
+ // A filtered list uses original app indices and cannot publish artwork by row.
+ int filtered[20];for(int i=0;i<20;i++)filtered[i]=i*2;
+ for(int pass=0;pass<32;pass++){art_update(filtered,20,7,6);if(art_request>=0)finish();}
+ int first,end;ui_library_art_window(20,7,&first,&end);
+ for(int i=first;i<end;i++)assert(app_art[filtered[i]] && app_art[filtered[i]][0]==(unsigned char)(apps[filtered[i]].id+content));
+ stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);art_pause(false);art_host_online=false;baseline=requests;art_loader_start();
+ for(int pass=0;pass<32;pass++){art_update(filtered,20,7,6);if(art_request>=0)finish();}
+ for(int i=first;i<end;i++)assert(app_art[filtered[i]]);
+ assert(requests==baseline);art_pause(true);assert(!art_request_app(apps[filtered[7]].id,true,true));art_pause(false);
+ art_update(filtered,20,7,6);if(art_request>=0)finish();assert(app_art[filtered[7]]);
+ stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);art_memory();assert(allocations.empty() && max_inflight==1);
  std::filesystem::remove_all(disk_dir);
  puts("PASS: real single worker, stable host/app/size, daily reuse, stale refresh, same-content generation, 10s retry, manual refresh, reorder, pinned 12-entry LRU, host switch, streaming pause, no duplicate work and leak-free stop");
 }

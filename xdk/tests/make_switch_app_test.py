@@ -69,6 +69,7 @@ static int plat_atomic_load(volatile int *p){return *p;}
 static void plat_atomic_store(volatile int *p,int n){*p=n;}
 static uint32_t plat_now_ms(){return tick;}
 static void plat_log(const char*){}
+static void cl_log(const char*,...){}
 static void art_pause(bool){}
 static void LiInterruptConnection(){assert(false);}
 static void gs_set_request_cancel(volatile int*){}

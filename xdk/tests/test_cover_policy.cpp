@@ -12,5 +12,17 @@ int main(){
  ui_cover_attempt(&c,&k,1,true);assert(ui_cover_retry(&c,&k,1));
  memset(&c,0,sizeof(c));for(int i=1;i<=UI_COVER_FAILURE_LIMIT;i++){k=key(i);ui_cover_attempt(&c,&k,500,false);}
  k=key(999);assert(!ui_cover_retry(&c,&k,501) && ui_cover_retry(&c,&k,10500));
- ui_cover_dispose(&c);puts("PASS: cooldown survives pixel eviction/invalidation, host/app/size isolation, success reset, saturation and clock wrap");
+ ui_cover_dispose(&c);
+ // A recent failed slot is preferable to an older valid image.
+ for(int i=1;i<=UI_COVER_LIMIT;i++){k=key(i);int n=ui_cover_slot(&c,&k,true);c.items[n].lru=i;c.items[n].pixels=(uint32_t*)calloc(150*200,4);}
+ free(c.items[10].pixels);c.items[10].pixels=NULL;k=key(99);
+ assert(ui_cover_candidate(&c,&k,true)==10);c.items[10].inflight=true;
+ assert(ui_cover_candidate(&c,&k,true)==0);ui_cover_dispose(&c);
+ k=key(1);slot=ui_cover_slot(&c,&k,true);uint32_t *pixels=(uint32_t*)calloc(150*200,4);
+ assert(ui_cover_publish(&c,slot,&k,pixels,1));uint32_t previous_generation=c.items[slot].generation;
+ ui_cover_dispose(&c);assert(c.generation==previous_generation);
+ k=key(2);slot=ui_cover_slot(&c,&k,true);pixels=(uint32_t*)calloc(150*200,4);
+ assert(ui_cover_publish(&c,slot,&k,pixels,2) && c.items[slot].generation>previous_generation);
+ ui_cover_dispose(&c);
+ puts("PASS: cooldown survives pixel eviction/invalidation, host/app/size isolation, success reset, saturation and clock wrap");
 }

@@ -55,7 +55,8 @@ void config_load(struct config *c)
 {
     char *text, *line, *save=NULL;
     bool have_overlay_mode=false, have_profile=false, have_left_min=false, have_right_min=false;
-    bool have_refresh_ms=false;
+    bool have_refresh_ms=false,have_desktop_speed=false,have_desktop_acceleration=false;
+    bool have_mouse_speed=false,have_mouse_acceleration=false;
 
     config_defaults(c);
     text = storage_read("moonlight.ini", NULL);
@@ -190,21 +191,24 @@ void config_load(struct config *c)
         else if(!strcmp(line,"desktop_start"))c->desktop_start=!strcmp(eq+1,"1");
         else if(!strcmp(line,"desktop_host")){if(wake_identity_valid(eq+1))snprintf(c->desktop_host,sizeof(c->desktop_host),"%s",eq+1);}
         else if(!strcmp(line,"desktop_app")){int v=atoi(eq+1);c->desktop_app=v>0?v:0;}
-        else if(!strcmp(line,"desktop_speed")){int v=atoi(eq+1);c->desktop.speed=v<25?25:v>200?200:v;}
+        else if(!strcmp(line,"desktop_speed")){have_desktop_speed=true;int v=atoi(eq+1);c->desktop.speed=v<25?25:v>200?200:v;}
         else if(!strcmp(line,"desktop_deadzone")){int v=atoi(eq+1);c->desktop.deadzone=v<0?0:v>30?30:v;}
-        else if(!strcmp(line,"desktop_acceleration"))c->desktop.acceleration=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"desktop_acceleration")){have_desktop_acceleration=true;c->desktop.acceleration=!strcmp(eq+1,"1");}
         else if(!strcmp(line,"desktop_precision")){int v=atoi(eq+1);c->desktop.precision=v<10?10:v>75?75:v;}
         else if(!strcmp(line,"desktop_scroll")){int v=atoi(eq+1);c->desktop.scroll_speed=v<25?25:v>200?200:v;}
         else if(!strcmp(line,"desktop_keyboard")){int v=atoi(eq+1);c->desktop.keyboard=v>=0 && v<=2?v:0;}
         else if(!strncmp(line,"desktop_map_",12)){char *end;long slot=strtol(line+12,&end,10);if(end!=line+12 && !*end && slot>=0 && slot<DESKTOP_BINDINGS){char *tail;long v=strtol(eq+1,&tail,10);if(tail!=eq+1 && !*tail && v>=0 && v<DA_COUNT)desktop_remap(&c->desktop,(int)slot,(int)v);}}
-        else if (!strcmp(line,"mouse_speed")){int v=atoi(eq+1);c->mouse_speed=v<25?25:v>200?200:v;}
-        else if (!strcmp(line,"mouse_acceleration"))c->mouse_acceleration=atoi(eq+1)!=0;
+        else if (!strcmp(line,"mouse_speed")){have_mouse_speed=true;int v=atoi(eq+1);c->mouse_speed=v<25?25:v>200?200:v;}
+        else if (!strcmp(line,"mouse_acceleration")){have_mouse_acceleration=true;c->mouse_acceleration=atoi(eq+1)!=0;}
         else if (!strcmp(line,"mouse_scroll_ms")){int v=atoi(eq+1);c->mouse_scroll_ms=v<50?50:v>400?400:v;}
         else if (!strcmp(line, "audio_mode")) c->audio_mode=atoi(eq+1)==1?1:0;
         else if (!strcmp(line, "local_audio"))
             c->local_audio = atoi(eq + 1) != 0;
     }
     free(text);
+    /* Read-only migration; saved Desktop values win regardless of INI order. */
+    if(!have_desktop_speed && have_mouse_speed)c->desktop.speed=c->mouse_speed;
+    if(!have_desktop_acceleration && have_mouse_acceleration)c->desktop.acceleration=c->mouse_acceleration;
     if(!have_left_min)c->left_min=c->stick_deadzone;
     if(!have_right_min)c->right_min=c->stick_deadzone;
     if(c->display_mode<0 || c->display_mode>4)c->display_mode=0;

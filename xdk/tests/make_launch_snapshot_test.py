@@ -4,7 +4,7 @@ import sys
 root=Path(__file__).resolve().parents[2]
 s=(root/'src/app.c').read_text()
 a=s.index('    launch_begin(cover_delay,cfg.launch_animation)')
-b=s.index('\n#endif\n    discovery_pause();',a)
+b=s.index('\n}\n#endif',a)
 fixture=r'''
 #include <assert.h>
 #include <stdint.h>
@@ -12,6 +12,8 @@ fixture=r'''
 #include <string.h>
 #include <stdio.h>
 #include "../src/ui/ui.h"
+#include "../src/launch_cover.h"
+static void launch_set_status(launch_status){}
 static ui_app launch_app;
 static unsigned freezes;
 static bool launch_connecting,commands,frozen,prepared,had_art,aurora_direct_active;

@@ -40,6 +40,12 @@ static void desktop_suspend(struct desktop_input *d) {
 static bool desktop_neutral(const struct pad *p) {
     return !p->buttons && p->lt<20 && p->rt<20 && abs(p->lx)<8000 && abs(p->ly)<8000 && abs(p->rx)<8000 && abs(p->ry)<8000;
 }
+/* Keep ownership stable; never bind automatic Desktop to an absent port zero. */
+static void desktop_select_owner(struct desktop_input *d,const struct pad pads[MAX_PADS]) {
+    if(d->owner>=0 && d->owner<MAX_PADS && pads[d->owner].present)return;
+    desktop_suspend(d);d->owner=-1;
+    for(int i=0;i<MAX_PADS;i++)if(pads[i].present){d->owner=i;break;}
+}
 static void desktop_keyboard(struct desktop_input *d) {
     desktop_release(d);d->neutral=true;d->view=0;d->selected=0;d->text_error=false;
     if(d->options.keyboard==1)desktop_chord('O',MODIFIER_META|MODIFIER_CTRL);
@@ -66,16 +72,22 @@ static void desktop_command(struct desktop_input *d,int command) {
     }
 }
 static void desktop_toolbar_action(struct desktop_input *d) {
-    switch(d->selected) {
-    case 0:desktop_chord(0x25,MODIFIER_ALT);break;
-    case 1:desktop_chord(0x27,MODIFIER_ALT);break;
-    case 2:desktop_chord(0x74,0);break; /* F5, no video refresh */
-    case 3:desktop_chord('L',MODIFIER_CTRL);desktop_keyboard(d);return;
-    case 4:desktop_keyboard(d);return;
-    case 5:desktop_chord(0x24,MODIFIER_ALT);break;
-    case 6:desktop_chord(0x5b,0);break;
-    case 7:desktop_chord(0x09,MODIFIER_CTRL);break;
-    case 8:desktop_chord(0x7a,0);break;
+    if(d->view==DESK_MORE)switch(d->selected) {
+    case 0:desktop_chord('E',MODIFIER_META);break;
+    case 1:desktop_chord(0x74,0);break;
+    case 2:desktop_chord(0x24,MODIFIER_ALT);break;
+    case 3:desktop_chord(0x5b,0);break;
+    case 4:desktop_chord(0x09,MODIFIER_CTRL);break;
+    case 5:desktop_chord(0x7a,0);break;
+    case 6:desktop_chord('O',MODIFIER_META|MODIFIER_CTRL);break;
+    case 7:desktop_chord('B',MODIFIER_META);break;
+    } else switch(d->selected) {
+    case 0:desktop_keyboard(d);return;
+    case 1:desktop_chord('L',MODIFIER_CTRL);desktop_keyboard(d);return;
+    case 2:desktop_chord(0x25,MODIFIER_ALT);break;
+    case 3:desktop_chord(0x27,MODIFIER_ALT);break;
+    case 4:desktop_chord(0x09,MODIFIER_ALT);break;
+    case 5:d->view=DESK_MORE;d->selected=0;d->neutral=true;return;
     }
     d->view=0;d->neutral=true;
 }
@@ -109,18 +121,18 @@ static bool desktop_step(struct desktop_input *d,struct pad *p,uint32_t now,int 
         desktop_release(d);return true;
     }
     if(released&BACK_FLAG){
-        if(!d->back_used){if(d->view)d->view=0;else desktop_action(d,d->options.mapping[11]);}
+        if(!d->back_used){if(d->view){d->view=d->view==DESK_MORE?DESK_TOOLBAR:0;d->selected=0;}else desktop_action(d,d->options.mapping[11]);}
         d->back_used=false;d->neutral=true;return true;
     }
     if(d->view){
-        int count=d->view==DESK_KEYBOARD?40:9,cols=d->view==DESK_KEYBOARD?10:3;
+        int count=desktop_view_count(d->view),cols=d->view==DESK_KEYBOARD?10:3;
         if(pressed&LEFT_FLAG)d->selected=(d->selected+count-1)%count;
         if(pressed&RIGHT_FLAG)d->selected=(d->selected+1)%count;
         if(pressed&UP_FLAG)d->selected=(d->selected+count-cols)%count;
         if(pressed&DOWN_FLAG)d->selected=(d->selected+cols)%count;
-        if(pressed&B_FLAG){d->view=0;d->neutral=true;return true;}
+        if(pressed&B_FLAG){d->view=d->view==DESK_MORE?DESK_TOOLBAR:0;d->selected=0;d->neutral=true;return true;}
         if(pressed&A_FLAG){
-            if(d->view==DESK_TOOLBAR)desktop_toolbar_action(d);
+            if(d->view!=DESK_KEYBOARD)desktop_toolbar_action(d);
             else {
                 int key=d->selected;
                 if(key<30 || key==30){const char *text=key==30?" ":desktop_key_label(d->keyboard_page,d->caps,key);d->text_error=LiSendUtf8TextEvent(text,(unsigned)strlen(text))!=0;}

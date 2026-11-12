@@ -13,6 +13,7 @@ struct ui_memory_info {
     uint32_t gpu_bytes,glyph_bytes,cover_gpu_bytes,button_gpu_bytes,command_bytes;
     uint32_t cover_cpu_bytes,loaded_covers,button_cpu_bytes,canvas_bytes;
     uint32_t gpu_covers,commands,software_fallbacks;
+    uint32_t cover_fade_starts,cover_fade_reuses;
 };
 void ui_draw_enable(bool enabled);
 bool ui_draw_enabled(void);
@@ -54,6 +55,10 @@ bool ui_button(canvas_t*,const char*,int,int,int,int);
 bool ui_focus_bounds(float *x,float *y,float *w,float *h);
 
 void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h);
+/* Remove borrowed CPU references before the artwork cache releases its pixels. */
+void ui_draw_retire_image(const void *pixels);
+bool ui_draw_retry_pending(void);
+void ui_draw_retry_images(bool pending);
 
 bool ui_motion_enabled(void);
 void ui_transition_begin(void);

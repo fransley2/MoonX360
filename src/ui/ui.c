@@ -956,6 +956,13 @@ static void app_tile(const struct ui_app *a,float x,float y,bool on,int item)
     if(a->running){rrect(x+10,y+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,x+51,y+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
 }
 static struct {float current,target,origin;uint32_t now,started;uint64_t context;bool active,known;} library_scroll;
+void ui_library_art_window(int count,int selected,int *first,int *end)
+{
+    int target=selected>=UI_RAIL_VISIBLE?selected-UI_RAIL_VISIBLE+1:0;
+    *first=library_scroll.known?(int)(library_scroll.current/UI_RAIL_STEP)-1:target-1;
+    if(*first<0)*first=0;if(*first>=count)*first=count>0?count-1:0;
+    *end=*first+UI_RAIL_VISIBLE+3;if(*end>count)*end=count;
+}
 static void reset_scroll(void){memset(&home_scroll,0,sizeof(home_scroll));memset(&home_focus,0,sizeof(home_focus));home_focus.current=home_focus.target=-1;memset(&library_scroll,0,sizeof(library_scroll));}
 bool ui_library_tick(uint32_t now)
 {
@@ -986,8 +993,7 @@ void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,
     /* Draw just the clipped visible rail and one overscan card either side.
      * All cards share one position; no per-card animation or allocation. */
     float top=212;cv_clip(&cv,SI(UI_SAFE_X-8),SI(top-10),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(UI_RAIL_CARD_HEIGHT+66));
-    int begin=(int)(library_scroll.current/UI_RAIL_STEP)-1;if(begin<0)begin=0;
-    int end=begin+UI_RAIL_VISIBLE+3;if(end>n)end=n;
+    int begin,end;ui_library_art_window(n,sel,&begin,&end);
     for(int i=begin;i<end;i++) {
         float x=UI_SAFE_X+(float)i*UI_RAIL_STEP-library_scroll.current;
         app_tile(apps+i,x,top,i==sel,i);

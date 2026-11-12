@@ -74,6 +74,13 @@ int main()
     ui_draw_begin(ui_canvas());ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,64,194,174,232,255,101);ui_cover_fade_mark();
     assert(ui_focus_tick(600));ui_set_motion(false);assert(ui_focus_tick(601));
     p=ui_draw_commands(&count);assert(p[0].color==0xffffffff);ui_focus_presented();assert(!ui_focus_tick(602));
+    // Returning from launch/modal screens must not replay a completed cover fade.
+    ui_set_motion(true);ui_draw_suspend();ui_draw_begin(ui_canvas());
+    ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,64,194,174,232,255,101);ui_cover_fade_mark();
+    assert(!ui_focus_tick(900));p=ui_draw_commands(&count);assert(p[0].color==0xffffffff);
+    ui_draw_retire_image(pixels);ui_draw_begin(ui_canvas());
+    ui_picture_region(ui_canvas(),pixels,2,2,0,0,2,2,64,194,174,232,255,102);ui_cover_fade_mark();
+    assert(ui_focus_tick(901));ui_focus_tick(1101);ui_focus_presented();
     ui_set_motion(true);ui_draw_begin(ui_canvas());ui_fill(ui_canvas(),0,0,1280,720,0xff121619);
     ui_transition_begin();assert(ui_transition_active() && ui_transition_tick(100));
     p=ui_draw_commands(&count);assert(count==2 && (p[1].color>>24)==150);

@@ -19,13 +19,16 @@ output=r'''
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <deque>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../third_party/stb/stb_image_write.h"
 static config cfg;
 static struct {char uuid[80];} server;
 static struct {int id;char name[64];} apps[64];static int app_count;
 static char filename[160];static int width,height,language;
+static int capture_frame=-1,capture_step;static std::deque<int> keys;
 void ui_present(void) {
+    if(capture_frame>=0 && capture_step++!=capture_frame)return;
     ui_draw_software();canvas_t *cv=ui_canvas();
     unsigned char *rgb=(unsigned char*)malloc(cv->w*cv->h*3);
     for(int i=0;i<cv->w*cv->h;i++){rgb[i*3]=(unsigned char)(cv->px[i]>>16);rgb[i*3+1]=(unsigned char)(cv->px[i]>>8);rgb[i*3+2]=(unsigned char)cv->px[i];}
@@ -33,7 +36,7 @@ void ui_present(void) {
 }
 char *storage_read(const char*,size_t*){return NULL;}
 bool storage_write(const char*,const void*,size_t){return true;}
-static int wait_button(){return B_FLAG;}
+static int wait_button(){if(keys.empty())return B_FLAG;int key=keys.front();keys.pop_front();return key;}
 static void choose_wallpaper(){}
 '''
 for name in ('labels','helps'):output+='static const char *'+name+'[]='+initializer(name)+';\n'
@@ -80,7 +83,12 @@ int main(void) {
         name("appearance",0);appearance_menu();name("stream-ui",0);overlay_options_menu();ui_location_restore(token);
         ui_set_settings_context(UI_SETTINGS,SETTINGS_CONTROLS);token=ui_location_enter("Settings");ui_location_enter("Controllers and mouse");
         name("remote-input",0);pointer_settings_menu();ui_location_restore(token);
-        name("desktop",0);desktop_settings_menu();ui_location_restore(token);
+        name("desktop",0);desktop_settings_menu();
+        for(int group=0;group<4;group++){
+            name("desktop-section",group);keys.clear();for(int i=0;i<group;i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);
+            capture_frame=group+1;capture_step=0;desktop_settings_menu();capture_frame=-1;
+        }
+        ui_location_restore(token);
         ui_set_settings_context(-1,-1);
     }
     width=960;height=720;language=CONFIG_LANGUAGE_PT_BR;

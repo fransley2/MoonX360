@@ -147,6 +147,21 @@ int main() {
         bool cached=false;for(int slot=0;slot<IMAGE_MAX;slot++)if(images[slot].key==distinct_art[cover])cached=true;
         assert(cached); // twelve distinct art buffers remain resident alongside brand/buttons
     }
+    // Failed replacement retains its victim and only substitutes a placeholder.
+    ui_draw_command incoming={};incoming.kind=UI_IMAGE;incoming.iw=150;incoming.ih=200;incoming.pixels=art;incoming.generation=99;
+    frame_stamp++;D3DTexture *retained=images[0].texture;unsigned before_failed=uploads;
+    fail_create=true;assert(!image(&d,&incoming));fail_create=false;
+    assert(images[0].texture==retained);assert(!image(&d,&incoming) && uploads==before_failed);
+    tick+=1000;fail_upload=true;assert(!image(&d,&incoming));fail_upload=false;assert(images[0].texture==retained);
+    tick+=1000;assert(image(&d,&incoming));
+    // The native menu keeps drawing after a cover-only failure and retries.
+    apps[0].generation=77;ui_draw_library(&host,apps,12,0,"All Apps");fail_create=true;
+    assert(gfx_ui_draw(&d) && ui_draw_retry_pending() && ui_draw_enabled());fail_create=false;
+    unsigned no_repeat=uploads;assert(gfx_ui_draw(&d) && uploads==no_repeat);
+    tick+=1000;assert(gfx_ui_draw(&d) && !ui_draw_retry_pending());
+    // Retiring an evicted CPU buffer clears every borrowed draw reference.
+    ui_draw_retire_image(apps[0].art);int retired_count;const ui_draw_command *retired=ui_draw_commands(&retired_count);
+    for(int i=0;i<retired_count;i++)assert(retired[i].kind!=UI_IMAGE || retired[i].pixels!=apps[0].art);
     ui_set_motion(true);
     for(int i=0;i<12;i++)apps[i].art=art;
     ui_draw_library(&host,apps,20,0,"All Apps");assert(gfx_ui_draw(&d));
@@ -190,8 +205,8 @@ int main() {
     assert(ui_focus_tick(0));unsigned before_motion=presents,before_motion_uploads=uploads;ui_present();assert(presents==before_motion); // pending prior fence
     assert(ui_focus_tick(120));guide=true;pending=false;ui_present();assert(presents==before_motion);
     assert(ui_focus_tick(160));guide=false;ui_present();assert(presents==before_motion+1);
-    assert(ui_focus_tick(176)); // cover fade still advances after focus has settled
-    assert(ui_focus_tick(220));ui_present();
+    ui_focus_tick(176); // Retained unchanged covers may already have completed their fade.
+    ui_focus_tick(220);ui_present();
     for(unsigned ms=236;ms<1200 && ui_focus_tick(ms);ms+=40){pending=false;ui_present();}
     assert(!ui_focus_tick(1200));
     assert(uploads==before_motion_uploads);
@@ -217,6 +232,8 @@ int main() {
     preview("launch-cover-centered.ppm");pending=false;
     tick=0;launch_begin(5000,true);assert(launch_offer_art(art,150,200,1));assert(launch_prepare());gfx_release_ui_textures();
     assert(allocations-releases==4 && launch_active());unsigned launch_allocations=allocations;
+    unsigned initial_clock=visual.started;D3DTexture *same_text=launch_text;
+    assert(launch_refresh_text() && launch_text==same_text && visual.started==initial_clock && allocations==launch_allocations);
     tick=999;launch_reveal=1; // Reveal still cannot reveal without a valid frame.
     D3DDevice *owner=gfx_begin();gfx_launch_idle(owner);gfx_end();assert(launch_active());launch_reveal=0;
     tick=1000;launch_decoded();owner=gfx_begin();gfx_launch_draw(owner,true);gfx_end();assert(cover.first_ms==1000);
@@ -243,7 +260,17 @@ int main() {
     assert(visual.art && visual.art_started==tick && visual.started==movement_start);
     launch_visual_sample late;launch_visual_get(&visual,tick,&late);assert(late.art==0 && late.x==514);
     launch_visual_get(&visual,tick+125,&late);assert(late.art==.5f && late.x==514);
-    assert(allocations==late_allocations);launch_end();assert(!launch_offer_art(art,150,200,13));
+    assert(allocations==late_allocations);
+    // A transient GPU upload failure retains the previous cover and staging lease.
+    assert(launch_offer_art(art,150,200,13));int retained_current=launch_current;
+    unsigned retained_clock=visual.started;pending=false;fail_upload=true;
+    owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
+    assert(launch_current==retained_current && launch_art_ready && launch_upload_failed);
+    fail_upload=false;tick+=999;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
+    assert(launch_current==retained_current && launch_art_ready);
+    tick++;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
+    assert(launch_current!=retained_current && !launch_art_ready && visual.started==retained_clock);
+    launch_end();assert(!launch_offer_art(art,150,200,13));
     assert(allocations==releases);
     // Stereo fallback keeps one visual lifetime and all resources, while resetting only media readiness.
     ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);

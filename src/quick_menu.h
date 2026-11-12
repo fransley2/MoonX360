@@ -6,11 +6,13 @@ enum { QUICK_OPEN=1u, QUICK_ROW_SHIFT=1, QUICK_ROW_MASK=15u,
        QUICK_VOLUME_SHIFT=5, QUICK_VOLUME_MASK=127u,
        QUICK_MUTED=1u<<12, QUICK_STATS=1u<<13,
        QUICK_PAGE_SHIFT=14, QUICK_PAGE_MASK=3u,
-       QUICK_DETAILS_SHIFT=16, QUICK_DETAILS_MASK=3u };
+       QUICK_DETAILS_SHIFT=16, QUICK_DETAILS_MASK=3u, QUICK_STOPPING=1u<<18 };
 enum { QUICK_MAIN, QUICK_DETAILS, QUICK_CONFIRM, QUICK_DESKTOP_PAGE };
-enum { QUICK_RESUME, QUICK_REFRESH, QUICK_VOLUME, QUICK_MOUSE,
+enum { QUICK_RESUME, QUICK_REFRESH, QUICK_VOLUME, QUICK_DESKTOP,
        QUICK_PERFORMANCE, QUICK_SESSION_DETAILS, QUICK_DISCONNECT,
-       QUICK_CLOSE_APP, QUICK_DESKTOP, QUICK_ROW_COUNT };
+       QUICK_CLOSE_APP, QUICK_ROW_COUNT };
+/* Source compatibility for existing fixtures; there is only one input mode row. */
+enum { QUICK_MOUSE=QUICK_DESKTOP };
 struct quick_menu {
     bool open,latch,neutral,muted,stats,refresh_request;
     int desktop_request;
@@ -72,16 +74,17 @@ static bool quick_step(struct quick_menu *q,struct pad pads[MAX_PADS],bool guide
         if(pressed&B_FLAG){
             if(q->page!=QUICK_MAIN){if(q->page==QUICK_DESKTOP_PAGE)q->row=QUICK_DESKTOP;q->page=QUICK_MAIN;}
             else {q->open=false;q->neutral=true;}
+        } else if(q->page==QUICK_MAIN && q->row==QUICK_DESKTOP && (pressed&X_FLAG)) {
+            q->page=QUICK_DESKTOP_PAGE;q->row=0;
         } else if(pressed&A_FLAG) {
             if(q->page==QUICK_DESKTOP_PAGE){q->desktop_request=q->row+1;q->open=false;q->neutral=true;}
             else if(q->page==QUICK_CONFIRM){*quit=true;*close_app=true;q->open=false;q->neutral=true;}
             else if(q->page==QUICK_MAIN) {
                 switch(q->row){
-                case QUICK_DESKTOP:q->page=QUICK_DESKTOP_PAGE;q->row=0;break;
+                case QUICK_DESKTOP:q->desktop_request=1;q->open=false;q->neutral=true;break;
                 case QUICK_RESUME:q->open=false;q->neutral=true;break;
                 case QUICK_REFRESH:q->refresh_request=true;break;
                 case QUICK_VOLUME:q->muted=!q->muted;break;
-                case QUICK_MOUSE:*mouse_action=q->owner;q->open=false;q->neutral=true;break;
                 case QUICK_PERFORMANCE:q->stats=!q->stats;break;
                 case QUICK_SESSION_DETAILS:q->page=QUICK_DETAILS;q->details_section=0;break;
                 case QUICK_DISCONNECT:*quit=true;q->open=false;q->neutral=true;break;

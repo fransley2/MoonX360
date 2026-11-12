@@ -8,6 +8,7 @@
 #include "../../src/ui/font.h"
 #include "../../src/ui/canvas.h"
 #include "../../src/platform.h"
+#include "../../src/performance.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -24,12 +25,15 @@ struct stream_panel {
     float decoded_fps,presented_fps;
 };
 static stream_panel panels[3];
+static unsigned quick_drawn_state,quick_reported_state;
+static bool quick_drawn_valid;
 static const uint32_t C_BG=0xFF12191E,C_PANEL=0xFF1C2327,C_CARD=0xFF1D2934;
 static const uint32_t C_ICON=0xFF233038,C_TEXT=0xFFF2F5F3,C_SUB=0xFFA6B7C0;
 static const uint32_t C_MUTED=0xFF91A5AD,C_DIV=0xFF36444D,C_DANGER=0xFFEDB0AA;
 
 void gfx_stream_menu_reset(D3DDevice *d)
 {
+    quick_drawn_valid=false;quick_drawn_state=quick_reported_state=0;
     for(int i=0;i<3;i++){
         stream_panel *p=panels+i;
         if(p->fence)gfx_wait_fence(d,p->fence);
@@ -70,7 +74,7 @@ static void icon(stream_panel *p,int kind,int x,int y,uint32_t color)
         cv_line(c,x+18,y+12,x+16,y+16,1.6f,color);
         cv_line(c,x+19,y+5,x+22,y+12,1.6f,color);
         cv_line(c,x+22,y+12,x+19,y+19,1.6f,color);break;
-    case QUICK_MOUSE:
+    case QUICK_DESKTOP:
         cv_line(c,x+5,y+3,x+5,y+19,1.8f,color);
         cv_line(c,x+5,y+3,x+18,y+13,1.8f,color);
         cv_line(c,x+18,y+13,x+11,y+13,1.8f,color);
@@ -78,7 +82,6 @@ static void icon(stream_panel *p,int kind,int x,int y,uint32_t color)
     case QUICK_PERFORMANCE:
         cv_fill(c,x+3,y+13,4,8,color);cv_fill(c,x+10,y+8,4,13,color);
         cv_fill(c,x+17,y+4,4,17,color);break;
-    case QUICK_DESKTOP:
     case QUICK_SESSION_DETAILS:
         cv_rrect_outline(c,x+3,y+4,18,13,2,1.6f,color);
         cv_line(c,x+12,y+17,x+12,y+21,1.6f,color);
@@ -126,9 +129,9 @@ static void session_card(stream_panel *p,int w,bool compact,const video_stats *v
     ink(p,FONT_BOLD,17,29,y+56,w-58,C_TEXT,summary);
 }
 static const char *row_labels[QUICK_ROW_COUNT]={
-    "Resume Stream","Refresh Picture","Audio Volume","Mouse Mode",
+    "Resume Stream","Refresh Picture","Audio Volume","Desktop Mode",
     "Performance Overlay","Session Details","Disconnect Stream",
-    "Close Host App & Disconnect", "Desktop Controller Mode"
+    "Close Host App & Disconnect"
 };
 static const char *row_subs[6]={
     "Return to your game","Request a new keyframe",NULL,NULL,NULL,
@@ -167,7 +170,7 @@ static void action_row(stream_panel *p,int w,int top,int height,int row,bool sel
         snprintf(value,sizeof(value),"%u%%  |  %s",(state>>QUICK_VOLUME_SHIFT)&QUICK_VOLUME_MASK,audio);
         sub=(state&QUICK_MUTED)?ui_translate("Muted"):value;
     }
-    if(row==QUICK_MOUSE)sub=input_mouse_active()?"On":"Off";
+    if(row==QUICK_DESKTOP)sub=input_mouse_active()?"On":"Off";
     if(row==QUICK_PERFORMANCE)sub=(state&QUICK_STATS)?"On":"Off";
     int label_y=top+(height+15)/2;
     ink(p,FONT_BOLD,row==QUICK_CLOSE_APP?16:17,72,label_y,w-103,
@@ -200,8 +203,10 @@ static void main_page(stream_panel *p,int w,int h,unsigned state,const video_sta
     int control_top=compact?448:474,control_h=compact?32:34;
     action_row(p,w,control_top,control_h,QUICK_DISCONNECT,selected==QUICK_DISCONNECT,state,audio,refresh);
     action_row(p,w,control_top+control_h,control_h,QUICK_CLOSE_APP,selected==QUICK_CLOSE_APP,state,audio,refresh);
-    action_row(p,w,control_top+control_h*2,control_h,QUICK_DESKTOP,selected==QUICK_DESKTOP,state,audio,refresh);
     cv_fill(&p->canvas,20,h-38,w-40,1,C_DIV);
+    if(selected==QUICK_DESKTOP){
+        ink(p,FONT_REGULAR,12,20,h-14,w-40,C_SUB,"A Toggle     X Options     B Resume");return;
+    }
     ink(p,FONT_REGULAR,12,20,h-14,w/4,C_SUB,"A Select");
     ink(p,FONT_REGULAR,12,w/4+12,h-14,w/4,C_SUB,"B Resume");
     ink(p,FONT_REGULAR,12,w/2+25,h-14,w/2-45,C_SUB,
@@ -284,15 +289,15 @@ static void confirm_page(stream_panel *p,int w,int h)
 }
 static void desktop_page(stream_panel *p,int w,int h,unsigned state)
 {
-    static const char *labels[]={"Desktop Mode On / Off","Desktop Toolbar","Keyboard","Windows OSK (Win+Ctrl+O)","Touch keyboard taskbar","Switch window (Alt+Tab)","Windows Explorer"};
-    header(p,w,"Desktop Controller Mode");
+    static const char *labels[]={"Desktop Mode On / Off","Desktop actions","Keyboard","Windows keyboard","Notification area","Switch window","Windows Explorer"};
+    header(p,w,"Desktop Mode");
     unsigned selected=(state>>QUICK_ROW_SHIFT)&QUICK_ROW_MASK;
     for(int row=0;row<7;row++){
         int y=111+row*55;
         if(selected==(unsigned)row)cv_rrect(&p->canvas,18,(float)y,(float)(w-36),49,7,0xFF244D3A);
         ink(p,FONT_BOLD,18,32,y+31,w-64,C_TEXT,labels[row]);
     }
-    ink(p,FONT_REGULAR,12,20,h-25,w-40,C_SUB,"A Select     B Back     R3 Desktop Toolbar");
+    ink(p,FONT_REGULAR,12,20,h-25,w-40,C_SUB,"A Select     B Back     R3 Actions");
 }
 static void desktop_draw(D3DDevice *d,unsigned state)
 {
@@ -311,19 +316,18 @@ static void desktop_draw(D3DDevice *d,unsigned state)
     }
     if(update){
         cv_fill(&p->canvas,0,0,w,h,C_BG);
-        ink(p,FONT_BOLD,21,18,30,w-36,C_TEXT,view==DESK_TOOLBAR?"MoonX360 Desktop":"MoonX360 Keyboard");
-        static const char *tools[]={"Back","Forward","Refresh","Address / Search","Keyboard","Home","Windows","Tabs","Fullscreen"};
-        int selected=(state>>2)&63,cols=view==DESK_KEYBOARD?10:3,count=view==DESK_KEYBOARD?40:9;
+        ink(p,FONT_BOLD,21,18,30,w-36,C_TEXT,view==DESK_KEYBOARD?"MoonX360 keyboard":view==DESK_MORE?"More actions":"Desktop actions");
+        int selected=(state>>2)&63,cols=view==DESK_KEYBOARD?10:3,count=desktop_view_count(view);
         int cell_w=view==DESK_KEYBOARD?61:201,cell_h=view==DESK_KEYBOARD?48:65;
         for(int i=0;i<count;i++){
             int x=15+(i%cols)*cell_w,y=45+(i/cols)*cell_h;
             cv_rrect(&p->canvas,(float)x,(float)y,(float)(cell_w-4),(float)(cell_h-5),5,i==selected?0xFF244D3A:C_CARD);
             if(i==selected)cv_rrect_outline(&p->canvas,(float)x,(float)y,(float)(cell_w-4),(float)(cell_h-5),5,1,ui_theme_accent());
-            const char *label=view==DESK_KEYBOARD?desktop_key_label((state>>8)&3,(state&(1<<10))!=0,i):tools[i];
+            const char *label=view==DESK_KEYBOARD?desktop_key_label((state>>8)&3,(state&(1<<10))!=0,i):desktop_tool_label(view,i);
             ink(p,FONT_BOLD,view==DESK_KEYBOARD?14.0f:17.0f,x+5,y+cell_h/2+5,cell_w-14,C_TEXT,label);
         }
-        ink(p,FONT_REGULAR,13,18,267,w-36,C_SUB,view==DESK_KEYBOARD?"A Type / confirm     B Cancel     Page: letters / accents / symbols":"A Select     B Close     D-Pad Navigate");
-        ink(p,FONT_REGULAR,12,18,289,w-36,C_SUB,state&(1<<12)?"Text queue failed. Try again or select OSK.":view==DESK_KEYBOARD?"Each A confirms a character. Enter sends Enter. Caps changes letter case.":"R3 opens this toolbar. Actions use Windows / browser shortcuts.");
+        ink(p,FONT_REGULAR,13,18,267,w-36,C_SUB,view==DESK_KEYBOARD?"A Type     B Close     Page: letters / accents / symbols":"A Select     B Back     D-Pad Navigate");
+        ink(p,FONT_REGULAR,12,18,289,w-36,C_SUB,state&(1<<12)?"Text could not be queued. Try again or use Windows keyboard.":view==DESK_KEYBOARD?"Characters are sent immediately. Enter finishes. Caps changes letter case.":"Y Keyboard     R3 Actions     Back + R3 Desktop On / Off");
         if(gfx_upload(p->texture,p->canvas.px,w*4,w*4,h)){p->previous=state;p->ready=true;}
         else {if(swapped)swap_panel(p);if(!p->ready){p->failed=true;input_desktop_ui_unavailable();}}
     }
@@ -334,7 +338,10 @@ static void desktop_draw(D3DDevice *d,unsigned state)
 void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned dropped,unsigned decode_us,bool detailed)
 {
     unsigned state=input_quick_snapshot();
-    bool open=(state&QUICK_OPEN)!=0,statistics=(state&QUICK_STATS)!=0;
+    bool stopping=(state&QUICK_STOPPING)!=0;
+    bool open=(state&QUICK_OPEN)!=0 || stopping,statistics=(state&QUICK_STATS)!=0;
+    quick_drawn_valid=!open && !gfx_system_ui_active();
+    if(quick_drawn_valid)quick_drawn_state=state;
     if(!open && panels[0].was_open){
         char report[220];stream_panel *menu=&panels[0];
         snprintf(report,sizeof(report),
@@ -380,7 +387,11 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
             }
             cv_fill(&p->canvas,0,0,width,height,C_BG);
             int page=(state>>QUICK_PAGE_SHIFT)&QUICK_PAGE_MASK;
-            if(page==QUICK_DESKTOP_PAGE)desktop_page(p,width,height,state);
+            if(stopping){
+                ink(p,FONT_BOLD,26,28,68,width-56,C_TEXT,"Disconnecting...");
+                ink(p,FONT_REGULAR,18,28,112,width-56,C_SUB,"Stopping the session safely.");
+            }
+            else if(page==QUICK_DESKTOP_PAGE)desktop_page(p,width,height,state);
             else if(page==QUICK_DETAILS)details_page(p,width,height,state,&vs,&info,&rs);
             else if(page==QUICK_CONFIRM)confirm_page(p,width,height);
             else main_page(p,width,height,state,&vs,&info,rs.state);
@@ -415,8 +426,17 @@ void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned 
         gfx_draw_layout_rect(d,GFX_SHADER_RGB,x,y,x+width,y+height);
     } else gfx_draw_hud_rect(d,16,16,528,144);
     d->SetTexture(0,NULL);p->used=true;
+    if(open && p->previous==state){quick_drawn_state=state;quick_drawn_valid=true;}
 }
 void gfx_stream_menu_submitted(DWORD fence)
 {
+    /* Timestamp after all panel draw commands have been enqueued. The fence
+     * still has to complete and Present is not scanout evidence. */
+    if(quick_drawn_valid && quick_drawn_state!=quick_reported_state){
+        if(((quick_drawn_state|quick_reported_state)&(QUICK_OPEN|QUICK_STOPPING)) && perf_enabled()){
+            char trace[128];snprintf(trace,sizeof(trace),"[UX] quick submit_ms=%u state=%u\n",GetTickCount(),quick_drawn_state);plat_log(trace);
+        }
+        quick_reported_state=quick_drawn_state;
+    }
     for(int i=0;i<3;i++)if(panels[i].used)panels[i].fence=fence;
 }

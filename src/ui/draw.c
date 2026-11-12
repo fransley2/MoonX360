@@ -37,12 +37,24 @@ static struct cover_fade {const void *pixels;uint32_t generation,start,stamp;boo
 static struct cover_ref {unsigned command,slot;uint32_t color;} art_refs[16];
 static unsigned art_ref_count,art_stamp;
 static bool art_pending;
+static bool image_retry;
+static bool image_retry_started;
+static uint32_t image_retry_clock;
+bool ui_draw_retry_pending(void){return image_retry;}
+void ui_draw_retry_images(bool pending){image_retry=pending;if(!pending)image_retry_started=false;}
+static bool image_retry_tick(uint32_t now)
+{
+    if(!image_retry)return false;
+    if(!image_retry_started){image_retry_started=true;image_retry_clock=now;return false;}
+    if(now-image_retry_clock<1000u)return false;
+    image_retry_clock=now;return true;
+}
 static bool cover_tick(uint32_t now)
 {
     bool changed=false;
     for(unsigned i=0;i<art_ref_count;i++) {
         struct cover_ref *r=art_refs+i;struct cover_fade *a=art_fades+r->slot;
-        if(r->command>=used)continue;
+        if(r->command>=used || commands[r->command].kind!=UI_IMAGE)continue;
         if(!a->active){if(commands[r->command].color!=r->color){commands[r->command].color=r->color;changed=true;}continue;}
         if(!a->started){a->started=true;a->start=now;}
         unsigned elapsed=now-a->start,alpha=r->color>>24;
@@ -64,7 +76,8 @@ void ui_cover_fade_mark(void)
         if(art_fades[i].pixels==c->pixels && art_fades[i].generation==c->generation){slot=i;break;}
         if(!art_fades[i].pixels || (int32_t)(art_fades[i].stamp-art_fades[oldest].stamp)<0)oldest=i;
     }
-    if(slot<0){slot=oldest;memset(art_fades+slot,0,sizeof(art_fades[slot]));art_fades[slot].pixels=c->pixels;art_fades[slot].generation=c->generation;art_fades[slot].active=motion_enabled;}
+    if(slot<0){memory.cover_fade_starts++;slot=oldest;memset(art_fades+slot,0,sizeof(art_fades[slot]));art_fades[slot].pixels=c->pixels;art_fades[slot].generation=c->generation;art_fades[slot].active=motion_enabled;}
+    else memory.cover_fade_reuses++;
     art_fades[slot].stamp=++art_stamp;
     struct cover_ref *r=art_refs+art_ref_count++;r->command=used-1;r->slot=(unsigned)slot;r->color=c->color;
 }
@@ -106,6 +119,7 @@ bool ui_focus_tick(uint32_t now)
 {
     if(!enabled || !ready)return false;
     bool art_changed=cover_tick(now);
+    if(image_retry_tick(now))art_changed=true;
     if(!focus.registered || focus.index>=used)return art_changed;
     if(!focus.active)return art_changed || (focus_feedback && focus.pending);
     uint32_t elapsed=0;
@@ -151,7 +165,7 @@ void ui_draw_software(void) {
     if(!ready)return;
     /* A CPU fallback has no retained GPU animation loop. Complete cover fades
      * before rasterizing so a failed shader cannot leave permanently dim art. */
-    for(unsigned i=0;i<art_ref_count;i++){commands[art_refs[i].command].color=art_refs[i].color;art_fades[art_refs[i].slot].active=false;}
+    for(unsigned i=0;i<art_ref_count;i++){if(commands[art_refs[i].command].kind==UI_IMAGE)commands[art_refs[i].command].color=art_refs[i].color;art_fades[art_refs[i].slot].active=false;}
     int clip[4]={target->cx0,target->cy0,target->cx1,target->cy1};
     for(unsigned i=0;i<used;i++)raster(commands+i);
     cv_clip(target,clip[0],clip[1],clip[2]-clip[0],clip[3]-clip[1]);
@@ -168,7 +182,7 @@ void ui_draw_enable(bool value) {enabled=value;if(!value)ui_draw_suspend();}
 bool ui_draw_enabled(void) {return enabled;}
 bool ui_draw_recording(void) {return recording;}
 void ui_draw_begin(canvas_t *c) {art_ref_count=0;art_pending=false;focus.registered=focus.pending=false;transition.index=-1;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
-void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;memset(art_fades,0,sizeof(art_fades));focus.known=focus.active=focus.registered=focus.pending=false;transition.active=false;recording=ready=false;used=0;}
+void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;focus.known=focus.active=focus.registered=focus.pending=false;transition.active=false;recording=ready=false;used=0;}
 void ui_scene_drop(void) {scene_count=0;}
 bool ui_scene_store(void) {
     scene_count=0;
@@ -270,4 +284,14 @@ void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h)
     if(!ready)return;
     for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels &&
         commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h)commands[i].color&=0x00ffffffu;
+}
+void ui_draw_retire_image(const void *pixels)
+{
+    if(!pixels)return;
+    ui_scene_drop();
+    for(unsigned i=0;i<12;i++)if(art_fades[i].pixels==pixels)memset(art_fades+i,0,sizeof(art_fades[i]));
+    for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels){
+        commands[i].kind=UI_RECT;commands[i].pixels=NULL;commands[i].r=0;
+        commands[i].color=0xff20272au;
+    }
 }

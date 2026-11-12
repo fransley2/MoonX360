@@ -527,9 +527,9 @@ void gfx_mouse_draw(D3DDevice *d)
     int mode=ui_mouse_hud_mode();
     if(mode==2 || !input_mouse_active() || gfx_system_ui_active() || mouse_indicator_failed)return;
     if(!mouse_indicator) {
-        const char *text=ui_translate("Mouse mode");
+        const char *text=ui_translate(mode==1?"Desktop: Y Keyboard / R3 Actions":"Desktop Mode");
         int width=((font_text_width(FONT_REGULAR,18,text)+16+31)/32)*32;
-        if(width<64)width=64;if(width>256)width=256;
+        if(width<64)width=64;if(width>384)width=384;
         canvas_t label;
         if(!cv_init(&label,width,32)){mouse_indicator_failed=true;input_mouse_indicator_available(false);return;}
         cv_fill(&label,0,0,width,32,mode==1?0xFF000000:0xFF20271F);
