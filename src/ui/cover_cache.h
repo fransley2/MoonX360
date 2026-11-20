@@ -13,7 +13,7 @@ struct ui_cover_failure {struct ui_cover_key key;uint32_t attempted;bool used;};
 struct ui_cover_entry {
     struct ui_cover_key key;
     uint32_t *pixels,generation,updated,attempted,lru;
-    bool used,valid,attempt,refresh,inflight,pinned,disk_checked;
+    bool used,valid,attempt,refresh,inflight,pinned,disk_checked,resource_retry,visible;
 };
 struct ui_cover_cache {struct ui_cover_entry items[UI_COVER_LIMIT];uint32_t clock,generation;struct ui_cover_failure failures[UI_COVER_FAILURE_LIMIT];};
 static bool ui_cover_same(const struct ui_cover_key *a,const struct ui_cover_key *b)
@@ -43,16 +43,22 @@ static void ui_cover_attempt(struct ui_cover_cache *c,const struct ui_cover_key 
     if(success){if(f->used && ui_cover_same(&f->key,key))f->used=false;return;}
     f->used=true;f->key=*key;f->attempted=now;
 }
-static int ui_cover_slot(struct ui_cover_cache *c,const struct ui_cover_key *key,bool evict)
+static int ui_cover_candidate(const struct ui_cover_cache *c,const struct ui_cover_key *key,bool evict)
 {
     int i=ui_cover_find(c,key);if(i>=0)return i;
     int oldest=-1;
     for(i=0;i<UI_COVER_LIMIT;i++) {
         if(!c->items[i].used){oldest=i;break;}
         if(evict && !c->items[i].pinned && !c->items[i].inflight &&
-           (oldest<0 || (int32_t)(c->items[i].lru-c->items[oldest].lru)<0))oldest=i;
+           (oldest<0 || (!c->items[i].pixels && c->items[oldest].pixels) ||
+            (!!c->items[i].pixels==!!c->items[oldest].pixels && (int32_t)(c->items[i].lru-c->items[oldest].lru)<0)))oldest=i;
     }
-    if(oldest<0)return -1;
+    return oldest;
+}
+static int ui_cover_slot(struct ui_cover_cache *c,const struct ui_cover_key *key,bool evict)
+{
+    int oldest=ui_cover_candidate(c,key,evict);if(oldest<0)return -1;
+    if(c->items[oldest].used && ui_cover_same(&c->items[oldest].key,key))return oldest;
     struct ui_cover_entry *e=c->items+oldest;free(e->pixels);memset(e,0,sizeof(*e));e->key=*key;e->used=true;e->refresh=true;e->lru=++c->clock;
     return oldest;
 }
@@ -74,7 +80,13 @@ static bool ui_cover_publish(struct ui_cover_cache *c,int slot,const struct ui_c
 static void ui_cover_invalidate(struct ui_cover_cache *c,const char *host)
 {for(int i=0;i<UI_COVER_LIMIT;i++)if(c->items[i].used && !strcmp(c->items[i].key.host,host))c->items[i].refresh=true;}
 static void ui_cover_dispose(struct ui_cover_cache *c)
-{for(int i=0;i<UI_COVER_LIMIT;i++)free(c->items[i].pixels);memset(c,0,sizeof(*c));}
+{
+    /* GPU/fade caches can outlive an explicit RAM clear. A recycled malloc
+     * address must never recover another image's old generation. */
+    uint32_t generation=c->generation;
+    for(int i=0;i<UI_COVER_LIMIT;i++)free(c->items[i].pixels);
+    memset(c,0,sizeof(*c));c->generation=generation;
+}
 /* At most two visible rows plus a small prefetch margin. No entire-library load. */
 static int ui_cover_window(int selected,int count,int columns,int *first) {
     int row=selected/columns;

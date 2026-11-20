@@ -14,18 +14,24 @@
 #define GLYPH_W 1024
 #define GLYPH_H 512
 #define GLYPH_MAX 2048
+#define GLYPH_HASH_SIZE 4096
 #define IMAGE_MAX 17 /* twelve covers, two transition backgrounds, custom image, button atlas and brand icon */
 struct ui_vertex {float x,y,u,v;DWORD color;};
 struct glyph_slot {const void *key;int x,y,w,h;};
 struct image_slot {const void *key;DWORD generation;int w,h;D3DTexture *texture;unsigned stamp;};
 static D3DVertexDeclaration *ui_decl;
 static D3DVertexShader *ui_vs;
-static D3DPixelShader *ui_texture_ps,*ui_shape_ps,*launch_ps;
+static D3DPixelShader *ui_texture_ps,*ui_shape_ps,*ui_solid_ps,*launch_ps;
 static D3DTexture *glyph_texture;
 static uint32_t *glyph_pixels;
 static glyph_slot glyphs[GLYPH_MAX];
+static short glyph_hash[GLYPH_HASH_SIZE];
 static int glyph_count,pack_x,pack_y,pack_row;
+static unsigned glyph_upload_count;
 static image_slot images[IMAGE_MAX];
+struct image_failure {const void *key;DWORD generation,at;int w,h;bool used;};
+static image_failure image_failures[IMAGE_MAX];
+static unsigned next_image_failure;
 static unsigned frame_stamp;
 static DWORD previous_fence;
 static bool glyph_dirty;
@@ -36,6 +42,7 @@ static const char ui_shader[]=
     "R vertex(P p){R r;r.pos=float4(p.pos,0,1);r.uv=p.uv;r.color=p.color;return r;}"
     "sampler atlas:register(s0);"
     "float4 sample_ui(R p):COLOR{return tex2D(atlas,p.uv)*p.color;}"
+    "float4 solid_ui(float4 color:COLOR0):COLOR{return color;}"
     "float4 box:register(c0);float4 upper:register(c1);float4 lower:register(c2);"
     "struct S {float2 uv:TEXCOORD0;};"
     "float4 shape(S p):COLOR {float4 c=lerp(upper,lower,p.uv.y);"
@@ -64,9 +71,14 @@ static const char ui_shader[]=
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.x+flags.y*text_layout.y+t.y*text_layout.y)/512));c=lerp(c,g.rgb,g.a);}"
     " t=(xy-float2(layout.y,634))/float2(512,24);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.z+detail.x*24+t.y*24)/512));c=lerp(c,g.rgb,g.a);}"
-    " float segment=floor((xy.x-layout.z)/37);"
-    " if(xy.y>=614&&xy.y<617&&segment>=0&&segment<7&&xy.x-layout.z-segment*37<30)"
-    "  c=segment<flags.z?detail.yzw:float3(65,74,77)/255;"
+    " float2 sp=xy-float2(layout.x*0.5,616);"
+    " float ring=saturate(1.6-abs(length(sp)-11.5));"
+    " if(ring>0){"
+    "  float ang=frac((layout.w-atan2(sp.y,sp.x))*0.15915494);"
+    "  float tail=saturate(1.0-ang/0.625);float fade=tail*tail;"
+    "  float3 sc=lerp(float3(54,65,72)/255,detail.yzw,fade);"
+    "  c=lerp(c,sc,ring*(0.42+0.58*fade));"
+    " }"
     " return float4(c,phase.x);"
     "}"
 ;
@@ -78,7 +90,7 @@ static ID3DXBuffer *compile_ui(const char *entry,const char *profile) {
     return SUCCEEDED(hr)?code:NULL;
 }
 static bool initialize(D3DDevice *d) {
-    if(ui_decl && ui_vs && ui_texture_ps && ui_shape_ps && launch_ps)return true;
+    if(ui_decl && ui_vs && ui_texture_ps && ui_shape_ps && ui_solid_ps && launch_ps)return true;
     static const D3DVERTEXELEMENT9 elements[]={
         {0,0,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_POSITION,0},
         {0,8,D3DDECLTYPE_FLOAT2,D3DDECLMETHOD_DEFAULT,D3DDECLUSAGE_TEXCOORD,0},
@@ -88,19 +100,34 @@ static bool initialize(D3DDevice *d) {
     if(!ui_vs){code=compile_ui("vertex","vs_3_0");if(!code)return false;HRESULT hr=d->CreateVertexShader((DWORD*)code->GetBufferPointer(),&ui_vs);code->Release();if(FAILED(hr))return false;}
     if(!ui_texture_ps){code=compile_ui("sample_ui","ps_3_0");if(!code)return false;HRESULT hr=d->CreatePixelShader((DWORD*)code->GetBufferPointer(),&ui_texture_ps);code->Release();if(FAILED(hr))return false;}
     if(!ui_shape_ps){code=compile_ui("shape","ps_3_0");if(!code)return false;HRESULT hr=d->CreatePixelShader((DWORD*)code->GetBufferPointer(),&ui_shape_ps);code->Release();if(FAILED(hr))return false;}
+    if(!ui_solid_ps){code=compile_ui("solid_ui","ps_3_0");if(!code)return false;HRESULT hr=d->CreatePixelShader((DWORD*)code->GetBufferPointer(),&ui_solid_ps);code->Release();if(FAILED(hr))return false;}
     if(!launch_ps){code=compile_ui("opening","ps_3_0");if(!code)return false;HRESULT hr=d->CreatePixelShader((DWORD*)code->GetBufferPointer(),&launch_ps);code->Release();if(FAILED(hr))return false;}
     return true;
 }
+static unsigned glyph_bucket(const void *key) {
+    return (unsigned)((((uintptr_t)key >> 3) * 2654435761u) & (GLYPH_HASH_SIZE - 1));
+}
 static void reset_glyphs(void) {
     glyph_count=pack_x=pack_y=pack_row=0;
+    memset(glyph_hash,-1,sizeof(glyph_hash));
     memset(glyph_pixels,0,GLYPH_W*GLYPH_H*4);glyph_dirty=true;
 }
 static glyph_slot *glyph(const ui_draw_command *c) {
-    for(int i=0;i<glyph_count;i++)if(glyphs[i].key==c->pixels)return glyphs+i;
+    unsigned h=glyph_bucket(c->pixels);
+    for(unsigned probe=0;probe<GLYPH_HASH_SIZE;probe++) {
+        short idx=glyph_hash[(h+probe)&(GLYPH_HASH_SIZE-1)];
+        if(idx<0)break;
+        if(glyphs[idx].key==c->pixels)return glyphs+idx;
+    }
     if(c->iw<=0||c->ih<=0||c->iw+2>GLYPH_W||c->ih+2>GLYPH_H||glyph_count==GLYPH_MAX)return NULL;
     if(pack_x+c->iw+2>GLYPH_W){pack_x=0;pack_y+=pack_row;pack_row=0;}
     if(pack_y+c->ih+2>GLYPH_H)return NULL;
-    glyph_slot *g=glyphs+glyph_count++;g->key=c->pixels;g->x=pack_x+1;g->y=pack_y+1;g->w=c->iw;g->h=c->ih;
+    int idx=glyph_count++;
+    glyph_slot *g=glyphs+idx;g->key=c->pixels;g->x=pack_x+1;g->y=pack_y+1;g->w=c->iw;g->h=c->ih;
+    for(unsigned probe=0;probe<GLYPH_HASH_SIZE;probe++) {
+        unsigned b=(h+probe)&(GLYPH_HASH_SIZE-1);
+        if(glyph_hash[b]<0){glyph_hash[b]=(short)idx;break;}
+    }
     const BYTE *mask=(const BYTE*)c->pixels;
     for(int y=0;y<g->h;y++)for(int x=0;x<g->w;x++)glyph_pixels[(g->y+y)*GLYPH_W+g->x+x]=ARGB(mask[y*c->stride+x],255,255,255);
     pack_x+=c->iw+2;if(c->ih+2>pack_row)pack_row=c->ih+2;glyph_dirty=true;return g;
@@ -110,15 +137,35 @@ static bool upload(D3DTexture *t,const void *p,int w,int h) {
     bool ok=gfx_upload(t,p,w*4,w*4,h);
     return ok;
 }
-static image_slot *image(D3DDevice *d,const ui_draw_command *c) {
+static image_slot *cached_image(const ui_draw_command *c) {
     for(int i=0;i<IMAGE_MAX;i++)if(images[i].key==c->pixels && images[i].generation==c->generation &&
         images[i].w==c->iw && images[i].h==c->ih){images[i].stamp=frame_stamp;return images+i;}
+    return NULL;
+}
+static image_slot *image(D3DDevice *d,const ui_draw_command *c) {
+    image_slot *cached=cached_image(c);if(cached)return cached;
+    DWORD now=GetTickCount();
+    for(int i=0;i<IMAGE_MAX;i++)if(image_failures[i].used && image_failures[i].key==c->pixels &&
+        image_failures[i].generation==c->generation && image_failures[i].w==c->iw && image_failures[i].h==c->ih){
+        if(now-image_failures[i].at<1000u)return NULL;
+        image_failures[i].used=false;
+    }
     int slot=-1;for(int i=0;i<IMAGE_MAX;i++)if(!images[i].texture){slot=i;break;}
     if(slot<0)for(int i=0;i<IMAGE_MAX;i++)if(images[i].stamp!=frame_stamp && (slot<0||images[i].stamp<images[slot].stamp))slot=i;
     if(slot<0)return NULL;
-    image_slot *s=images+slot;if(s->texture)s->texture->Release();memset(s,0,sizeof(*s));
-    if(FAILED(d->CreateTexture(c->iw,c->ih,1,0,D3DFMT_LIN_A8R8G8B8,0,&s->texture,NULL)))return NULL;
-    if(!upload(s->texture,c->pixels,c->iw,c->ih)){s->texture->Release();memset(s,0,sizeof(*s));return NULL;}
+    uint64_t upload_started=perf_enabled()?perf_clock():0;
+    D3DTexture *replacement=NULL;
+    bool created=SUCCEEDED(d->CreateTexture(c->iw,c->ih,1,0,D3DFMT_LIN_A8R8G8B8,0,&replacement,NULL));
+    bool uploaded=created && upload(replacement,c->pixels,c->iw,c->ih);
+    if(!uploaded){
+        if(replacement)replacement->Release();
+        image_failure *failure=image_failures+(next_image_failure++%IMAGE_MAX);
+        failure->key=c->pixels;failure->generation=c->generation;failure->w=c->iw;failure->h=c->ih;failure->at=now;failure->used=true;
+        char line[128];snprintf(line,sizeof(line),"[ART] stage=texture outcome=%s size=%dx%d retry_ms=1000\n",created?"upload_failed":"allocation_failed",c->iw,c->ih);plat_log(line);
+        return NULL;
+    }
+    if(upload_started){char trace[160];snprintf(trace,sizeof(trace),"[ART] stage=gpu generation=%u width=%d height=%d upload_us=%u evict=%d\n",c->generation,c->iw,c->ih,(unsigned)(perf_clock()-upload_started),images[slot].texture!=NULL);plat_log(trace);}
+    image_slot *s=images+slot;if(s->texture)s->texture->Release();memset(s,0,sizeof(*s));s->texture=replacement;
     s->key=c->pixels;s->generation=c->generation;s->w=c->iw;s->h=c->ih;s->stamp=frame_stamp;return s;
 }
 static void color_f(DWORD color,float out[4]) {out[0]=((color>>16)&255)/255.0f;out[1]=((color>>8)&255)/255.0f;out[2]=(color&255)/255.0f;out[3]=(color>>24)/255.0f;}
@@ -142,6 +189,34 @@ static void clip(D3DDevice *d,const ui_draw_command *c,const ui_projection &p) {
             (LONG)(p.ox+c->clip[2]*p.sx),(LONG)(p.oy+c->clip[3]*p.sy)};
     d->SetScissorRect(&r);
 }
+static bool is_solid_batchable(const ui_draw_command *c) {
+    if(c->kind==UI_RECT)return c->r<=0.0f;
+    return c->kind==UI_GRADIENT || c->kind==UI_LINE || c->kind==UI_TRIANGLE;
+}
+static unsigned emit_solid(ui_vertex *out,const ui_draw_command *c,const ui_projection &p) {
+    if(c->kind==UI_RECT || c->kind==UI_GRADIENT) {
+        DWORD top_c=c->color,bot_c=c->kind==UI_GRADIENT?c->bottom:c->color;
+        float xs[6]={c->x,c->x+c->w,c->x,c->x,c->x+c->w,c->x+c->w};
+        float ys[6]={c->y,c->y,c->y+c->h,c->y+c->h,c->y,c->y+c->h};
+        DWORD cs[6]={top_c,top_c,bot_c,bot_c,top_c,bot_c};
+        for(int v=0;v<6;v++){project(out+v,xs[v],ys[v],p);out[v].u=0;out[v].v=0;out[v].color=cs[v];}
+        return 6;
+    }
+    if(c->kind==UI_LINE) {
+        float dx=c->w-c->x,dy=c->h-c->y,length=sqrtf(dx*dx+dy*dy);if(length<0.01f)return 0;
+        float nx=-dy/length*c->t*0.5f,ny=dx/length*c->t*0.5f;
+        float xs[6]={c->x+nx,c->w+nx,c->x-nx,c->x-nx,c->w+nx,c->w-nx};
+        float ys[6]={c->y+ny,c->h+ny,c->y-ny,c->y-ny,c->h+ny,c->h-ny};
+        for(int v=0;v<6;v++){project(out+v,xs[v],ys[v],p);out[v].u=0;out[v].v=0;out[v].color=c->color;}
+        return 6;
+    }
+    if(c->kind==UI_TRIANGLE) {
+        float xs[3]={c->x,c->w,c->x2},ys[3]={c->y,c->h,c->y2};
+        for(int v=0;v<3;v++){project(out+v,xs[v],ys[v],p);out[v].u=0;out[v].v=0;out[v].color=c->color;}
+        return 3;
+    }
+    return 0;
+}
 bool gfx_ui_draw(D3DDevice *d) {
     int count;const ui_draw_command *list=ui_draw_commands(&count);if(!list)return false;
     if(!gfx_ui_ready())return false;
@@ -153,20 +228,29 @@ bool gfx_ui_draw(D3DDevice *d) {
         fit=true;for(int i=0;i<count;i++)if(list[i].kind==UI_GLYPH && !glyph(list+i)){fit=false;break;}
         if(!fit)reset_glyphs();
     }
-    if(!fit || (glyph_dirty && !upload(glyph_texture,glyph_pixels,GLYPH_W,GLYPH_H)))return false;
+    if(!fit)return false;
+    if(glyph_dirty){if(!upload(glyph_texture,glyph_pixels,GLYPH_W,GLYPH_H))return false;glyph_upload_count++;}
     glyph_dirty=false;frame_stamp++;
     // Reserve all visible images before evicting any entries from the previous frame.
     for(int i=0;i<count;i++)if(list[i].kind==UI_IMAGE)
         for(int j=0;j<IMAGE_MAX;j++)if(images[j].key==list[i].pixels && images[j].generation==list[i].generation)images[j].stamp=frame_stamp;
-    for(int i=0;i<count;i++)if(list[i].kind==UI_IMAGE && !image(d,list+i))return false;
+    bool missing=false;
+    for(int i=0;i<count;i++)if(list[i].kind==UI_IMAGE && !image(d,list+i))missing=true;
+    ui_draw_retry_images(missing);
     canvas_t *canvas=ui_canvas();ui_projection p=projection(canvas->w,canvas->h);
     if(p.left || p.top || p.right!=p.bw || p.bottom!=p.bh)d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
     d->SetVertexDeclaration(ui_decl);d->SetVertexShader(ui_vs);
     d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);
     d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);d->SetRenderState(D3DRS_SCISSORTESTENABLE,TRUE);
+    int last_clip[4]={-1,-1,-1,-1};
+    D3DTexture *bound_tex=(D3DTexture*)(uintptr_t)1; /* force initial sync */
+    D3DPixelShader *bound_ps=NULL;
+    uint32_t draw_calls=0,batched_cmds=0,state_changes=0;
     for(int i=0;i<count;i++) {
         const ui_draw_command *c=list+i;if(c->clip[0]>=c->clip[2]||c->clip[1]>=c->clip[3])continue;
-        clip(d,c,p);
+        if(memcmp(last_clip,c->clip,sizeof(last_clip))) {
+            clip(d,c,p);memcpy(last_clip,c->clip,sizeof(last_clip));state_changes++;
+        }
         if(c->kind==UI_GLYPH) {
             unsigned n=0;int j=i;
             while(j<count && n<256 && list[j].kind==UI_GLYPH && !memcmp(list[j].clip,c->clip,sizeof(c->clip))) {
@@ -174,48 +258,86 @@ bool gfx_ui_draw(D3DDevice *d) {
                 quad(batch+n*6,t->x,t->y,(float)g->w,(float)g->h,(float)g->x/GLYPH_W,(float)g->y/GLYPH_H,
                     (float)(g->x+g->w)/GLYPH_W,(float)(g->y+g->h)/GLYPH_H,t->color,p);n++;j++;
             }
-            d->SetTexture(0,glyph_texture);d->SetPixelShader(ui_texture_ps);d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,n*2,batch,sizeof(ui_vertex));i=j-1;
-        } else if(c->kind==UI_IMAGE) {
-            image_slot *s=image(d,c);quad(batch,c->x,c->y,c->w,c->h,(float)c->sx/c->iw,(float)c->sy/c->ih,
-                (float)(c->sx+c->sw)/c->iw,(float)(c->sy+c->sh)/c->ih,c->color,p);
-            d->SetTexture(0,s->texture);d->SetPixelShader(ui_texture_ps);d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
-        } else {
-            float width=c->w,height=c->h;unsigned primitives=2;
-            quad(batch,c->x,c->y,width,height,0,0,1,1,0xffffffff,p);
-            if(c->kind==UI_LINE) {
-                float dx=c->w-c->x,dy=c->h-c->y,length=sqrtf(dx*dx+dy*dy);if(length<0.01f)continue;
-                width=length;height=c->t;float nx=-dy/length*c->t/2,ny=dx/length*c->t/2;
-                float xx[6]={c->x+nx,c->w+nx,c->x-nx,c->x-nx,c->w+nx,c->w-nx};
-                float yy[6]={c->y+ny,c->h+ny,c->y-ny,c->y-ny,c->h+ny,c->h-ny};
-                for(int v=0;v<6;v++)project(batch+v,xx[v],yy[v],p);
-            } else if(c->kind==UI_TRIANGLE) {
-                float xx[3]={c->x,c->w,c->x2},yy[3]={c->y,c->h,c->y2};
-                for(int v=0;v<3;v++)project(batch+v,xx[v],yy[v],p);width=height=0;primitives=1;
+            if(n){
+                if(bound_tex!=glyph_texture){d->SetTexture(0,glyph_texture);bound_tex=glyph_texture;state_changes++;}
+                if(bound_ps!=ui_texture_ps){d->SetPixelShader(ui_texture_ps);bound_ps=ui_texture_ps;state_changes++;}
+                d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,n*2,batch,sizeof(ui_vertex));
+                draw_calls++;batched_cmds+=n;
             }
+            i=j-1;
+        } else if(c->kind==UI_IMAGE) {
+            image_slot *s=cached_image(c);
+            if(!s){
+                /* Keep the rest of the native scene usable; retry just this image. */
+                quad(batch,c->x,c->y,c->w,c->h,0,0,1,1,0xffffffff,p);
+                float box[4]={c->w,c->h,0,0},color[4];color_f(0xff20272au,color);
+                if(bound_tex!=NULL){d->SetTexture(0,NULL);bound_tex=NULL;state_changes++;}
+                if(bound_ps!=ui_shape_ps){d->SetPixelShader(ui_shape_ps);bound_ps=ui_shape_ps;state_changes++;}
+                d->SetPixelShaderConstantF(0,box,1);
+                d->SetPixelShaderConstantF(1,color,1);d->SetPixelShaderConstantF(2,color,1);
+                d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
+                draw_calls++;batched_cmds++;continue;
+            }
+            unsigned n=0;int j=i;
+            while(j<count && n<256 && list[j].kind==UI_IMAGE && !memcmp(list[j].clip,c->clip,sizeof(c->clip))) {
+                const ui_draw_command *t=list+j;image_slot *ts=cached_image(t);
+                if(!ts || ts->texture!=s->texture)break;
+                quad(batch+n*6,t->x,t->y,t->w,t->h,(float)t->sx/t->iw,(float)t->sy/t->ih,
+                    (float)(t->sx+t->sw)/t->iw,(float)(t->sy+t->sh)/t->ih,t->color,p);n++;j++;
+            }
+            if(n){
+                if(bound_tex!=s->texture){d->SetTexture(0,s->texture);bound_tex=s->texture;state_changes++;}
+                if(bound_ps!=ui_texture_ps){d->SetPixelShader(ui_texture_ps);bound_ps=ui_texture_ps;state_changes++;}
+                d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,n*2,batch,sizeof(ui_vertex));
+                draw_calls++;batched_cmds+=n;
+            }
+            i=j-1;
+        } else if(is_solid_batchable(c)) {
+            unsigned verts=0,cmds=0;int j=i;
+            while(j<count && verts+6<=6*256 && is_solid_batchable(list+j) && !memcmp(list[j].clip,c->clip,sizeof(c->clip))) {
+                verts+=emit_solid(batch+verts,list+j,p);cmds++;j++;
+            }
+            if(verts>=3){
+                if(bound_tex!=NULL){d->SetTexture(0,NULL);bound_tex=NULL;state_changes++;}
+                if(bound_ps!=ui_solid_ps){d->SetPixelShader(ui_solid_ps);bound_ps=ui_solid_ps;state_changes++;}
+                d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,verts/3,batch,sizeof(ui_vertex));
+                draw_calls++;batched_cmds+=cmds;
+            }
+            i=j-1;
+        } else {
+            float width=c->w,height=c->h;
+            quad(batch,c->x,c->y,width,height,0,0,1,1,0xffffffff,p);
             float box[4]={width,height,c->r,c->kind==UI_OUTLINE?c->t:0},top[4],bottom[4];
             color_f(c->color,top);color_f(c->kind==UI_GRADIENT?c->bottom:c->color,bottom);
-            d->SetTexture(0,NULL);d->SetPixelShader(ui_shape_ps);d->SetPixelShaderConstantF(0,box,1);
+            if(bound_tex!=NULL){d->SetTexture(0,NULL);bound_tex=NULL;state_changes++;}
+            if(bound_ps!=ui_shape_ps){d->SetPixelShader(ui_shape_ps);bound_ps=ui_shape_ps;state_changes++;}
+            d->SetPixelShaderConstantF(0,box,1);
             d->SetPixelShaderConstantF(1,top,1);d->SetPixelShaderConstantF(2,bottom,1);
-            d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,primitives,batch,sizeof(ui_vertex));
+            d->DrawPrimitiveUP(D3DPT_TRIANGLELIST,2,batch,sizeof(ui_vertex));
+            draw_calls++;batched_cmds++;
         }
     }
     d->SetTexture(0,NULL);d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
     unsigned cover_bytes=0,atlas_bytes=0,covers=0;
     for(int i=0;i<IMAGE_MAX;i++)if(images[i].texture) {
         unsigned bytes=images[i].w*images[i].h*4;
-        if(images[i].w==256&&images[i].h==32)atlas_bytes+=bytes;else {cover_bytes+=bytes;covers++;}
+        if((images[i].w==512||images[i].w==256)&&images[i].h==32)atlas_bytes+=bytes;else {cover_bytes+=bytes;covers++;}
     }
-    ui_draw_gpu_memory(GLYPH_W*GLYPH_H*4,cover_bytes,atlas_bytes,covers);return true;
+    ui_draw_gpu_memory(GLYPH_W*GLYPH_H*4,cover_bytes,atlas_bytes,covers);
+    ui_draw_render_stats(draw_calls,batched_cmds,state_changes,glyph_upload_count);
+    return true;
 }
 void gfx_ui_submitted(DWORD fence){previous_fence=fence;}
 bool gfx_ui_ready(void){return !gfx_fence_pending(previous_fence);}
 void gfx_ui_release(D3DDevice *d) {
     d->SetTexture(0,NULL);if(previous_fence)gfx_wait_fence(d,previous_fence);previous_fence=0;
     for(int i=0;i<IMAGE_MAX;i++){if(images[i].texture)images[i].texture->Release();memset(images+i,0,sizeof(images[i]));}
+    memset(image_failures,0,sizeof(image_failures));next_image_failure=0;ui_draw_retry_images(false);
     if(glyph_texture)glyph_texture->Release();glyph_texture=NULL;
     free(glyph_pixels);glyph_pixels=NULL;glyph_count=pack_x=pack_y=pack_row=0;
+    memset(glyph_hash,-1,sizeof(glyph_hash));glyph_upload_count=0;
     // Shader objects are small persistent device resources; no video state is modified.
-    ui_draw_gpu_memory(0,0,0,0);ui_draw_suspend();
+    ui_draw_gpu_memory(0,0,0,0);ui_draw_render_stats(0,0,0,0);ui_draw_suspend();
 }
 
 /* Dedicated launch resources. The menu prepares them before handing device
@@ -230,8 +352,10 @@ static uint32_t *launch_staging;
 static const uint32_t *launch_initial;
 static int launch_aw,launch_ah,launch_current;
 static uint32_t launch_generation;
-static bool launch_previous;
+static bool launch_previous,launch_upload_failed;
+static DWORD launch_upload_attempted;
 static unsigned launch_milestone;
+static struct launch_segments launch_segments;
 static float launch_accent[4];
 extern "C" void launch_begin(unsigned wait_ms,bool motion)
 {
@@ -240,8 +364,8 @@ extern "C" void launch_begin(unsigned wait_ms,bool motion)
     InterlockedExchange(&launch_first,0);InterlockedExchange(&launch_first_ms,0);
     InterlockedExchange(&launch_art_ready,0);InterlockedExchange(&launch_status,0);
     InterlockedExchange(&launch_block,1);launch_resources=true;launch_prepared=launch_attempted=launch_have_generation=false;
-    launch_initial=NULL;launch_generation=0;launch_previous=false;launch_current=-1;
-    launch_milestone=1;color_f(ui_theme_accent(),launch_accent);
+    launch_initial=NULL;launch_generation=0;launch_previous=false;launch_current=-1;launch_upload_failed=false;launch_upload_attempted=0;
+    launch_milestone=0;memset(&launch_segments,0,sizeof(launch_segments));color_f(ui_theme_accent(),launch_accent);
 }
 extern "C" void launch_set_wait(unsigned wait_ms){cover.wait_ms=wait_ms>10000?10000:wait_ms;}
 extern "C" void launch_retry(void)
@@ -325,6 +449,15 @@ extern "C" bool launch_prepare(void)
     if(!ok){launch_release(d,true);launch_resources=true;} /* opaque, cancellable fallback */
     gfx_end();free(text);return ok;
 }
+extern "C" bool launch_refresh_text(void)
+{
+    if(!launch_active() || !launch_prepared || !launch_text)return false;
+    uint32_t *text=(uint32_t*)malloc(LAUNCH_TEXT_W*LAUNCH_TEXT_H*4);if(!text)return false;
+    ui_launch_text(text,LAUNCH_TEXT_W,LAUNCH_TEXT_H);
+    D3DDevice *d=gfx_begin();if(launch_fence)gfx_wait_fence(d,launch_fence);
+    bool ok=upload(launch_text,text,LAUNCH_TEXT_W,LAUNCH_TEXT_H);
+    gfx_end();free(text);return ok;
+}
 extern "C" void launch_end(void)
 {
     D3DDevice *d=gfx_begin();launch_release(d,true);memset(&cover,0,sizeof(cover));
@@ -336,12 +469,17 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
 {
     if(!launch_resources)return;
     DWORD now=GetTickCount();
-    if(launch_active() && InterlockedCompareExchange(&launch_art_ready,0,0) && launch_prepared && !gfx_fence_pending(launch_fence)) {
+    if(launch_active() && InterlockedCompareExchange(&launch_art_ready,0,0) && launch_prepared && !gfx_fence_pending(launch_fence) &&
+       (!launch_upload_failed || now-launch_upload_attempted>=1000u)) {
         int next=launch_current==0?1:0;
         if(upload(launch_art[next],launch_staging,launch_aw,launch_ah)) {
             launch_previous=launch_current>=0;launch_current=next;launch_visual_art_ready(&visual,now);
+            launch_upload_failed=false;InterlockedExchange(&launch_art_ready,0);
+        } else {
+            /* Keep both the valid GPU cover and the bounded staging publication.
+             * The producer cannot overwrite it until a successful retry. */
+            launch_upload_failed=true;launch_upload_attempted=now;
         }
-        InterlockedExchange(&launch_art_ready,0);
     }
     struct launch_visual_sample v;launch_visual_get(&visual,now,&v);
     int canvas_width=ui_canvas()->w,canvas_height=ui_canvas()->h;
@@ -360,13 +498,14 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
     d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
     d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);
     float rect[4]={v.x,v.y,v.w,v.h},phase[4]={alpha/255.0f,v.title,v.art,v.dim};
-    float flags[4]={v.intro && launch_backdrop?1.0f:0.0f,(float)status,(float)launch_milestone,launch_previous?1.0f:0.0f};
+    float flags[4]={v.intro && launch_backdrop?1.0f:0.0f,(float)status,launch_segments_tick(&launch_segments,launch_milestone,now),launch_previous?1.0f:0.0f};
     float detail[4]={launch_has_video() && !launch_cancelled()?1.0f:0.0f,launch_accent[0],launch_accent[1],launch_accent[2]};
     d->SetPixelShaderConstantF(3,rect,1);d->SetPixelShaderConstantF(4,phase,1);d->SetPixelShaderConstantF(5,flags,1);
     d->SetPixelShaderConstantF(6,detail,1);
     static const float text_layout[4]={(float)LAUNCH_STATUS_Y,(float)LAUNCH_STATUS_H,(float)LAUNCH_HINT_Y,(float)LAUNCH_LOGO_Y};
     d->SetPixelShaderConstantF(7,text_layout,1);
-    float layout[4]={(float)canvas_width,(canvas_width-512)*0.5f,(canvas_width-512)*0.5f+130,0};
+    float spin=cover.motion?((float)(now%900u)/900.0f)*6.2831853f-1.5707963f:-1.5707963f;
+    float layout[4]={(float)canvas_width,(canvas_width-512)*0.5f,(canvas_width-512)*0.5f+130,spin};
     d->SetPixelShaderConstantF(8,layout,1);
     d->SetTexture(0,launch_current>=0?launch_art[launch_current]:launch_text);d->SetTexture(1,launch_text);
     d->SetTexture(2,launch_backdrop);d->SetTexture(3,launch_previous?launch_art[1-launch_current]:launch_text);

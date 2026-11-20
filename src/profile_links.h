@@ -151,7 +151,7 @@ static bool profile_links_change(struct user_profiles *p,struct game_bindings *b
         if(*name)strcpy(settings.user_profile,name);
         else config_select_factory(&settings,CONFIG_PROFILE_SMOOTH);
     }
-    char binding_text[8192],ini[2048],profile_text[CONFIG_PROFILES_BYTES];
+    char binding_text[8192],ini[4096],profile_text[CONFIG_PROFILES_BYTES];
     size_t binding_bytes=bindings_encode(&links,binding_text,sizeof(binding_text));
     size_t ini_bytes=config_serialize(&settings,ini,sizeof(ini));next.generation=p->generation+1;
     if(!binding_bytes || !ini_bytes || !config_profiles_serialize(&next,profile_text,sizeof(profile_text)))return profile_link_fail("serialize");

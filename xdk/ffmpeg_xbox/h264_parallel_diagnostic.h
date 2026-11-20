@@ -25,6 +25,12 @@ typedef struct FFH264ParallelDiagnostic {
     uint32_t slice_calls;
     uint32_t loopfilter_calls;
     uint32_t entropy_samples;
+    uint64_t reconstruct_wall, filter_wall;
+    uint64_t deep[8]; /* worker CPU, sampled MC/IDCT, wait, cache and directional filtering */
+#if XDK_R47D_DISPATCH_PROFILE
+    uint64_t slice_begin[8], slice_end[8];
+    uint32_t slice_cpu[8], dispatches_profiled;
+#endif
 } FFH264ParallelDiagnostic;
 
 #ifdef __cplusplus

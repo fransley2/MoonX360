@@ -44,8 +44,13 @@ void gfx_end(void);
 
 /* Draws a textured rectangle (logical UI coordinates) with one of the pixel shaders.
  * The caller sets the textures: RGB uses sampler 0, YUV uses 0 (Y), 1 (U), 2 (V). */
-enum gfx_shader { GFX_SHADER_RGB, GFX_SHADER_YUV_FAST, GFX_SHADER_YUV_QUALITY, GFX_SHADER_RGBA, GFX_SHADER_CRT_CLARITY, GFX_SHADER_YUV_SMOOTH, GFX_SHADER_YUV_SMOOTH_CRT };
+enum gfx_shader { GFX_SHADER_RGB, GFX_SHADER_YUV_FAST, GFX_SHADER_YUV_QUALITY, GFX_SHADER_RGBA, GFX_SHADER_CRT_CLARITY, GFX_SHADER_YUV_SMOOTH, GFX_SHADER_YUV_SMOOTH_CRT, GFX_SHADER_YUV_BICUBIC, GFX_SHADER_YUV_POST_DEBLOCK, GFX_SHADER_YUV_SHARP_BILINEAR };
 bool gfx_smoothing_available(bool crt);
+bool gfx_bicubic_available(void);
+bool gfx_post_deblock_available(void);
+bool gfx_sharp_bilinear_available(void);
+bool gfx_crt_240p_backbuffer_active(void);
+bool gfx_set_crt_240p_backbuffer(bool enable);
 uint64_t gfx_texture_allocation_bytes(D3DTexture *texture);
 bool gfx_crt_clarity_available(void);
 bool gfx_crt_shader_compiled(void);
@@ -62,12 +67,17 @@ void gfx_hud_pixels(uint32_t *pixels,int width,int height);
 /* Copies to write-combined texture memory; false if locking/layout is invalid. */
 bool gfx_upload(D3DTexture *tex, const void *src, int src_pitch, int row_bytes, int rows);
 /* Optional small translucent telemetry texture. Caller owns gfx_begin/end. */
+struct overlay_telemetry;
+bool gfx_overlay_update(const struct overlay_telemetry *t);
+bool gfx_overlay_deferred(void);
 bool gfx_overlay_set(const char *text);
 void gfx_overlay_draw(D3DDevice *d);
 void gfx_mouse_draw(D3DDevice *d);
 void gfx_stream_menu_draw(D3DDevice *d,unsigned decoded,unsigned shown,unsigned dropped,unsigned decode_us,bool detailed);
 void gfx_stream_menu_submitted(DWORD fence);
 void gfx_stream_menu_reset(D3DDevice *d);
+struct sk_remote_session;
+bool input_smart_keyboard_snapshot(struct sk_remote_session *out,unsigned *revision);
 void gfx_overlay_mark_used(DWORD fence);
 void gfx_overlay_clear(D3DDevice *d);
 void gfx_release_ui_textures(void);

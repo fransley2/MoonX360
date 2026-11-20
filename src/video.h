@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include "fast_decode.h"
+#include "video_decoder.h"
 #include <stdint.h>
 #include <Limelight.h>
 #include "performance_advisor.h"
@@ -32,8 +33,15 @@ struct video_options {
     int packet_size; /* negotiated request, diagnostic identity */
     int refresh_smoothing,smoothing_strength;
     bool crt_clarity; /* opt-in spatial interlace filter, hardware/output-gated */
+    int crt_scaling; /* enum crt_scaling_filter: 0 Auto, 1 Point, 2 Bilinear, 3 Sharp-Bilinear */
+    int crt_aspect;  /* enum crt_aspect_mode: 0 4:3, 1 Original */
+    int crt_pos_x,crt_pos_y; /* bounded picture alignment offset (-20..20) */
+    int ui_safe_area; /* 0..10% CRT picture safety margin */
+    bool crt_retro_240p; /* true only when stream session entered for 240p retro mode */
+    bool crt_picture_context; /* true for CRT / CRT Retro / derived CRT stream contexts */
     char host_name[64]; /* selected host label, copied before connection */
     uint32_t connection_started_ms; /* cold trace origin, before host launch */
+    int decoder_backend; /* enum video_decoder; frozen before connection setup */
 };
 
 const char *video_renderer_name(int renderer);
@@ -60,6 +68,8 @@ void video_get_stats(struct video_stats *out);
 struct video_quick_info {
     int requested_w,requested_h,requested_fps,bitrate_kbps,slices;
     int renderer,fast_decode,shader_mode,decode_workers;
+    int crt_scaling,crt_aspect;
+    bool crt_clarity,crt_retro_240p,crt_active_240p;
     char host_name[64];
     char pipeline[32]; /* active GPU upload path, not requested renderer */
     bool network_valid;

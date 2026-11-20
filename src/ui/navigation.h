@@ -9,8 +9,11 @@ static int ui_tab_move(int page,int direction) {
 static int ui_grid_move(int selected,int count,int columns,int dx,int dy) {
     if(count<=0)return 0;
     if(selected<0||selected>=count)selected=0;
-    int next=selected+dx+dy*columns;
     if(dx<0 && selected%columns==0)return selected;
     if(dx>0 && selected%columns==columns-1)return selected;
-    return next>=0&&next<count?next:selected;
+    int next=selected+dx+dy*columns;
+    if(next>=0&&next<count)return next;
+    /* When moving down onto an incomplete last row, land on its last item instead of stalling. */
+    if(dy>0 && (selected/columns+1)*columns<count)return count-1;
+    return selected;
 }

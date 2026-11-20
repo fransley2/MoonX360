@@ -1,7 +1,10 @@
 #include "draw.h"
+#include "anim.h"
+#include "design_system.h"
 #include "font.h"
 #include "layout.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 static struct ui_draw_command commands[UI_DRAW_CAPACITY];
@@ -22,14 +25,14 @@ bool ui_transition_tick(uint32_t now)
 {
     if(!ui_transition_active())return false;
     if(!transition.started){transition.started=true;transition.start=now;}
-    unsigned elapsed=now-transition.start;
-    unsigned alpha=elapsed>=180?0:150*(180-elapsed)/180;
+    uint32_t elapsed=(uint32_t)(now-transition.start);
+    unsigned alpha=elapsed>=UI_PAGE_FADE_MS?0:150u*(UI_PAGE_FADE_MS-elapsed)/UI_PAGE_FADE_MS;
     if(transition.index<0){
         cv_unclip(target);ui_fill(target,0,0,target->w,target->h,alpha<<24);
         if(!ready || !used || commands[used-1].kind!=UI_RECT)return false;
         transition.index=(int)used-1;
     } else commands[transition.index].color=alpha<<24;
-    if(elapsed>=180)transition.active=false;
+    if(elapsed>=UI_PAGE_FADE_MS)transition.active=false;
     return true; /* present the final transparent frame once */
 }
 static bool focus_feedback; /* Older synchronous presenters need no terminal-frame retry. */
@@ -37,15 +40,28 @@ static struct cover_fade {const void *pixels;uint32_t generation,start,stamp;boo
 static struct cover_ref {unsigned command,slot;uint32_t color;} art_refs[16];
 static unsigned art_ref_count,art_stamp;
 static bool art_pending;
+static bool image_retry;
+static bool image_retry_started;
+static uint32_t image_retry_clock;
+bool ui_draw_retry_pending(void){return image_retry;}
+void ui_draw_retry_images(bool pending){image_retry=pending;if(!pending)image_retry_started=false;}
+static bool image_retry_tick(uint32_t now)
+{
+    if(!image_retry)return false;
+    if(!image_retry_started){image_retry_started=true;image_retry_clock=now;return false;}
+    if(now-image_retry_clock<1000u)return false;
+    image_retry_clock=now;return true;
+}
 static bool cover_tick(uint32_t now)
 {
     bool changed=false;
     for(unsigned i=0;i<art_ref_count;i++) {
         struct cover_ref *r=art_refs+i;struct cover_fade *a=art_fades+r->slot;
-        if(r->command>=used)continue;
+        if(r->command>=used || commands[r->command].kind!=UI_IMAGE)continue;
         if(!a->active){if(commands[r->command].color!=r->color){commands[r->command].color=r->color;changed=true;}continue;}
         if(!a->started){a->started=true;a->start=now;}
-        unsigned elapsed=now-a->start,alpha=r->color>>24;
+        uint32_t elapsed=(uint32_t)(now-a->start);
+        unsigned alpha=r->color>>24;
         if(!motion_enabled || elapsed>=UI_ART_FADE_MS)a->active=false;
         else alpha=alpha*elapsed/UI_ART_FADE_MS;
         uint32_t color=(r->color&0xffffffu)|(alpha<<24);
@@ -64,23 +80,24 @@ void ui_cover_fade_mark(void)
         if(art_fades[i].pixels==c->pixels && art_fades[i].generation==c->generation){slot=i;break;}
         if(!art_fades[i].pixels || (int32_t)(art_fades[i].stamp-art_fades[oldest].stamp)<0)oldest=i;
     }
-    if(slot<0){slot=oldest;memset(art_fades+slot,0,sizeof(art_fades[slot]));art_fades[slot].pixels=c->pixels;art_fades[slot].generation=c->generation;art_fades[slot].active=motion_enabled;}
+    if(slot<0){memory.cover_fade_starts++;slot=oldest;memset(art_fades+slot,0,sizeof(art_fades[slot]));art_fades[slot].pixels=c->pixels;art_fades[slot].generation=c->generation;art_fades[slot].active=motion_enabled;}
+    else memory.cover_fade_reuses++;
     art_fades[slot].stamp=++art_stamp;
     struct cover_ref *r=art_refs+art_ref_count++;r->command=used-1;r->slot=(unsigned)slot;r->color=c->color;
 }
 static struct {
-    bool known,registered,active,started,dirty,pending;
+    bool known,registered,active,started,dirty,pending,glide;
     int context,item;
     unsigned index;
     uint32_t start,last;
-    struct ui_draw_command base;
+    struct ui_draw_command base,prev;
 } focus;
 
 void ui_focus_presented(void){focus_feedback=true;focus.pending=art_pending=false;}
 void ui_focus_finish(void)
 {
     if(ready && focus.registered && focus.index<used)commands[focus.index]=focus.base;
-    focus.active=focus.pending=false;
+    focus.active=focus.pending=focus.glide=false;
 }
 
 void ui_set_motion(bool value)
@@ -98,7 +115,12 @@ void ui_focus_mark(int context,int item)
     struct ui_draw_command *c=commands+used-1;
     bool changed=!focus.known || context!=focus.context || item!=focus.item ||
         c->x!=focus.base.x || c->y!=focus.base.y || c->w!=focus.base.w || c->h!=focus.base.h || c->color!=focus.base.color;
-    if(changed){focus.active=motion_enabled;focus.started=false;}
+    if(changed){
+        bool same_context=focus.known && context==focus.context && item!=focus.item;
+        if(same_context){focus.prev=focus.base;focus.glide=motion_enabled;}
+        else focus.glide=false;
+        focus.active=motion_enabled;focus.started=false;
+    }
     focus.context=context;focus.item=item;focus.index=used-1;focus.base=*c;
     focus.known=focus.registered=focus.dirty=true;
 }
@@ -106,6 +128,7 @@ bool ui_focus_tick(uint32_t now)
 {
     if(!enabled || !ready)return false;
     bool art_changed=cover_tick(now);
+    if(image_retry_tick(now))art_changed=true;
     if(!focus.registered || focus.index>=used)return art_changed;
     if(!focus.active)return art_changed || (focus_feedback && focus.pending);
     uint32_t elapsed=0;
@@ -115,12 +138,12 @@ bool ui_focus_tick(uint32_t now)
     focus.last=elapsed;
     struct ui_draw_command *c=commands+focus.index;
     *c=focus.base;
-    if(elapsed>=UI_FOCUS_MS){focus.active=false;return true;}
-    float remaining=1.0f-(float)elapsed/UI_FOCUS_MS;
-    float ease=remaining*remaining*remaining;
-    float spread=focus.base.t*1.3f*ease;
+    if(elapsed>=UI_FOCUS_MS){focus.active=false;focus.glide=false;return true;}
+    float progress=ui_anim_progress(now,focus.start,UI_FOCUS_MS);
+    float remaining=1.0f-ui_ease_out_cubic(progress);
+    float spread=focus.base.t*1.25f*remaining;
     c->x-=spread;c->y-=spread;c->w+=2*spread;c->h+=2*spread;c->r+=spread;
-    unsigned alpha=(unsigned)((float)(focus.base.color>>24)*(1.0f-.45f*ease));
+    unsigned alpha=(unsigned)((float)(focus.base.color>>24)*(1.0f-0.42f*remaining));
     c->color=(focus.base.color&0xFFFFFFu)|(alpha<<24);
     return true;
 }
@@ -151,7 +174,7 @@ void ui_draw_software(void) {
     if(!ready)return;
     /* A CPU fallback has no retained GPU animation loop. Complete cover fades
      * before rasterizing so a failed shader cannot leave permanently dim art. */
-    for(unsigned i=0;i<art_ref_count;i++){commands[art_refs[i].command].color=art_refs[i].color;art_fades[art_refs[i].slot].active=false;}
+    for(unsigned i=0;i<art_ref_count;i++){if(commands[art_refs[i].command].kind==UI_IMAGE)commands[art_refs[i].command].color=art_refs[i].color;art_fades[art_refs[i].slot].active=false;}
     int clip[4]={target->cx0,target->cy0,target->cx1,target->cy1};
     for(unsigned i=0;i<used;i++)raster(commands+i);
     cv_clip(target,clip[0],clip[1],clip[2]-clip[0],clip[3]-clip[1]);
@@ -168,7 +191,7 @@ void ui_draw_enable(bool value) {enabled=value;if(!value)ui_draw_suspend();}
 bool ui_draw_enabled(void) {return enabled;}
 bool ui_draw_recording(void) {return recording;}
 void ui_draw_begin(canvas_t *c) {art_ref_count=0;art_pending=false;focus.registered=focus.pending=false;transition.index=-1;target=c;used=0;ready=recording=enabled;memory.commands=0;memory.canvas_bytes=(uint32_t)c->w*c->h*4;}
-void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;memset(art_fades,0,sizeof(art_fades));focus.known=focus.active=focus.registered=focus.pending=false;transition.active=false;recording=ready=false;used=0;}
+void ui_draw_suspend(void) {art_ref_count=0;art_pending=false;focus.known=focus.active=focus.registered=focus.pending=false;transition.active=false;recording=ready=false;used=0;}
 void ui_scene_drop(void) {scene_count=0;}
 bool ui_scene_store(void) {
     scene_count=0;
@@ -191,6 +214,10 @@ const struct ui_draw_command *ui_draw_commands(int *count) {*count=ready?(int)us
 void ui_draw_gpu_memory(uint32_t glyph,uint32_t covers,uint32_t atlas,unsigned count) {
     memory.glyph_bytes=glyph;memory.cover_gpu_bytes=covers;memory.button_gpu_bytes=atlas;
     memory.gpu_bytes=glyph+covers+atlas;memory.gpu_covers=count;
+}
+void ui_draw_render_stats(uint32_t draw_calls,uint32_t batched_commands,uint32_t state_changes,uint32_t glyph_uploads) {
+    memory.draw_calls=draw_calls;memory.batched_commands=batched_commands;
+    memory.state_changes=state_changes;memory.glyph_uploads=glyph_uploads;
 }
 void ui_draw_cover_memory(unsigned count,unsigned bytes) {memory.loaded_covers=count;memory.cover_cpu_bytes=bytes;}
 void ui_draw_memory(struct ui_memory_info *out) {*out=memory;out->command_bytes=sizeof(commands)+sizeof(scene);}
@@ -237,26 +264,109 @@ void ui_glyph(canvas_t *c,int x,int y,const uint8_t *mask,int w,int h,int stride
     struct ui_draw_command *d=push(c,UI_GLYPH);if(!d){cv_mask(c,x,y,mask,w,h,stride,color);return;}
     d->x=(float)x;d->y=(float)y;d->pixels=mask;d->iw=w;d->ih=h;d->stride=stride;d->color=color;
 }
+static void draw_atlas_dpad(canvas_t *c,int ox,int mode)
+{
+    /* mode: 0=all, 1=horizontal (Left/Right), 2=vertical (Up/Down) */
+    uint32_t dish=HEX(0x252D33),base=HEX(0x5A666E),hi=HEX(0xF4F7F5);
+    for(int py=0;py<32;py++)for(int px=0;px<32;px++) {
+        int dx=px-16,dy=py-16,d2=dx*dx+dy*dy;
+        if(d2<14*14)c->px[py*UI_BUTTON_ATLAS_W+ox+px]=dish;
+        bool horiz=(abs(dy)<=3 && abs(dx)<=10);
+        bool vert=(abs(dx)<=3 && abs(dy)<=10);
+        if(horiz || vert) {
+            uint32_t col=base;
+            if(mode==0)col=hi;
+            else if(mode==1 && horiz && abs(dx)>=3)col=hi;
+            else if(mode==2 && vert && abs(dy)>=3)col=hi;
+            c->px[py*UI_BUTTON_ATLAS_W+ox+px]=col;
+        }
+    }
+}
+static void draw_atlas_stick(canvas_t *c,int ox,const char *ch)
+{
+    for(int py=0;py<32;py++)for(int px=0;px<32;px++) {
+        int dx=px-16,dy=py-16,d2=dx*dx+dy*dy;
+        if(d2<14*14) {
+            uint32_t col=d2>11*11?HEX(0x9AA6AE):d2>9*9?HEX(0x20272C):HEX(0x364148);
+            c->px[py*UI_BUTTON_ATLAS_W+ox+px]=col;
+        }
+    }
+    int tw=font_text_width(FONT_BOLD,14.0f,ch);
+    font_draw(c,FONT_BOLD,14.0f,ox+(32-tw)/2,21,HEX(0xF4F7F5),ch);
+}
 bool ui_button(canvas_t *c,const char *label,int x,int y,int w,int h) {
-    static const char *labels[]={"A","B","X","Y","LB","RB"};
-    int index=-1;for(int i=0;i<6;i++)if(!strcmp(label,labels[i]))index=i;
+    static const struct {const char *name;int sx,sw;} map[]={
+        {"A",0,32},{"B",32,32},{"X",64,32},{"Y",96,32},
+        {"LB",128,40},{"RB",168,40},{"LT",208,40},{"RT",248,40},
+        {"Start",288,32},{"Back",320,32},
+        {"D-Pad",352,32},
+        {"Left / Right",384,32},{"Left Right",384,32},{"\xE2\x86\x90 \xE2\x86\x92",384,32},
+        {"Up / Down",416,32},{"Up Down",416,32},{"\xE2\x86\x91 \xE2\x86\x93",416,32},
+        {"L3",448,32},{"LS",448,32},{"R3",480,32},{"RS",480,32}
+    };
+    int index=-1;
+    for(int i=0;i<(int)(sizeof(map)/sizeof(map[0]));i++)if(!strcmp(label,map[i].name)){index=i;break;}
     if(index<0)return false;
     if(!buttons.px) {
-        if(!cv_init(&buttons,256,32))return false;memset(buttons.px,0,256*32*4);
-        const uint32_t colors[]={HEX(0x5FAE27),HEX(0xCE4038),HEX(0x3678C0),HEX(0xD6AF25),HEX(0xCCCCCC),HEX(0xCCCCCC)};
-        for(int b=0;b<6;b++) {
-            int bx=b<4?b*32:128+(b-4)*48,bw=b<4?32:48;
-            for(int py=0;py<32;py++)for(int px=0;px<bw;px++) {
-                bool inside=b<4?((px-16)*(px-16)+(py-16)*(py-16)<14*14):(px>1&&px<bw-2&&py>4&&py<28);
-                if(inside)buttons.px[py*256+bx+px]=colors[b];
+        if(!cv_init(&buttons,UI_BUTTON_ATLAS_W,UI_BUTTON_ATLAS_H))return false;
+        memset(buttons.px,0,UI_BUTTON_ATLAS_W*UI_BUTTON_ATLAS_H*4);
+        /* 0..3: Xbox 360 A/B/X/Y face buttons with subtle console rim */
+        const uint32_t face_colors[]={DS_BTN_A,DS_BTN_B,DS_BTN_X,DS_BTN_Y};
+        const char *face_names[]={"A","B","X","Y"};
+        for(int b=0;b<4;b++) {
+            int bx=b*32;
+            for(int py=0;py<32;py++)for(int px=0;px<32;px++) {
+                int dx=px-16,dy=py-16,d2=dx*dx+dy*dy;
+                if(d2<14*14) {
+                    uint32_t col=face_colors[b];
+                    if(d2>11*11)col=cv_mix(col,HEX(0x000000),65);
+                    else if(py<11)col=cv_mix(col,HEX(0xFFFFFF),28);
+                    buttons.px[py*UI_BUTTON_ATLAS_W+bx+px]=col;
+                }
             }
-            int size=b<4?18:14,tw=font_text_width(FONT_BOLD,(float)size,labels[b]);
-            font_draw(&buttons,FONT_BOLD,(float)size,bx+(bw-tw)/2,22,b<4?HEX(0xFFFFFF):HEX(0x202420),labels[b]);
+            int tw=font_text_width(FONT_BOLD,18.0f,face_names[b]);
+            font_draw(&buttons,FONT_BOLD,18.0f,bx+(32-tw)/2,22,HEX(0xFFFFFF),face_names[b]);
         }
-        memory.button_cpu_bytes=256*32*4;
+        /* 4..7: LB, RB, LT, RT shoulder bumpers & triggers */
+        const char *sh_names[]={"LB","RB","LT","RT"};
+        for(int b=0;b<4;b++) {
+            int bx=128+b*40;
+            uint32_t col=b<2?DS_BTN_BUMPER:DS_BTN_TRIGGER;
+            for(int py=5;py<27;py++)for(int px=2;px<38;px++) {
+                bool cut=(px<5 && py<8)||(px>34 && py<8)||(px<5 && py>23)||(px>34 && py>23);
+                if(!cut)buttons.px[py*UI_BUTTON_ATLAS_W+bx+px]=col;
+            }
+            int tw=font_text_width(FONT_BOLD,14.0f,sh_names[b]);
+            font_draw(&buttons,FONT_BOLD,14.0f,bx+(40-tw)/2,21,HEX(0x161D22),sh_names[b]);
+        }
+        /* 8..9: Start (right arrow pill) & Back (left arrow pill) */
+        for(int b=0;b<2;b++) {
+            int bx=288+b*32;
+            for(int py=7;py<25;py++)for(int px=3;px<29;px++) {
+                int dx=px-16,dy=py-16;
+                if(dx*dx*9+dy*dy*20<=13*13*9)
+                    buttons.px[py*UI_BUTTON_ATLAS_W+bx+px]=HEX(0x364148);
+            }
+            for(int py=11;py<=21;py++) {
+                int half=(5-abs(py-16));
+                if(b==0) { /* Start: right-pointing triangle */
+                    for(int px=13;px<=13+half*2;px++)buttons.px[py*UI_BUTTON_ATLAS_W+bx+px]=HEX(0xF4F7F5);
+                } else {   /* Back: left-pointing triangle */
+                    for(int px=19-half*2;px<=19;px++)buttons.px[py*UI_BUTTON_ATLAS_W+bx+px]=HEX(0xF4F7F5);
+                }
+            }
+        }
+        /* 10..12: D-Pad (all, horizontal, vertical) */
+        draw_atlas_dpad(&buttons,352,0);
+        draw_atlas_dpad(&buttons,384,1);
+        draw_atlas_dpad(&buttons,416,2);
+        /* 13..14: L3/LS and R3/RS stick caps */
+        draw_atlas_stick(&buttons,448,"L");
+        draw_atlas_stick(&buttons,480,"R");
+        memory.button_cpu_bytes=UI_BUTTON_ATLAS_W*UI_BUTTON_ATLAS_H*4;
     }
-    int sx=index<4?index*32:128+(index-4)*48,sw=index<4?32:48;
-    ui_picture_region(c,buttons.px,256,32,sx,0,sw,32,(float)x,(float)y,(float)w,(float)h,255,1);return true;
+    ui_picture_region(c,buttons.px,UI_BUTTON_ATLAS_W,UI_BUTTON_ATLAS_H,map[index].sx,0,map[index].sw,UI_BUTTON_ATLAS_H,(float)x,(float)y,(float)w,(float)h,255,1);
+    return true;
 }
 
 bool ui_focus_bounds(float *x,float *y,float *w,float *h)
@@ -269,5 +379,20 @@ void ui_draw_hide_image(const void *pixels,float x,float y,float w,float h)
 {
     if(!ready)return;
     for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels &&
-        commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h)commands[i].color&=0x00ffffffu;
+        commands[i].x==x && commands[i].y==y && commands[i].w==w && commands[i].h==h) {
+        commands[i].color&=0x00ffffffu;
+        /* Fade ticks and software snapshots restore this command's target
+         * opacity. Hide that too, without hiding another use of the image. */
+        for(unsigned j=0;j<art_ref_count;j++)if(art_refs[j].command==i)art_refs[j].color&=0x00ffffffu;
+    }
+}
+void ui_draw_retire_image(const void *pixels)
+{
+    if(!pixels)return;
+    ui_scene_drop();
+    for(unsigned i=0;i<12;i++)if(art_fades[i].pixels==pixels)memset(art_fades+i,0,sizeof(art_fades[i]));
+    for(unsigned i=0;i<used;i++)if(commands[i].kind==UI_IMAGE && commands[i].pixels==pixels){
+        commands[i].kind=UI_RECT;commands[i].pixels=NULL;commands[i].r=0;
+        commands[i].color=0xff20272au;
+    }
 }

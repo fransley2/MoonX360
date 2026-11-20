@@ -30,6 +30,7 @@ static const char *video_mode_name(int width,int height,int fps)
 {
     if(fps==60 && width==1280 && height==720) return "720p60";
     if(fps==60 && width==1920 && height==1080) return "1080p60";
+    if(fps==60 && width==960 && height==540) return "540p60";
     if(fps==60 && width==854 && height==480)return "480p60";
     if(fps==30 && width==1920 && height==1080)return "1080p30";
     return "Custom";

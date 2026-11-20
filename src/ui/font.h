@@ -15,6 +15,9 @@ float font_ascent(int face, float px);
 
 /* Draws text with its baseline at y. Returns the pen x after the text. */
 int font_draw(canvas_t *c, int face, float px, int x, int y, uint32_t argb, const char *text);
+/* Tabular-digit measurement and drawing: digits '0'-'9' share one fixed cell width. */
+int font_text_width_tabular(int face, float px, const char *text);
+int font_draw_tabular(canvas_t *c, int face, float px, int x, int y, uint32_t argb, const char *text);
 /* Like font_draw but truncates with "..." to fit max_w. */
 int font_draw_fit(canvas_t *c, int face, float px, int x, int y, int max_w, uint32_t argb, const char *text);
 /* Word-wraps into a box of width w starting at baseline y; returns lines drawn.

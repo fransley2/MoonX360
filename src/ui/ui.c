@@ -1,5 +1,8 @@
 #include "ui.h"
 #include "../performance.h"
+#include "anim.h"
+#include "design_system.h"
+#include "smart_keyboard.h"
 #include "font.h"
 #include "draw.h"
 #include "translations.h"
@@ -27,27 +30,27 @@
 #include <string.h>
 #include <time.h>
 
-/* ------------------------------------------------------------ theme */
+/* ------------------------------------------------------------ theme (Design System tokens) */
 
-#define C_BG_TOP     HEX(0x202629)
-#define C_BG_BOTTOM  HEX(0x121619)
+#define C_BG_TOP     DS_BG_TOP
+#define C_BG_BOTTOM  DS_BG_BASE
 #define C_ACCENT     theme_accent
-#define C_CARD       HEX(0x22272B)
+#define C_CARD       DS_BG_SURFACE
 #define C_CARD_SEL   theme_selection
-#define C_BORDER     HEX(0x414A4D)
-#define C_TEXT       HEX(0xF2F5F3)
-#define C_TEXT_DIM   HEX(0xC0C9C5)
-#define C_TEXT_FAINT HEX(0x99A6A0)
-#define C_GREEN      HEX(0x72C840)
-#define C_YELLOW     HEX(0xF5B94A)
-#define C_RED        HEX(0xF0605D)
-#define C_BTN_A      HEX(0x5DB82E)
-#define C_BTN_B      HEX(0xE0453A)
-#define C_BTN_X      HEX(0x2E7FD9)
-#define C_BTN_Y      HEX(0xE8B623)
+#define C_BORDER     DS_BORDER_SUBTLE
+#define C_TEXT       DS_TEXT_PRIMARY
+#define C_TEXT_DIM   DS_TEXT_SECONDARY
+#define C_TEXT_FAINT DS_TEXT_MUTED
+#define C_GREEN      DS_STATUS_OK
+#define C_YELLOW     DS_STATUS_WARN
+#define C_RED        DS_STATUS_ERROR
+#define C_BTN_A      DS_BTN_A
+#define C_BTN_B      DS_BTN_B
+#define C_BTN_X      DS_BTN_X
+#define C_BTN_Y      DS_BTN_Y
 #define C_SHADOW     ARGB(150, 0, 0, 0)
 
-static uint32_t theme_accent=HEX(0x72C840),theme_selection=HEX(0x304535);
+static uint32_t theme_accent=HEX(0x72C840),theme_selection=HEX(0x233829);
 static int theme_background_id,theme_accent_id;
 static int stream_menu_style,mouse_hud_mode;
 void ui_set_stream_hud(int style,int hud){stream_menu_style=style==1?1:0;mouse_hud_mode=hud>=0 && hud<3?hud:0;}
@@ -84,6 +87,7 @@ void ui_set_language(int language)
     ui_language=language>=0 && language<CONFIG_LANGUAGE_COUNT?language:CONFIG_LANGUAGE_ENGLISH;
     ui_drop_main_cache();
 }
+int ui_get_language(void){return ui_language;}
 static int active_page;
 static int home_wall_previous=-1;
 void ui_home_cancel_prepare(void);
@@ -175,7 +179,7 @@ void ui_set_appearance(int background,int accent)
         for(int i=0;i<128*128;i++)theme_icon[i]=(moonx360_icon[i]&0xFF000000u)|(theme_accent&0xFFFFFFu);
     }
     theme_background_id=background;theme_accent_id=accent;
-    theme_selection=accent?cv_mix(C_CARD,theme_accent,32):HEX(0x304535);
+    theme_selection=accent?cv_mix(C_CARD,theme_accent,34):HEX(0x233829);
     ui_drop_main_cache();
     if(bg.px)cv_free(&bg); /* CPU fallback regenerates once on its next redraw. */
 }
@@ -206,7 +210,7 @@ canvas_t *ui_canvas(void)
 }
 
 #define TILE_W 150
-#define TILE_H 200
+#define TILE_H 225
 
 /* Last selected art rectangle, also available for placeholders/software UI. */
 static char launch_source_name[64];
@@ -403,13 +407,30 @@ static void icon(int which, float cx, float cy, float k, uint32_t color)
 
 static void spinner(float cx, float cy, float r, uint32_t t_ms)
 {
-    int head = (int)(t_ms / 85) % 10, i;
+    /* Unified smooth Xbox-style spinning ring (900ms period, 225 deg sweeping arc).
+     * 24 fixed-geometry segments around the ring with smooth per-segment color/alpha
+     * sweep: matches the GPU opening shader and batches into 1 solid_ui draw call. */
+    const int steps = 24;
+    const float two_pi = 6.2831853f;
+    float thick = r * 0.22f;
+    if (thick < 2.2f) thick = 2.2f;
+    float phase = (float)(t_ms % 900u) / 900.0f;
 
-    for (i = 0; i < 10; i++) {
-        float a = (float)i / 10.0f * 6.2831853f - 1.5707963f;
-        int age = (head - i + 10) % 10;
-        unsigned alpha = (unsigned)(255 - age * 22);
-        cv_circle(&cv, S(cx + cosf(a) * r), S(cy + sinf(a) * r), S(r * 0.17f), WITH_ALPHA(C_ACCENT, alpha));
+    for (int i = 0; i < steps; i++) {
+        float a0 = (float)i / (float)steps * two_pi - 1.5707963f;
+        float a1 = (float)(i + 1) / (float)steps * two_pi - 1.5707963f;
+        float pos = ((float)i + 0.5f) / (float)steps;
+        float ang = phase - pos;
+        if (ang < 0.0f) ang += 1.0f;
+        float tail = 1.0f - ang / 0.625f;
+        if (tail < 0.0f) tail = 0.0f;
+        float fade = tail * tail;
+        uint32_t rgb = cv_mix(C_BORDER, C_ACCENT, (unsigned)(fade * 255.0f));
+        unsigned alpha = (unsigned)(105.0f + 150.0f * fade);
+        cv_line(&cv,
+                S(cx + cosf(a0) * r), S(cy + sinf(a0) * r),
+                S(cx + cosf(a1) * r), S(cy + sinf(a1) * r),
+                S(thick), WITH_ALPHA(rgb, alpha));
     }
 }
 
@@ -419,12 +440,25 @@ struct hint { const char *button; const char *label; };
 
 static void keycap(float x, float baseline, const char *button, float *out_w)
 {
-    int bw=strlen(button)>1?42:28;
-    if(ui_button(&cv,button,SI(x),SI(baseline-23),SI(bw),SI(28))) {*out_w=(float)bw;return;}
-    if(!strcmp(button,"LB/RB")) {
-        ui_button(&cv,"LB",SI(x),SI(baseline-23),SI(38),SI(28));
-        ui_button(&cv,"RB",SI(x+40),SI(baseline-23),SI(38),SI(28));*out_w=78;return;
+    if(!strcmp(button,"LB/RB") || !strcmp(button,"LB / RB")) {
+        ui_button(&cv,"LB",SI(x),SI(baseline-22),SI(35),SI(28));
+        ui_button(&cv,"RB",SI(x+38),SI(baseline-22),SI(35),SI(28));
+        *out_w=73.0f;return;
     }
+    if(!strcmp(button,"X Y")) {
+        ui_button(&cv,"X",SI(x),SI(baseline-22),SI(28),SI(28));
+        ui_button(&cv,"Y",SI(x+31),SI(baseline-22),SI(28),SI(28));
+        *out_w=59.0f;return;
+    }
+    if(!strcmp(button,"Back + L3")) {
+        ui_button(&cv,"Back",SI(x),SI(baseline-22),SI(28),SI(28));
+        text(FONT_BOLD,14,x+31,baseline-2,C_TEXT_DIM,"+");
+        ui_button(&cv,"L3",SI(x+44),SI(baseline-22),SI(28),SI(28));
+        *out_w=72.0f;return;
+    }
+    bool shoulder=!strcmp(button,"LB") || !strcmp(button,"RB") || !strcmp(button,"LT") || !strcmp(button,"RT");
+    int bw=shoulder?35:28;
+    if(ui_button(&cv,button,SI(x),SI(baseline-22),SI(bw),SI(28))) {*out_w=(float)bw;return;}
     uint32_t color = 0;
     float cy = baseline - 6;
 
@@ -440,28 +474,94 @@ static void keycap(float x, float baseline, const char *button, float *out_w)
     } else {
         button=ui_translate(button);
         float w = text_w(FONT_BOLD, 13, button) + 16;
-        rrect(x, cy - 12, w, 24, 6, HEX(0x2C3646));
+        rrect(x, cy - 12, w, 24, DS_RADIUS_MD, HEX(0x2C3646));
         text_center(FONT_BOLD, 13, x + w / 2, cy + 4.5f, C_TEXT, button);
         *out_w = w;
     }
 }
 
+/* ---- Non-blocking Toast notification component ---- */
+static struct {
+    bool active;
+    int kind;
+    char text[128];
+    uint32_t started, duration_ms, now;
+} ui_toast;
+
+void ui_toast_show(int kind, const char *msg, uint32_t now_ms, uint32_t duration_ms)
+{
+    if (!msg || !*msg) return;
+    ui_toast.active = true;
+    ui_toast.kind = kind;
+    snprintf(ui_toast.text, sizeof(ui_toast.text), "%s", ui_translate(msg));
+    ui_toast.started = now_ms;
+    ui_toast.now = now_ms;
+    ui_toast.duration_ms = duration_ms ? duration_ms : UI_TOAST_DEFAULT_MS;
+}
+
+bool ui_toast_tick(uint32_t now_ms)
+{
+    if (!ui_toast.active) return false;
+    ui_toast.now = now_ms;
+    uint32_t elapsed = (uint32_t)(now_ms - ui_toast.started);
+    if (elapsed >= ui_toast.duration_ms) {
+        ui_toast.active = false;
+        return true;
+    }
+    return elapsed < UI_TOAST_FADE_MS || elapsed + UI_TOAST_FADE_MS >= ui_toast.duration_ms;
+}
+
+void ui_toast_clear(void) { ui_toast.active = false; }
+
+static void draw_toast(void)
+{
+    if (!ui_toast.active) return;
+    uint32_t elapsed = (uint32_t)(ui_toast.now - ui_toast.started);
+    if (elapsed >= ui_toast.duration_ms) { ui_toast.active = false; return; }
+    float alpha = 1.0f;
+    if (ui_motion_enabled()) {
+        if (elapsed < UI_TOAST_FADE_MS)
+            alpha = ui_ease_out_cubic((float)elapsed / (float)UI_TOAST_FADE_MS);
+        else if (elapsed + UI_TOAST_FADE_MS > ui_toast.duration_ms)
+            alpha = ui_ease_out_cubic((float)(ui_toast.duration_ms - elapsed) / (float)UI_TOAST_FADE_MS);
+    }
+    unsigned a_bg = (unsigned)(236.0f * alpha);
+    unsigned a_fg = (unsigned)(255.0f * alpha);
+    if (!a_fg) return;
+    uint32_t stripe = ui_toast.kind == UI_TOAST_ERROR ? C_RED :
+                      ui_toast.kind == UI_TOAST_WARN ? C_YELLOW :
+                      ui_toast.kind == UI_TOAST_OK ? C_GREEN : C_ACCENT;
+    float tw = text_w(FONT_BOLD, 16, ui_toast.text);
+    float bw = tw + 56.0f;
+    float max_w = W - 2.0f * UI_SAFE_X;
+    if (bw < 220.0f) bw = 220.0f;
+    if (bw > max_w) bw = max_w;
+    float bh = 44.0f;
+    float bx = W - UI_SAFE_X - bw;
+    float by = 116.0f - 10.0f * (1.0f - alpha);
+    rrect(bx, by, bw, bh, DS_RADIUS_MD, WITH_ALPHA(DS_BG_ELEVATED, a_bg));
+    cv_rrect_outline(&cv, S(bx), S(by), S(bw), S(bh), S(DS_RADIUS_MD), S(1), WITH_ALPHA(C_BORDER, a_bg));
+    cv_fill(&cv, SI(bx), SI(by + 6), SI(4), SI(bh - 12), WITH_ALPHA(stripe, a_fg));
+    text_fit(FONT_BOLD, 16, bx + 18, by + 28, bw - 32, WITH_ALPHA(C_TEXT, a_fg), ui_toast.text);
+}
+
 static void footer(const struct hint *hints, int n, const char *right)
 {
-    float x = UI_SAFE_X, y = H - 28;
+    float x = UI_SAFE_X, y = H - 27;
     int i;
 
-    cv_fill(&cv,0,SI(H-58),cv.w,SI(58),HEX(0x171C20));
-    cv_fill(&cv, 0, SI(H - 58), cv.w, 1, WITH_ALPHA(C_BORDER, 160));
+    cv_fill(&cv,0,SI(H-56),cv.w,SI(56),DS_BG_FOOTER);
+    cv_fill(&cv, 0, SI(H - 56), cv.w, 1, WITH_ALPHA(C_BORDER, 140));
     for (i = 0; i < n; i++) {
         float kw;
         keycap(x, y, hints[i].button, &kw);
         x += kw + 9;
         text(FONT_REGULAR, 17, x, y, C_TEXT_DIM, ui_translate(hints[i].label));
-        x += text_w(FONT_REGULAR, 17, ui_translate(hints[i].label)) + 30;
+        x += text_w(FONT_REGULAR, 17, ui_translate(hints[i].label)) + 28;
     }
     if (right)
         text_right(FONT_REGULAR, 15, W - 64, y, C_TEXT_FAINT, right);
+    draw_toast();
 }
 
 static void header(const struct ui_host *host)
@@ -506,15 +606,18 @@ static void begin_frame(void)
 static void top_nav(int focus,int active)
 {
     static const char *names[]={"Home","Library","Computers","Settings"};
+    rrect(W/2-214,48,428,50,8,ARGB(145,12,16,20));
+    cv_rrect_outline(&cv,S(W/2-214),S(48),S(428),S(50),S(8),S(1),WITH_ALPHA(C_BORDER,90));
     for(int i=0;i<4;i++) {
         float cx=W/2-169.5f+(float)i*113;
         uint32_t color=i==focus || i==active?C_TEXT:C_TEXT_DIM;
-        if(i==focus)rrect(cx-21,52,42,42,5,ARGB(95,15,25,22));
+        if(i==focus)rrect(cx-24,52,48,42,6,ARGB(180,32,44,40));
+        else if(i==active)rrect(cx-24,52,48,42,6,ARGB(85,255,255,255));
         if(i==0)moon_logo(cx,73,12);
         else if(i==1){for(int j=0;j<3;j++)rrect(cx-11,63.0f+(float)j*8.0f,22,3,0,color);}
         else if(i==2)icon(ICON_MONITOR,cx,73,14,color);
         else icon(ICON_GEAR,cx,73,14,color);
-        if(i==focus)text_center(FONT_REGULAR,15,cx,116,C_TEXT,ui_translate(names[i]));
+        if(i==focus)text_center(FONT_BOLD,14,cx,116,C_TEXT,ui_translate(names[i]));
         else if(i==active)cv_fill(&cv,SI(cx-10),SI(101),SI(20),SI(2),C_ACCENT);
     }
 }
@@ -522,7 +625,8 @@ static void tabs(void)
 {
     /* All native screens use Home's compact navigation and one content area. */
     top_nav(-1,active_page==UI_LIBRARY?1:active_page==UI_HOME?2:3);
-    text_right(FONT_REGULAR,15,W-64,116,C_TEXT_FAINT,"LB / RB");
+    ui_button(&cv,"LB",SI(W-140),SI(97),SI(35),SI(26));
+    ui_button(&cv,"RB",SI(W-101),SI(97),SI(35),SI(26));
 }
 
 static void breadcrumb(const char *section,const char *leaf)
@@ -536,13 +640,20 @@ static void breadcrumb(const char *section,const char *leaf)
     text_fit(FONT_REGULAR,18,64,162,W-128,C_TEXT_DIM,shown);
 }
 
-/* Centred dialog card; returns its top-left through x/y. */
+/* Unified centered dialog container with top semantic accent bar and 4:3 clamp. */
+static void ds_dialog_frame(float w, float h, uint32_t bar_color, float *x, float *y)
+{
+    float max_w = W - 2.0f * UI_SAFE_X;
+    if (w > max_w) w = max_w;
+    *x = (W - w) / 2.0f;
+    *y = (H - h) / 2.0f + 10.0f;
+    cv_fill(&cv, 0, 0, cv.w, cv.h, DS_BG_SCRIM);
+    card(*x, *y, w, h, DS_RADIUS_LG, false);
+    if (bar_color) cv_fill(&cv, SI(*x + 16), SI(*y), SI(w - 32), SI(3), bar_color);
+}
 static void dialog(float w, float h, float *x, float *y)
 {
-    *x = (W - w) / 2;
-    *y = (H - h) / 2 + 10;
-    cv_fill(&cv, 0, 0, cv.w, cv.h, ARGB(110, 0, 0, 0));
-    card(*x, *y, w, h, 20, false);
+    ds_dialog_frame(w, h, C_ACCENT, x, y);
 }
 
 /* ------------------------------------------------------------ screens */
@@ -554,11 +665,8 @@ void ui_draw_splash(const char *status, uint32_t t_ms)
     text_center(FONT_BOLD, 60, W / 2, 400, C_TEXT, ui_translate("MoonX360"));
     text_center(FONT_REGULAR, 24, W / 2, 440, C_TEXT_DIM, ui_translate("for Xbox 360"));
     if (status)
-        text_center(FONT_REGULAR, 19, W / 2, 530, C_TEXT_DIM, ui_translate(status));
-    for(int i=0;i<6;i++) {
-        float x=W/2- 92 + i*32;
-        cv_fill(&cv,SI(x),SI(580),SI(24),SI(4),i==(int)((t_ms/160)%6)?C_ACCENT:C_BORDER);
-    }
+        text_center(FONT_REGULAR, 19, W / 2, 524, C_TEXT_DIM, ui_translate(status));
+    spinner(W / 2, 582, 18, t_ms);
 }
 
 int ui_dashboard_move(int sel,int dx,int dy,int n)
@@ -579,14 +687,22 @@ static void home_animate(float *value,float *origin,float target,uint32_t *start
 bool ui_home_tick(uint32_t now)
 {
     home_scroll.now=now;bool changed=false;
-    if(home_scroll.active){float t=(now-home_scroll.started)/200.0f;if(t>=1 || !ui_motion_enabled())t=1;
-        float r=1-t;home_scroll.current=home_scroll.origin+(home_scroll.target-home_scroll.origin)*(1-r*r*r);
-        if(t>=1){home_scroll.current=home_scroll.target;home_scroll.active=false;}changed=true;}
-    if(home_focus.active){float t=(now-home_focus.started)/180.0f;if(t>=1 || !ui_motion_enabled())t=1;
-        float r=1-t;home_focus.current=home_focus.origin+(home_focus.target-home_focus.origin)*(1-r*r*r);
-        if(t>=1){home_focus.current=home_focus.target;home_focus.active=false;}changed=true;}
+    if(home_scroll.active){
+        float t=ui_anim_progress(now,home_scroll.started,UI_SCROLL_MS);
+        if(!ui_motion_enabled())t=1.0f;
+        home_scroll.current=ui_anim_lerp(home_scroll.origin,home_scroll.target,ui_ease_out_cubic(t));
+        if(t>=1.0f){home_scroll.current=home_scroll.target;home_scroll.active=false;}
+        changed=true;
+    }
+    if(home_focus.active){
+        float t=ui_anim_progress(now,home_focus.started,UI_ANIM_SCROLL_MS);
+        if(!ui_motion_enabled())t=1.0f;
+        home_focus.current=ui_anim_lerp(home_focus.origin,home_focus.target,ui_ease_out_cubic(t));
+        if(t>=1.0f){home_focus.current=home_focus.target;home_focus.active=false;}
+        changed=true;
+    }
     if(theme_background_id==4 && home_wall_previous>=0){
-        if(now-home_wall_started>=200 || !ui_motion_enabled())home_wall_previous=-1;
+        if((uint32_t)(now-home_wall_started)>=UI_WALL_FADE_MS || !ui_motion_enabled())home_wall_previous=-1;
         changed=true;
     }
     return changed;
@@ -595,12 +711,12 @@ bool ui_home_tick(uint32_t now)
 static void dashboard_rect(int item,int recents,float *x,float *y,float *w,float *h)
 {
     if(item<4){*x=W/2-169.5f+(float)item*113-20;*y=53;*w=40;*h=40;return;}
-    if(item==4){*x=64;*y=164;*w=500;*h=124;return;}
+    if(item==4){*x=64;*y=152;*w=500;*h=124;return;}
     if(item<5+recents){
         int index=item-5;float pos=64-home_scroll.current;
-        for(int i=0;i<index;i++) {float d=fabsf(home_focus.current-(float)i);if(d>1)d=1;pos+=164-58*d+18;}
+        for(int i=0;i<index;i++) {float d=fabsf(home_focus.current-(float)i);if(d>1)d=1;pos+=140-28*d+18;}
         float d=fabsf(home_focus.current-(float)index);if(d>1)d=1;
-        *w=164-58*d;*h=204-56*d;*x=pos;*y=H-194-*h;return;
+        *w=140-28*d;*h=210-42*d;*x=pos;*y=H-190-*h;return;
     }
     int shortcut=item-5-recents;*w=(W-128-54)/4;*h=104;
     *x=64+(float)shortcut*(*w+18);*y=H-172;
@@ -611,10 +727,10 @@ int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents)
     int group=selected<4?0:selected==4?1:selected<5+recents?2:3;
     int start=group==0?0:group==1?4:group==2?5:5+recents;
     int length=group==0?4:group==1?1:group==2?recents:4;
-    if(dx){int next=selected+dx;return next>=start && next<start+length?next:selected;}
+    if(dx){int next=selected+dx;return next>=start && next<start+length && next<count?next:selected;}
     if(dy>0){if(group==0)return count>4?4:selected;
-        if(group==1)return 5;
-        if(group==2)return 5+recents;}
+        if(group==1)return count>5?5:selected;
+        if(group==2){int col=selected-start;if(col>3)col=3;int dst=5+recents+col;return dst<count?dst:count-1;}}
     if(dy<0){if(group==1)return 0;
         if(group==2)return 4;
         if(group==3)return recents?5+(selected-start<recents?selected-start:recents-1):4;}
@@ -725,13 +841,15 @@ static void draw_wallpaper(void)
     else if(theme_background_id==4 && home_wall_current>=0) {
         if(home_wall_previous>=0)home_wall_draw(home_wall_previous,255);
         unsigned alpha=255;
-        if(home_wall_previous>=0){unsigned elapsed=home_scroll.now-home_wall_started;
-            alpha=elapsed>=200?255:elapsed*255/200;}
+        if(home_wall_previous>=0){
+            float t=ui_anim_progress(home_scroll.now,home_wall_started,UI_WALL_FADE_MS);
+            alpha=(unsigned)(255.0f*ui_ease_out_cubic(t));
+        }
         home_wall_draw(home_wall_current,alpha);
     }
     if(theme_background_id==3 || theme_background_id==4) {
-        cv_fill(&cv,0,0,cv.w,SI(132),ARGB(112,5,10,13));
-        cv_fill(&cv,0,SI(132),cv.w,SI(H-132),ARGB(32,4,8,10));
+        cv_vgradient(&cv,0,0,cv.w,SI(148),ARGB(155,6,10,13),ARGB(28,6,10,13));
+        cv_vgradient(&cv,0,SI(H-260),cv.w,SI(260),ARGB(20,6,10,13),ARGB(165,6,10,13));
     }
 }
 static void dashboard_shortcut_icon(int item,int which,float x,float y)
@@ -790,6 +908,25 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
         home_focus.target=focus_target;home_animate(&home_focus.current,&home_focus.origin,
             home_focus.target,&home_focus.started,&home_focus.active);
     }
+    /* Keep the focused recent tile cleanly inside the safe horizontal viewport on 16:9 and 4:3. */
+    {
+        float scroll_target=0.0f;
+        if(sel>=5 && sel<5+recent) {
+            int idx=sel-5;
+            float left=0.0f;
+            for(int i=0;i<idx;i++)left+=112.0f+18.0f;
+            float right=left+140.0f;
+            float view_w=W-2.0f*UI_SAFE_X;
+            if(right-home_scroll.target>view_w)scroll_target=right-view_w;
+            else if(left<home_scroll.target)scroll_target=left;
+            else scroll_target=home_scroll.target;
+            if(scroll_target<0.0f)scroll_target=0.0f;
+        }
+        if(home_scroll.target!=scroll_target) {
+            home_scroll.target=scroll_target;home_animate(&home_scroll.current,&home_scroll.origin,
+                home_scroll.target,&home_scroll.started,&home_scroll.active);
+        }
+    }
     uint64_t key=main_key(host,items,visible,console_ip);
     key=main_hash_text(main_hash_text(key,dashboard?dashboard->profile:NULL),dashboard?dashboard->connection:NULL);
     if(dashboard && dashboard->featured){const struct ui_app *a=dashboard->featured;
@@ -798,6 +935,7 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
         key=key*1099511628211ULL+(unsigned)dashboard->featured_id;}
     key=key*1099511628211ULL+(unsigned)sel;
     key=key*1099511628211ULL+(unsigned)(home_focus.current*256);
+    key=key*1099511628211ULL+(unsigned)(home_scroll.current*16);
     key=key*1099511628211ULL+(unsigned)theme_background_id;
 #ifdef _XBOX
     key=key*1099511628211ULL+(unsigned)input_connected_count();
@@ -827,50 +965,57 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
             float x,y,w,h;dashboard_rect(4,recent,&x,&y,&w,&h);
             const struct ui_app *featured=dashboard?dashboard->featured:NULL;
             bool running=featured && featured->running;
-            rrect(x,y,w,h,5,ARGB(222,16,25,28));
-            cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(5),S(1),WITH_ALPHA(C_BORDER,190));
-            if(featured)dashboard_art(featured,x+8,y+9,78,106);
-            else {rrect(x+8,y+9,78,106,2,HEX(0x21363C));moon_logo(x+47,y+61,19);}
+            rrect(x,y,w,h,UI_CORNER,ARGB(228,17,22,26));
+            cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(UI_CORNER),S(1),WITH_ALPHA(C_BORDER,175));
+            if(sel==4)cv_fill(&cv,SI(x),SI(y+8),SI(3),SI(h-16),C_ACCENT);
+            if(featured)dashboard_art(featured,x+10,y+8,72,108);
+            else {rrect(x+10,y+8,72,108,4,HEX(0x1D282E));moon_logo(x+46,y+62,19);}
             char context[160];snprintf(context,sizeof(context),"%s  \xC2\xB7  %s",
                 ui_translate(running?"Now playing":featured?"Last played":"Your games"),
                 host && host->name && host->name[0]?host->name:ui_translate("Your streaming PC"));
-            text_fit(FONT_REGULAR,15,x+101,y+22,w-116,C_TEXT_DIM,context);
-            text_fit(FONT_BOLD,23,x+101,y+48,w-116,C_TEXT,
+            text_fit(FONT_BOLD,14,x+103,y+23,w-118,running?C_ACCENT:C_TEXT_DIM,context);
+            text_fit(FONT_BOLD,23,x+103,y+49,w-118,C_TEXT,
                 featured && featured->name?featured->name:ui_translate("My Library"));
-            text_fit(FONT_REGULAR,16,x+101,y+72,w-116,C_TEXT_DIM,
+            text_fit(FONT_REGULAR,15,x+103,y+71,w-118,C_TEXT_DIM,
                 dashboard && dashboard->profile?dashboard->profile:"");
-            text_fit(FONT_REGULAR,15,x+101,y+89,w-116,C_TEXT_DIM,
+            text_fit(FONT_REGULAR,14,x+103,y+88,w-118,C_TEXT_FAINT,
                 dashboard && dashboard->connection?dashboard->connection:"");
             if(sel==4){
-                rrect(x+101,y+96,192,24,3,C_ACCENT);
-                text(FONT_BOLD,15,x+111,y+113,C_BG_BOTTOM,"A");
-                text_fit(FONT_BOLD,15,x+131,y+113,154,C_BG_BOTTOM,
+                rrect(x+103,y+94,198,26,DS_RADIUS_SM,C_ACCENT);
+                ui_button(&cv,"A",SI(x+109),SI(y+96),SI(22),SI(22));
+                text_fit(FONT_BOLD,15,x+137,y+113,156,C_BG_BOTTOM,
                     ui_translate(running?"Continue stream":"Start playing"));
-                if(featured){rrect(x+303,y+96,117,24,3,HEX(0x344348));
-                    text(FONT_BOLD,15,x+313,y+113,C_TEXT,"X");
-                    text_fit(FONT_REGULAR,15,x+333,y+113,81,C_TEXT,ui_translate("Details"));}
+                if(featured){rrect(x+309,y+94,122,26,DS_RADIUS_SM,HEX(0x2A353B));
+                    ui_button(&cv,"X",SI(x+315),SI(y+96),SI(22),SI(22));
+                    text_fit(FONT_REGULAR,15,x+343,y+113,82,C_TEXT,ui_translate("Details"));}
             }
         }
-        text(FONT_BOLD,18,64,H-404,C_TEXT,ui_translate("Recent Games"));
+        text(FONT_BOLD,18,64,H-412,C_TEXT,ui_translate("Recent Games"));
         if(recent) {
+            cv_clip(&cv,SI(UI_SAFE_X-8),SI(H-406),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(224));
             for(int i=0;i<recent;i++) {
                 float x,y,w,h;dashboard_rect(5+i,recent,&x,&y,&w,&h);
-                if(x+w<64 || x>W-64)continue;
+                if(x+w<UI_SAFE_X-16 || x>W-UI_SAFE_X+16)continue;
                 const struct ui_app *app=dashboard->recent+i;
-                rrect(x,y,w,h,3,HEX(0x172024));dashboard_art(app,x,y,w,h);
+                rrect(x,y,w,h,4,HEX(0x161D22));dashboard_art(app,x,y,w,h);
+                if(app->running) {
+                    rrect(x+8,y+8,10,10,5,C_ACCENT);
+                }
                 if(sel==5+i) {
-                    rrect(x,y+h-38,w,38,0,ARGB(198,4,8,10));
-                    text_fit(FONT_REGULAR,18,x+10,y+h-12,w-20,C_TEXT,app->name?app->name:"");
+                    cv_vgradient(&cv,SI(x),SI(y+h-54),SI(w),SI(54),ARGB(0,8,12,15),ARGB(225,8,12,15));
+                    text_fit(FONT_BOLD,17,x+10,y+h-12,w-20,C_TEXT,app->name?app->name:"");
                 }
             }
+            cv_unclip(&cv);
         } else {
             text(FONT_REGULAR,18,64,H-200,C_TEXT_DIM,ui_translate("Open Library. Your recent games will appear here."));
         }
         for(int i=5+recent;i<visible;i++) {
             float x,y,w,h;dashboard_rect(i,recent,&x,&y,&w,&h);int shortcut=i-5-recent;
-            static const uint32_t colors[]={0x20382D,0x23343B,0x263B35,0x26362E};
-            rrect(x,y,w,h,4,HEX(colors[shortcut]));
-            cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(4),S(1),WITH_ALPHA(C_BORDER,160));
+            bool on=sel==i;
+            rrect(x,y,w,h,UI_CORNER,on?C_CARD_SEL:ARGB(226,24,30,35));
+            cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),S(UI_CORNER),S(1),WITH_ALPHA(C_BORDER,on?210:145));
+            if(on)cv_fill(&cv,SI(x+12),SI(y),SI(w-24),SI(3),C_ACCENT);
             dashboard_shortcut_icon(shortcut,items[i].icon,x+20,y+19);
             text_fit(FONT_BOLD,19,x+20,y+h-17,w-40,C_TEXT,ui_translate(items[i].title));
             if(items[i].subtitle)text_fit(FONT_REGULAR,15,x+62,y+37,w-82,C_TEXT_DIM,items[i].subtitle);
@@ -886,7 +1031,8 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
     }
     if(visible>0) {
         float x,y,w,h;dashboard_rect(sel,recent,&x,&y,&w,&h);
-        cv_rrect_outline(&cv,S(x-3),S(y-3),S(w+6),S(h+6),S(5),S(2),C_ACCENT);
+        cv_rrect_outline(&cv,S(x-1),S(y-1),S(w+2),S(h+2),S(UI_CORNER),S(1),WITH_ALPHA(C_TEXT,120));
+        cv_rrect_outline(&cv,S(x-4),S(y-4),S(w+8),S(h+8),S(UI_CORNER+1),S(UI_FOCUS_BORDER),C_ACCENT);
         ui_focus_mark(UI_HOME,sel);
         if(sel==4 && dashboard && dashboard->featured)
             launch_source_tile(dashboard->featured,x+8,y+9,78,106);
@@ -903,17 +1049,22 @@ void ui_draw_main(const struct ui_host *host,const struct ui_menu_item *items,in
 void ui_draw_hosts(const struct ui_setting *rows,int n,int sel,int page,bool searching)
 {
     ui_set_page(page);begin_frame();header(NULL);top_nav(-1,2);
-    text_right(FONT_REGULAR,15,W-64,116,C_TEXT_FAINT,"LB / RB");
+    ui_button(&cv,"LB",SI(W-140),SI(97),SI(35),SI(26));
+    ui_button(&cv,"RB",SI(W-101),SI(97),SI(35),SI(26));
     breadcrumb(NULL,ui_translate("Hosts"));
     int first=sel>=6?sel-5:0;
+    float card_w=W-2*UI_SAFE_X;
+    float value_w=card_w*0.34f;if(value_w>360)value_w=360;
+    float value_x=UI_SAFE_X+card_w-value_w-24;
+    float label_w=value_x-UI_SAFE_X-38;
     for(int i=first;i<n && i<first+6;i++) {
         float y=196+(float)(i-first)*62;
-        card(64,y,W-128,54,0,i==sel);
-        text_fit(FONT_BOLD,21,86,y+24,510,C_TEXT,i>=n-2?ui_translate(rows[i].label):rows[i].label);
-        text_fit(FONT_REGULAR,16,86,y+45,510,C_TEXT_DIM,i>=n-2?ui_translate(rows[i].help):rows[i].help);
-        text_fit(FONT_REGULAR,18,650,y+33,W-736,C_TEXT_DIM,ui_translate(rows[i].value));
+        card(UI_SAFE_X,y,card_w,54,UI_CORNER,i==sel);
+        text_fit(FONT_BOLD,21,UI_SAFE_X+22,y+24,label_w,C_TEXT,i>=n-2?ui_translate(rows[i].label):rows[i].label);
+        text_fit(FONT_REGULAR,16,UI_SAFE_X+22,y+45,label_w,C_TEXT_DIM,i>=n-2?ui_translate(rows[i].help):rows[i].help);
+        text_fit(FONT_REGULAR,18,value_x,y+33,value_w,C_TEXT_DIM,ui_translate(rows[i].value));
     }
-    text(FONT_REGULAR,16,64,615,C_TEXT_FAINT,ui_translate(searching?"Searching network...":"Saved hosts available. Y searches again."));
+    text(FONT_REGULAR,16,UI_SAFE_X,615,C_TEXT_FAINT,ui_translate(searching?"Searching network...":"Saved hosts available. Y searches again."));
     static const struct hint hints[]={{"A","Select"},{"X","Details"},{"Y","Search"},{"B","Back"}};
     footer(hints,4,NULL);
 }
@@ -921,61 +1072,84 @@ void ui_draw_hosts(const struct ui_setting *rows,int n,int sel,int page,bool sea
 static uint32_t name_color(const char *name)
 {
     uint32_t h = 2166136261u;
-    static const uint32_t palette[] = { 0x385547, 0x364D60, 0x4A5A42, 0x4A464F, 0x315952, 0x4F515B };
+    static const uint32_t palette[] = { 0x263A32, 0x243342, 0x333F2E, 0x34313C, 0x223E3A, 0x353942 };
     while (*name)
         h = (h ^ (unsigned char)*name++) * 16777619u;
     return HEX(palette[h % 6]);
 }
 
-/* Placeholder art: vertical gradient in a colour derived from the name. */
+/* Placeholder art: refined dark console card with subtle name-derived tint. */
 static void placeholder_art(const char *name,float x,float y,float w,float h)
 {
     uint32_t base = name_color(name);
-    uint32_t top = cv_mix(base, HEX(0xFFFFFF), 40), bottom = cv_mix(base, HEX(0x000000), 110);
+    uint32_t top = cv_mix(base, HEX(0xFFFFFF), 24), bottom = cv_mix(base, HEX(0x0D1114), 140);
     cv_vgradient(&cv,SI(x),SI(y),SI(w),SI(h),top,bottom);
-    icon(ICON_PLAY,x+w/2,y+h*.32f,18,WITH_ALPHA(C_TEXT,160));
+    cv_fill(&cv,SI(x),SI(y),SI(w),SI(3),WITH_ALPHA(C_ACCENT,150));
+    icon(ICON_PLAY,x+w/2,y+h*.34f,18,WITH_ALPHA(C_TEXT,145));
     /* One shared fallback, including small Continue cards. Title uses the same
      * truncation as real artwork captions; no status claim while work is pending. */
-    text_fit(FONT_BOLD,UI_TEXT_SECONDARY,x+14,y+h*.62f,w-28,C_TEXT,name);
-    cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),0,S(1),WITH_ALPHA(C_BORDER,130));
+    text_fit(FONT_BOLD,UI_TEXT_SECONDARY,x+14,y+h*.64f,w-28,C_TEXT,name);
+    cv_rrect_outline(&cv,S(x),S(y),S(w),S(h),0,S(1),WITH_ALPHA(C_BORDER,140));
+}
+
+static int rail_visible(void)
+{
+    int fit=(int)((W-2.0f*UI_SAFE_X+UI_CARD_GAP)/UI_RAIL_STEP);
+    if(fit<1)fit=1;
+    if(fit>UI_RAIL_VISIBLE)fit=UI_RAIL_VISIBLE;
+    return fit;
 }
 
 static void app_tile(const struct ui_app *a,float x,float y,bool on,int item)
 {
     float w=UI_RAIL_CARD_WIDTH,h=UI_RAIL_CARD_HEIGHT;
-    if(on)launch_source_tile(a,x,y,w,h);
+    float ty=on?y-4.0f:y;
+    if(on)launch_source_tile(a,x,ty,w,h);
     if(a->art) {
-        ui_picture_region(&cv,a->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(x),S(y),S(w),S(h),255,a->generation);
+        ui_picture_region(&cv,a->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(x),S(ty),S(w),S(h),255,a->generation);
         ui_cover_fade_mark();
-    } else placeholder_art(a->name,x,y,w,h);
+    } else placeholder_art(a->name,x,ty,w,h);
     if(on) {
-        cv_rrect_outline(&cv,S(x-5),S(y-5),S(w+10),S(h+10),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
+        cv_rrect_outline(&cv,S(x-1),S(ty-1),S(w+2),S(h+2),S(UI_CORNER-1),S(1),WITH_ALPHA(C_TEXT,135));
+        cv_rrect_outline(&cv,S(x-5),S(ty-5),S(w+10),S(h+10),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
         ui_focus_mark(UI_LIBRARY,item);
     }
-    if(a->favorite){rrect(x+w-52,y+10,42,24,4,C_YELLOW);text_center(FONT_BOLD,12,x+w-31,y+27,C_BG_BOTTOM,ui_translate("FAV"));}
-    if(a->running){rrect(x+10,y+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,x+51,y+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
+    if(a->favorite){rrect(x+w-52,ty+10,42,24,4,C_YELLOW);text_center(FONT_BOLD,12,x+w-31,ty+27,C_BG_BOTTOM,ui_translate("FAV"));}
+    if(a->running){rrect(x+10,ty+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,x+51,ty+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
 }
 static struct {float current,target,origin;uint32_t now,started;uint64_t context;bool active,known;} library_scroll;
+void ui_library_art_window(int count,int selected,int *first,int *end)
+{
+    int vis=rail_visible();
+    int target=selected>=vis?selected-vis+1:0;
+    *first=library_scroll.known?(int)(library_scroll.current/UI_RAIL_STEP)-1:target-1;
+    if(*first<0)*first=0;if(*first>=count)*first=count>0?count-1:0;
+    *end=*first+vis+3;if(*end>count)*end=count;
+}
 static void reset_scroll(void){memset(&home_scroll,0,sizeof(home_scroll));memset(&home_focus,0,sizeof(home_focus));home_focus.current=home_focus.target=-1;memset(&library_scroll,0,sizeof(library_scroll));}
 bool ui_library_tick(uint32_t now)
 {
     library_scroll.now=now;if(!library_scroll.active)return false;
-    unsigned elapsed=now-library_scroll.started;float t=elapsed/(float)UI_SCROLL_MS;if(t>1 || !ui_motion_enabled())t=1;
-    float remaining=1-t;library_scroll.current=library_scroll.origin+(library_scroll.target-library_scroll.origin)*(1-remaining*remaining*remaining);
-    if(t>=1){library_scroll.current=library_scroll.target;library_scroll.active=false;}
+    float t=ui_anim_progress(now,library_scroll.started,UI_SCROLL_MS);
+    if(!ui_motion_enabled())t=1.0f;
+    library_scroll.current=ui_anim_lerp(library_scroll.origin,library_scroll.target,ui_ease_out_cubic(t));
+    if(t>=1.0f){library_scroll.current=library_scroll.target;library_scroll.active=false;}
     return true;
 }
 void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,int sel,const char *filter)
 {
     static const struct hint hints[]={{"A","Play"},{"B","Back"},{"X","Details"},{"Start","Menu"},{"Y","Refresh"}};
     ui_set_page(UI_LIBRARY);begin_frame();header(host);tabs();
-    char count[32];snprintf(count,sizeof(count),ui_translate(n==1?"1 app":"%d apps"),n);
+    char count[48];
+    if(n>0 && sel>=0 && sel<n)snprintf(count,sizeof(count),"%d / %d",sel+1,n);
+    else snprintf(count,sizeof(count),ui_translate(n==1?"1 app":"%d apps"),n);
     text(FONT_BOLD,UI_TEXT_TITLE,UI_SAFE_X,168,C_TEXT,ui_translate(filter?filter:"All Apps"));
     text_right(FONT_REGULAR,UI_TEXT_META,W-UI_SAFE_X,168,C_TEXT_DIM,count);
     if(n<=0){text(FONT_REGULAR,UI_TEXT_PRIMARY,UI_SAFE_X,330,C_TEXT_DIM,ui_translate("No apps here. Use Start to change view."));footer(hints+1,4,NULL);return;}
     if(sel<0 || sel>=n)sel=0;
-    int first=sel>=UI_RAIL_VISIBLE?sel-UI_RAIL_VISIBLE+1:0;
-    uint64_t context=main_hash_text(main_hash_text(14695981039346656037ULL,filter),host?host->name:NULL)^(unsigned)n;
+    int vis=rail_visible();
+    int first=sel>=vis?sel-vis+1:0;
+    uint64_t context=main_hash_text(main_hash_text(14695981039346656037ULL,filter),host?host->name:NULL)^(unsigned)n^(unsigned)(vis<<16);
     float target=(float)first*(float)UI_RAIL_STEP;
     if(!library_scroll.known || library_scroll.context!=context) {
         library_scroll.current=library_scroll.target=target;library_scroll.active=false;library_scroll.known=true;library_scroll.context=context;
@@ -985,13 +1159,12 @@ void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,
     }
     /* Draw just the clipped visible rail and one overscan card either side.
      * All cards share one position; no per-card animation or allocation. */
-    float top=212;cv_clip(&cv,SI(UI_SAFE_X-8),SI(top-10),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(UI_RAIL_CARD_HEIGHT+66));
-    int begin=(int)(library_scroll.current/UI_RAIL_STEP)-1;if(begin<0)begin=0;
-    int end=begin+UI_RAIL_VISIBLE+3;if(end>n)end=n;
+    float top=206;cv_clip(&cv,SI(UI_SAFE_X-8),SI(top-14),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(UI_RAIL_CARD_HEIGHT+74));
+    int begin,end;ui_library_art_window(n,sel,&begin,&end);
     for(int i=begin;i<end;i++) {
         float x=UI_SAFE_X+(float)i*UI_RAIL_STEP-library_scroll.current;
         app_tile(apps+i,x,top,i==sel,i);
-        text_fit(i==sel?FONT_BOLD:FONT_REGULAR,i==sel?(float)UI_TEXT_PRIMARY:20.0f,x,top+UI_RAIL_CARD_HEIGHT+31,UI_RAIL_CARD_WIDTH,i==sel?C_TEXT:C_TEXT_DIM,apps[i].name);
+        text_fit(i==sel?FONT_BOLD:FONT_REGULAR,i==sel?(float)UI_TEXT_PRIMARY:19.0f,x,top+UI_RAIL_CARD_HEIGHT+31,UI_RAIL_CARD_WIDTH,i==sel?C_TEXT:C_TEXT_DIM,apps[i].name);
     }
     cv_unclip(&cv);
     /* The focused cover already carries its title. Keep the lower wallpaper
@@ -1026,6 +1199,19 @@ static int option_kind(const char *title,const struct ui_setting *row,int index,
     if(!strcmp(row->value,"Open") || !strcmp(row->value,"Manage") || !strcmp(row->value,"Press A"))return UI_OPTION_OPEN;
     return UI_OPTION_CYCLE;
 }
+static int settings_row_icon(const char *title,const char *label)
+{
+    /* Standardized rule: category hub pages (Settings / Stream / Advanced) show
+     * a leading icon on EVERY row so the label column stays 100% aligned;
+     * leaf option submenus show NO leading icons on any row. */
+    if(!label || (strcmp(title,"Settings") && strcmp(title,"Stream") && strcmp(title,"Advanced")))return -1;
+    if(strstr(label,"Network") || strstr(label,"PC") || strstr(label,"Host") || strstr(label,"Connection"))return ICON_LINK;
+    if(strstr(label,"Video") || strstr(label,"Display") || strstr(label,"Interface") || strstr(label,"Appearance") || strstr(label,"CRT"))return ICON_MONITOR;
+    if(strstr(label,"Audio") || strstr(label,"Controller") || strstr(label,"Input") || strstr(label,"Stream Profile") || strstr(label,"Desktop") || strstr(label,"Launch"))return ICON_PLAY;
+    if(strstr(label,"Aurora") || strstr(label,"Cache") || strstr(label,"Refresh") || strstr(label,"Restart") || strstr(label,"Reset") || strstr(label,"Save"))return ICON_REFRESH;
+    if(strstr(label,"About") || strstr(label,"History") || strstr(label,"Performance") || strstr(label,"Diagnostic") || strstr(label,"Info") || strstr(label,"Log"))return ICON_INFO;
+    return ICON_GEAR;
+}
 static void settings_page(const char *title, const struct ui_setting *rows, int n, int sel, bool adjustable,const int *kinds)
 {
     float x = UI_SAFE_X, y = UI_CONTENT_TOP, w = W - 2*UI_SAFE_X, rh = UI_ROW_HEIGHT;
@@ -1055,13 +1241,20 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
         int kind=kinds?kinds[i]:option_kind(title,rows+i,i,adjustable);
         bool literal_value=!strcmp(rows[i].label,"Saved profile") || !strcmp(rows[i].label,"Name") || !strcmp(rows[i].label,"Use profile") || !strcmp(rows[i].label,"Stream Profile");
         const char *display_value=literal_value?rows[i].value:ui_translate(rows[i].value);
-        float value_width=410.0f;
+        float value_width=w*0.38f;if(value_width>410.0f)value_width=410.0f;
         float value_x=x+w-value_width-30;
-        text_fit(FONT_REGULAR,UI_TEXT_PRIMARY,x+30,ry+35,value_x-x-50,on?C_TEXT:C_TEXT_DIM,(!strcmp(title,"Stream Profile") || !strcmp(title,"Game stream profile"))?rows[i].label:ui_translate(rows[i].label));
+        int cat_icon=settings_row_icon(title,rows[i].label);
+        float label_x=x+30;
+        if(cat_icon>=0){
+            icon(cat_icon,x+40,ry+rh*0.5f,11,on?C_ACCENT:C_TEXT_DIM);
+            label_x=x+64;
+        }
+        text_fit(on?FONT_BOLD:FONT_REGULAR,UI_TEXT_PRIMARY,label_x,ry+35,value_x-label_x-20,on?C_TEXT:C_TEXT_DIM,(!strcmp(title,"Stream Profile") || !strcmp(title,"Game stream profile"))?rows[i].label:ui_translate(rows[i].label));
         if (kind==UI_OPTION_CYCLE) {
             float vw = text_w(FONT_BOLD, UI_TEXT_PRIMARY, display_value);
             if(vw>value_width-40)vw=value_width-40;
             float vx = x + w - 52 - vw;
+            if(on)rrect(vx-30,ry+10,vw+58,rh-20,5,ARGB(90,10,14,18));
             text_fit(FONT_BOLD, UI_TEXT_PRIMARY, vx, ry + 35, value_width-40, on?C_TEXT:C_TEXT_DIM, display_value);
             /* < value > chevrons */
             cv_line(&cv, S(vx - 16), S(ry + rh / 2 - 6), S(vx - 22), S(ry + rh / 2), S(2.2f), C_ACCENT);
@@ -1073,9 +1266,10 @@ static void settings_page(const char *title, const struct ui_setting *rows, int 
             bool raw=literal_value || (!strcmp(title,"Host settings") && (i==0 || i==3 || i==4 || i==5)) || (!strcmp(title,"Game stream profile") && i>=CONFIG_PROFILE_COUNT) || (!strcmp(title,"Host details") && i==1) || ((!strcmp(title,"Delete profile?") || !strcmp(title,"Delete profile")) && i==1) || !strcmp(title,"Rename profile");
             if(kind==UI_OPTION_TOGGLE) {
                 bool enabled=toggle_enabled(rows[i].value);
-                rrect(x+w-82,ry+17,48,24,12,enabled?C_ACCENT:C_BORDER);
+                rrect(x+w-82,ry+17,48,24,12,enabled?C_ACCENT:HEX(0x2C353C));
+                cv_rrect_outline(&cv,S(x+w-82),S(ry+17),S(48),S(24),S(12),S(1),enabled?C_ACCENT:C_BORDER);
                 cv_circle(&cv,S(x+w-(enabled?46:70)),S(ry+29),S(8),enabled?C_BG_BOTTOM:C_TEXT);
-                text_fit(FONT_REGULAR,18,value_x,ry+34,value_width-80,C_TEXT_DIM,literal_value?value:ui_translate(value));
+                text_fit(enabled?FONT_BOLD:FONT_REGULAR,18,value_x,ry+34,value_width-80,enabled?C_TEXT:C_TEXT_DIM,literal_value?value:ui_translate(value));
             } else text_fit(on?FONT_BOLD:FONT_REGULAR,UI_TEXT_PRIMARY,value_x,ry+35,value_width,on?C_TEXT:C_TEXT_DIM,raw?value:ui_translate(value));
         }
     }
@@ -1144,27 +1338,33 @@ void ui_draw_profiles(const struct ui_setting *rows,int n,int sel,int factory_co
 }
 void ui_draw_confirm(const char *title,const char *message,const char *confirm)
 {
-    cv_unclip(&cv);cv_fill(&cv,0,0,cv.w,cv.h,ARGB(170,0,0,0));
-    card(280,246,720,230,UI_CORNER,false);
-    text(FONT_BOLD,28,312,294,C_TEXT,ui_translate(title));
-    wrapped(FONT_REGULAR,21,312,340,656,28,C_TEXT_DIM,message);
-    rrect(312,405,184,48,4,C_RED);float width;keycap(328,436,"A",&width);
-    text(FONT_BOLD,20,366,436,C_TEXT,ui_translate(confirm));
-    keycap(542,436,"B",&width);text(FONT_REGULAR,20,580,436,C_TEXT,ui_translate("Cancel"));
+    float dx,dy,dw=W-2.0f*UI_SAFE_X;if(dw>DS_DIALOG_MD)dw=DS_DIALOG_MD;
+    ds_dialog_frame(dw,230,C_RED,&dx,&dy);
+    text(FONT_BOLD,28,dx+32,dy+48,C_TEXT,ui_translate(title));
+    wrapped(FONT_REGULAR,21,dx+32,dy+94,dw-64,28,C_TEXT_DIM,message);
+    rrect(dx+32,dy+159,192,48,DS_RADIUS_SM,C_RED);float width;keycap(dx+46,dy+190,"A",&width);
+    text(FONT_BOLD,20,dx+84,dy+190,C_TEXT,ui_translate(confirm));
+    rrect(dx+244,dy+159,164,48,DS_RADIUS_SM,DS_BG_ELEVATED);
+    cv_rrect_outline(&cv,S(dx+244),S(dy+159),S(164),S(48),S(DS_RADIUS_SM),S(1),C_BORDER);
+    keycap(dx+258,dy+190,"B",&width);text(FONT_REGULAR,20,dx+296,dy+190,C_TEXT,ui_translate("Cancel"));
 }
 void ui_draw_switch_confirm(int selected)
 {
+    int logical_w=cv.h>0?(cv.w*720)/cv.h:1280;
+    int dw=logical_w-128;if(dw>800)dw=800;
+    int dx=(logical_w-dw)/2,dy=214;
+    int btn_w=(dw-96)*42/100,btn2_w=(dw-96)-btn_w;
     begin_frame();header(NULL);tabs();
     cv_unclip(&cv);cv_fill(&cv,0,0,cv.w,cv.h,ARGB(170,0,0,0));
-    card(240,214,800,300,UI_CORNER,false);
-    text(FONT_BOLD,28,272,260,C_TEXT,"Switch Application?");
-    wrapped(FONT_REGULAR,21,272,304,736,28,C_TEXT_DIM,
+    card((float)dx,(float)dy,(float)dw,300,UI_CORNER,false);
+    text(FONT_BOLD,28,(float)(dx+32),(float)(dy+46),C_TEXT,"Switch Application?");
+    wrapped(FONT_REGULAR,21,(float)(dx+32),(float)(dy+90),(float)(dw-64),28,C_TEXT_DIM,
         "Are you sure you want to launch this app? This will terminate the currently running app.");
-    text(FONT_REGULAR,21,272,390,C_TEXT,"Any unsaved progress may be lost.");
-    card(272,428,280,58,4,selected==0);
-    card(584,428,424,58,4,selected==1);
-    text(FONT_BOLD,22,300,466,C_TEXT,"Cancel");
-    text(FONT_BOLD,22,612,466,C_TEXT,"Switch App");
+    text(FONT_REGULAR,21,(float)(dx+32),(float)(dy+176),C_TEXT,"Any unsaved progress may be lost.");
+    card((float)(dx+32),(float)(dy+214),(float)btn_w,58,4,selected==0);
+    card((float)(dx+64+btn_w),(float)(dy+214),(float)btn2_w,58,4,selected==1);
+    text(FONT_BOLD,22,(float)(dx+60),(float)(dy+252),C_TEXT,"Cancel");
+    text(FONT_BOLD,22,(float)(dx+92+btn_w),(float)(dy+252),C_TEXT,"Switch App");
     static const struct hint hints[]={{"A","Select"},{"B","Cancel"}};footer(hints,2,NULL);
 }
 void ui_draw_list(const char *title,const struct ui_setting *rows,int n,int sel)
@@ -1189,12 +1389,15 @@ void ui_draw_performance(const char *grade,const char *mode,float shown,const ch
     const char *labels[]={"Connection","Stream","Shown FPS","Decode","Latency / RTT","Likely bottleneck"};
     char fps[40];snprintf(fps,sizeof(fps),shown>=0?"%.1f FPS":"Not measured",shown);
     const char *values[]={grade,mode,fps,decode,latency,cause};
+    float row_w=W-2*UI_SAFE_X;
+    float value_x=UI_SAFE_X+row_w*0.38f;
+    float value_w=UI_SAFE_X+row_w-value_x-24;
     for(int i=0;i<6;i++) {float y=191+(float)i*58;
-        rrect(64,y,W-128,50,2,C_CARD);
-        text(FONT_REGULAR,21,84,y+33,C_TEXT_DIM,ui_translate(labels[i]));
-        text_fit(FONT_BOLD,22,516,y+33,W-700,C_TEXT,ui_translate(values[i]));
+        rrect(UI_SAFE_X,y,row_w,50,UI_CORNER,C_CARD);
+        text_fit(FONT_REGULAR,21,UI_SAFE_X+20,y+33,value_x-UI_SAFE_X-36,C_TEXT_DIM,ui_translate(labels[i]));
+        text_fit(FONT_BOLD,22,value_x,y+33,value_w,C_TEXT,ui_translate(values[i]));
     }
-    if(note)wrapped(FONT_REGULAR,17,64,568,W-128,23,C_TEXT_DIM,ui_translate(note));
+    if(note)wrapped(FONT_REGULAR,17,UI_SAFE_X,568,row_w,23,C_TEXT_DIM,ui_translate(note));
     static const struct hint hints[]={{"A","Apply safe profile"},{"X","Run analysis / details"},{"B","Back"}};
     footer(can_apply?hints:hints+1,can_apply?3:2,NULL);
 }
@@ -1210,19 +1413,24 @@ void ui_draw_app_details(const struct ui_host *host,const struct ui_app *app,con
 {
     ui_set_page(UI_LIBRARY);begin_frame();header(host);tabs();
     breadcrumb(NULL,app->name);
-    app_tile(app,284,186,false,0);launch_source_tile(app,284,186,UI_RAIL_CARD_WIDTH,UI_RAIL_CARD_HEIGHT);
-    text_fit(FONT_BOLD,32,500,207,W-564,C_TEXT,app->name);
-    text_fit(FONT_REGULAR,19,500,244,W-564,C_TEXT_DIM,host && host->name?host->name:ui_translate("Your PC"));
-    text_fit(FONT_REGULAR,19,500,277,W-564,C_TEXT_DIM,ui_translate(profile));
+    float cover_x=W<1100?UI_SAFE_X:220.0f;
+    float info_x=cover_x+UI_RAIL_CARD_WIDTH+32.0f;
+    float info_w=W-info_x-UI_SAFE_X;
+    float value_x=info_x+info_w*0.52f;
+    float value_w=info_x+info_w-value_x-20.0f;
+    app_tile(app,cover_x,186,false,0);launch_source_tile(app,cover_x,186,UI_RAIL_CARD_WIDTH,UI_RAIL_CARD_HEIGHT);
+    text_fit(FONT_BOLD,32,info_x,207,info_w,C_TEXT,app->name);
+    text_fit(FONT_REGULAR,19,info_x,244,info_w,C_TEXT_DIM,host && host->name?host->name:ui_translate("Your PC"));
+    text_fit(FONT_REGULAR,19,info_x,277,info_w,C_TEXT_DIM,ui_translate(profile));
     const char *options[]={"Play","Stream Profile",app->favorite?"Remove favorite":"Add favorite","Performance history","Stop app","Launch coverage"};
     const char *actions[]={"Start now",profile,app->favorite?"Remove":"Add","Open history  >",app->running?"Stop on PC":"Not running",coverage};
     for(int i=0;i<(aurora_detail_enabled?7:6);i++) {
         float y=290+(float)i*49;bool enabled=i!=4 || app->running;
-        card(500,y,W-564,50,2,i==selected);
+        card(info_x,y,info_w,46,UI_CORNER,i==selected);
         const char *label=i==6?(aurora_detail_exists?"Aurora Shortcut":"Create Aurora Shortcut"):options[i];
         const char *value=i==6?(aurora_detail_exists?"Manage  >":"Create  >"):actions[i];
-        text_fit(FONT_BOLD,21,524,y+33,260,!enabled?C_TEXT_FAINT:i==selected?C_TEXT:C_TEXT_DIM,ui_translate(label));
-        text_fit(FONT_REGULAR,18,796,y+32,W-880,!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM,(i==1 || i==5)?value:ui_translate(value));
+        text_fit(FONT_BOLD,20,info_x+20,y+30,value_x-info_x-32,!enabled?C_TEXT_FAINT:i==selected?C_TEXT:C_TEXT_DIM,ui_translate(label));
+        text_fit(FONT_REGULAR,18,value_x,y+30,value_w,!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM,(i==1 || i==5)?value:ui_translate(value));
     }
     const char *action=selected==0?"Play now":selected==1?"Open stream settings":selected==2?(app->favorite?"Remove favorite":"Add favorite"):
         selected==3?"Open history":selected==5?"Open settings  >":selected==6?"Open Aurora Shortcut":app->running?"Stop app":"Not running";
@@ -1338,7 +1546,7 @@ void ui_draw_message(int which, const char *title, const char *body)
         dh = 190;
     begin_frame();
     header(NULL);
-    dialog(dw, dh, &dx, &dy);
+    ds_dialog_frame(dw, dh, color, &dx, &dy);
     cv_circle(&cv, S(dx + 70), S(dy + 72), S(28), WITH_ALPHA(color, 50));
     icon(which, dx + 70, dy + 72, 15, color);
     text_fit(FONT_BOLD, 26, dx + 120, dy + 72, dw - 160, C_TEXT, ui_translate(title));
@@ -1490,4 +1698,220 @@ void ui_launch_text(uint32_t *pixels,int width,int height)
         font_draw_fit(&panel,FONT_REGULAR,(float)size,(width-tw)/2,row+(i<LAUNCH_STATUS_COUNT?17:19),480,i==LAUNCH_STATUS_COUNT+2?C_ACCENT:C_TEXT_DIM,label);
     }
     font_set_sink(&cv,ui_glyph);
+}
+
+/* Reusable ContextMenu overlay: anchored near the focused item, clamped inside
+ * 16:9 / 4:3 safe area, scrollable for long lists, with consistent focus bar. */
+void ui_draw_context_menu(const char *title,const struct ui_setting *items,int count,int selected,float anchor_x,float anchor_y)
+{
+    if(!items || count<=0)return;
+    if(selected<0)selected=0;
+    if(selected>=count)selected=count-1;
+    int visible=count<UI_CONTEXT_MAX_VISIBLE?count:UI_CONTEXT_MAX_VISIBLE;
+    int first=selected-visible/2;
+    if(first<0)first=0;
+    if(first>count-visible)first=count-visible;
+
+    float mw=360.0f;
+    float max_w=W-2.0f*UI_SAFE_X;
+    if(mw>max_w)mw=max_w;
+    float header_h=(title && *title)?46.0f:12.0f;
+    float row_h=46.0f;
+    float footer_h=38.0f;
+    float mh=header_h+(float)visible*row_h+footer_h+8.0f;
+
+    float mx=anchor_x,my=anchor_y;
+    if(mx<UI_SAFE_X)mx=UI_SAFE_X;
+    if(mx+mw>W-UI_SAFE_X)mx=W-UI_SAFE_X-mw;
+    if(my<128.0f)my=128.0f;
+    if(my+mh>H-68.0f)my=H-68.0f-mh;
+    if(my<64.0f)my=64.0f;
+
+    cv_unclip(&cv);
+    cv_fill(&cv,0,0,cv.w,cv.h,ARGB(110,0,0,0));
+    rrect(mx,my,mw,mh,DS_RADIUS_LG,DS_BG_SURFACE);
+    cv_rrect_outline(&cv,S(mx),S(my),S(mw),S(mh),S(DS_RADIUS_LG),S(1),DS_BORDER_STRONG);
+    cv_fill(&cv,SI(mx+12),SI(my),SI(mw-24),SI(3),C_ACCENT);
+
+    if(title && *title) {
+        text_fit(FONT_BOLD,18,mx+18,my+31,mw-36,C_TEXT,ui_translate(title));
+        cv_fill(&cv,SI(mx+14),SI(my+header_h-2),SI(mw-28),1,WITH_ALPHA(C_BORDER,160));
+    }
+
+    for(int i=first;i<first+visible;i++) {
+        float ry=my+header_h+4.0f+(float)(i-first)*row_h;
+        bool on=i==selected;
+        if(on) {
+            rrect(mx+8,ry,mw-16,row_h-4,DS_RADIUS_SM,C_CARD_SEL);
+            cv_rrect_outline(&cv,S(mx+8),S(ry),S(mw-16),S(row_h-4),S(DS_RADIUS_SM),S(2),C_ACCENT);
+            ui_focus_mark(UI_SETTINGS+10,i);
+        }
+        bool has_val=items[i].value && items[i].value[0];
+        float label_w=has_val?(mw-136.0f):(mw-40.0f);
+        text_fit(on?FONT_BOLD:FONT_REGULAR,18,mx+20,ry+28,label_w,on?C_TEXT:C_TEXT_DIM,ui_translate(items[i].label));
+        if(has_val)text_right(FONT_REGULAR,15,mx+mw-20,ry+28,on?C_TEXT:C_TEXT_FAINT,ui_translate(items[i].value));
+    }
+
+    float fy=my+mh-footer_h;
+    cv_fill(&cv,SI(mx+14),SI(fy),SI(mw-28),1,WITH_ALPHA(C_BORDER,140));
+    float kw=0;
+    keycap(mx+16,fy+26,"A",&kw);
+    text(FONT_REGULAR,14,mx+22+kw,fy+26,C_TEXT_DIM,ui_translate("Select"));
+    float bx=mx+mw-110;
+    keycap(bx,fy+26,"B",&kw);
+    text(FONT_REGULAR,14,bx+kw+6,fy+26,C_TEXT_DIM,ui_translate("Back"));
+}
+
+/* MoonX360 Smart Virtual Keyboard — native Design System renderer (16:9 & 4:3 CRT). */
+void ui_draw_smart_keyboard(const struct sk_state *sk)
+{
+    if(!sk)return;
+    begin_frame();
+    header(NULL);
+    bool compact=W<1100.0f;
+    float pw=W-2.0f*UI_SAFE_X;
+    if(pw>1020.0f)pw=1020.0f;
+    float px=(W-pw)*0.5f;
+    float py=104.0f;
+    float ph=544.0f;
+
+    /* Main keyboard surface */
+    rrect(px,py,pw,ph,DS_RADIUS_LG,DS_BG_SURFACE);
+    cv_rrect_outline(&cv,S(px),S(py),S(pw),S(ph),S(DS_RADIUS_LG),S(1),DS_BORDER_STRONG);
+    cv_fill(&cv,SI(px+16),SI(py),SI(pw-32),SI(3),C_ACCENT);
+
+    /* 1. Header: title, subtitle, and mode/language/shift badges */
+    const char *title=sk->title[0]?ui_translate(sk->title):ui_translate("Text Input");
+    text_fit(FONT_BOLD,24,px+24,py+38,pw-290,C_TEXT,title);
+    if(sk->subtitle[0])
+        text_fit(FONT_REGULAR,15,px+24,py+60,pw-290,C_TEXT_DIM,ui_translate(sk->subtitle));
+
+    static const char *lang_tags[]={"EN","PT-BR","ES"};
+    const char *page_tag=sk->page==SK_PAGE_NUMERIC?"IPv4":
+                         sk->page==SK_PAGE_SYMBOLS?"123 / #":
+                         sk->page==SK_PAGE_ACCENTS?"\xc3\x81\xc3\x89\xc3\x87":
+                         sk->shift==SK_SHIFT_CAPS?"CAPS":
+                         sk->shift==SK_SHIFT_ONCE?"SHIFT":"ABC";
+    char badge[64];
+    if(sk->dual_stick)
+        snprintf(badge,sizeof(badge),"DUAL-STICK  |  %s  |  %s",page_tag,lang_tags[sk->lang%SK_LANG_COUNT]);
+    else
+        snprintf(badge,sizeof(badge),"%s  |  %s",page_tag,lang_tags[sk->lang%SK_LANG_COUNT]);
+    float bw=text_w(FONT_BOLD,14,badge)+22.0f;
+    rrect(px+pw-24-bw,py+18,bw,28,DS_RADIUS_SM,DS_BG_ELEVATED);
+    cv_rrect_outline(&cv,S(px+pw-24-bw),S(py+18),S(bw),S(28),S(DS_RADIUS_SM),S(1),C_BORDER);
+    text_center(FONT_BOLD,14,px+pw-24-bw*0.5f,py+37,C_ACCENT,badge);
+
+    /* 2. Editor field with UTF-8 horizontal scroll & high-contrast cursor */
+    float ex=px+24,ey=py+74,ew=pw-48,eh=56;
+    rrect(ex,ey,ew,eh,DS_RADIUS_MD,DS_BG_BASE);
+    cv_rrect_outline(&cv,S(ex),S(ey),S(ew),S(eh),S(DS_RADIUS_MD),S(1),
+                     sk->error[0]?C_RED:DS_BORDER_STRONG);
+
+    char display[SK_TEXT_MAX],prefix_buf[SK_TEXT_MAX];
+    int tlen=(int)strlen(sk->text);
+    if(sk->mode==SK_MODE_PASSWORD) {
+        int chars=0,c_chars=0;
+        for(int i=0;i<tlen;i++)if(!sk_is_utf8_cont((unsigned char)sk->text[i])) {
+            if(i<sk->cursor)c_chars++;
+            if(chars<SK_TEXT_MAX-1)display[chars++]='*';
+        }
+        display[chars]='\0';
+        memcpy(prefix_buf,display,(size_t)c_chars);
+        prefix_buf[c_chars]='\0';
+    } else {
+        memcpy(display,sk->text,(size_t)(tlen+1));
+        int clen=sk->cursor<=tlen?sk->cursor:tlen;
+        memcpy(prefix_buf,sk->text,(size_t)clen);
+        prefix_buf[clen]='\0';
+    }
+    float text_area=ew-92.0f;
+    float cur_x=text_w(FONT_BOLD,22,prefix_buf);
+    float scroll_x=cur_x>text_area-12.0f?cur_x-(text_area-12.0f):0.0f;
+    cv_clip(&cv,SI(ex+12),SI(ey+4),SI(text_area+8),SI(eh-8));
+    text(FONT_BOLD,22,ex+16-scroll_x,ey+36,C_TEXT,display);
+    cv_fill(&cv,SI(ex+16+cur_x-scroll_x),SI(ey+12),SI(2),SI(32),C_ACCENT);
+    cv_unclip(&cv);
+
+    char counter[24];
+    snprintf(counter,sizeof(counter),"%d/%d",tlen,sk->max_bytes-1);
+    text_right(FONT_REGULAR,14,ex+ew-12,ey+34,C_TEXT_FAINT,counter);
+    if(sk->error[0])
+        text_fit(FONT_BOLD,14,ex+4,ey+eh+17,ew-8,C_RED,ui_translate(sk->error));
+
+    /* 3. Suggestion bar (3 stable slots with real LB/RB icons) */
+    float sy=ey+eh+22,sh=42;
+    if(sk->mode!=SK_MODE_PASSWORD && sk->mode!=SK_MODE_IP) {
+        ui_button(&cv,"LB",SI(ex),SI(sy+7),SI(34),SI(26));
+        ui_button(&cv,"RB",SI(ex+ew-34),SI(sy+7),SI(34),SI(26));
+        float slot_gap=10.0f;
+        float bar_x=ex+44.0f,bar_w=ew-88.0f;
+        float slot_w=(bar_w-slot_gap*2.0f)/3.0f;
+        for(int i=0;i<SK_MAX_SUGGESTIONS;i++) {
+            float sx=bar_x+(float)i*(slot_w+slot_gap);
+            bool has=i<sk->suggestions.count;
+            bool on=has && sk->zone==SK_ZONE_SUGGESTIONS && sk->sug_index==i;
+            rrect(sx,sy,slot_w,sh,DS_RADIUS_SM,on?C_CARD_SEL:DS_BG_ELEVATED);
+            cv_rrect_outline(&cv,S(sx),S(sy),S(slot_w),S(sh),S(DS_RADIUS_SM),S(on?2:1),
+                             on?C_ACCENT:WITH_ALPHA(C_BORDER,has?180:85));
+            if(on)ui_focus_mark(UI_SETTINGS+20,i);
+            if(has)
+                text_center(on?FONT_BOLD:FONT_REGULAR,17,sx+slot_w*0.5f,sy+27,on?C_TEXT:C_TEXT_DIM,sk->suggestions.items[i]);
+            else if(i==1 && !sk->suggestions.count)
+                text_center(FONT_REGULAR,14,sx+slot_w*0.5f,sy+26,C_TEXT_FAINT,
+                            ui_translate(sk->predictions_enabled?"Type for suggestions":"Suggestions off"));
+        }
+    }
+
+    /* 4. Key Grid (QWERTY / Symbols / Accents / Numeric IPv4) */
+    float gy=sy+sh+16;
+    if(sk->page==SK_PAGE_NUMERIC) {
+        float kw=128.0f,kh=58.0f,gap=12.0f;
+        float gw=kw*3.0f+gap*2.0f;
+        float gx=px+(pw-gw)*0.5f;
+        for(int r=0;r<SK_NUM_ROWS;r++)for(int c=0;c<SK_NUM_COLS;c++) {
+            float kx=gx+(float)c*(kw+gap),ky=gy+(float)r*(kh+gap);
+            bool on=sk->zone==SK_ZONE_KEYS && sk->row==r && sk->col==c;
+            const char *lbl=sk_key_label(sk->page,sk->shift,r,c);
+            rrect(kx,ky,kw,kh,DS_RADIUS_MD,on?C_CARD_SEL:DS_BG_ELEVATED);
+            cv_rrect_outline(&cv,S(kx),S(ky),S(kw),S(kh),S(DS_RADIUS_MD),S(on?DS_FOCUS_BORDER:1),on?C_ACCENT:C_BORDER);
+            if(on)ui_focus_mark(UI_SETTINGS+21,r*SK_NUM_COLS+c);
+            text_center(FONT_BOLD,24,kx+kw*0.5f,ky+38,on?C_TEXT:C_TEXT_DIM,lbl);
+        }
+    } else {
+        float gap=compact?7.0f:10.0f;
+        float kw=(ew-gap*9.0f)/10.0f;
+        float kh=74.0f;
+        for(int r=0;r<SK_COMPACT_ROWS;r++)for(int c=0;c<SK_COMPACT_COLS;c++) {
+            float kx=ex+(float)c*(kw+gap),ky=gy+(float)r*(kh+gap);
+            bool left_on=sk->zone==SK_ZONE_KEYS && sk->row==r && sk->col==c;
+            bool right_on=sk->dual_stick && sk->right_row==r && sk->right_col==c;
+            const char *lbl=sk_compact_key_label(sk->page,sk->shift,r,c);
+            uint32_t fill=left_on?C_CARD_SEL:right_on?HEX(0x1E3348):DS_BG_ELEVATED;
+            uint32_t border=left_on?C_ACCENT:right_on?DS_BTN_X:C_BORDER;
+            rrect(kx,ky,kw,kh,DS_RADIUS_MD,fill);
+            cv_rrect_outline(&cv,S(kx),S(ky),S(kw),S(kh),S(DS_RADIUS_MD),S((left_on||right_on)?DS_FOCUS_BORDER:1),border);
+            if(left_on)ui_focus_mark(UI_SETTINGS+22,r*SK_COMPACT_COLS+c);
+            text_center(FONT_BOLD,compact?21.0f:24.0f,kx+kw*0.5f,ky+47,
+                        (left_on||right_on)?C_TEXT:C_TEXT_DIM,lbl);
+        }
+        if(sk->dual_stick) {
+            float mid_x=ex+5.0f*kw+4.5f*gap;
+            cv_fill(&cv,SI(mid_x),SI(gy+4),SI(1),SI(kh*3.0f+gap*2.0f-8),WITH_ALPHA(C_ACCENT,120));
+        }
+        text_center(FONT_REGULAR,13,px+pw*0.5f,gy+kh*3.0f+gap*2.0f+24,C_TEXT_FAINT,
+                    ui_translate("Right Stick moves cursor  |  Hold X repeats Backspace  |  R3 toggles experimental Dual-Stick"));
+    }
+
+    /* 5. Footer with real Xbox 360 graphic icons */
+    if(sk->page==SK_PAGE_NUMERIC) {
+        static const struct hint num_hints[]={{"A","Type"},{"X","Delete"},{"Start","Confirm"},{"B","Cancel"}};
+        footer(num_hints,4,NULL);
+    } else if(compact) {
+        static const struct hint c_hints[]={{"A","Type"},{"X","Delete"},{"Y","Space"},{"RT","Symbols"},{"Start","Done"},{"B","Cancel"}};
+        footer(c_hints,6,NULL);
+    } else {
+        static const struct hint w_hints[]={{"A","Type"},{"X","Delete"},{"Y","Space"},{"LT","Shift"},{"RT","Symbols"},{"Start","Done"},{"B","Cancel"}};
+        footer(w_hints,7,NULL);
+    }
 }

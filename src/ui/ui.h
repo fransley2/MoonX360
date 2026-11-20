@@ -88,6 +88,7 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
 void ui_set_exit_shortcut(int choice);
 /* Release the optional static home-screen cache before allocating stream buffers. */
 void ui_drop_main_cache(void);
+void ui_library_art_window(int count,int selected,int *first,int *end);
 void ui_draw_log(const char *title, const char *const *lines, int count, int first);
 
 /* Platform: shows the canvas on screen (present_xenon.c / the PC preview). */
@@ -115,6 +116,7 @@ void ui_draw_advisor(const struct ui_stat *rows,int n,const char *note,bool can_
 int ui_dashboard_move(int selected,int dx,int dy,int count);
 void ui_set_page(int page);
 void ui_set_language(int language);
+int ui_get_language(void);
 const char *ui_translate(const char *english);
 /* Home: four destinations, one contextual action, up to eight recents, four shortcuts. */
 int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents);
@@ -148,3 +150,15 @@ void ui_launch_text(uint32_t *pixels,int width,int height);
 bool ui_library_tick(uint32_t now);
 
 bool ui_home_tick(uint32_t now);
+
+/* Non-blocking Xbox-style toast notification (top-right safe area). */
+void ui_toast_show(int kind, const char *text, uint32_t now_ms, uint32_t duration_ms);
+bool ui_toast_tick(uint32_t now_ms);
+void ui_toast_clear(void);
+
+/* Reusable safe-area clamped context menu anchored near the focused item. */
+void ui_draw_context_menu(const char *title, const struct ui_setting *items, int count, int selected, float anchor_x, float anchor_y);
+
+/* MoonX360 Smart Virtual Keyboard (16:9 & 4:3 CRT, Design System integrated). */
+struct sk_state;
+void ui_draw_smart_keyboard(const struct sk_state *sk);

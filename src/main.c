@@ -28,11 +28,21 @@
 #include "config.h"
 #include "gpu.h"
 #include "hw.h"
+#include "crt_output.h"
 #include "platform.h"
 
 void plat_display_info(char *out,size_t capacity) {snprintf(out,capacity,"Physical output is configured in XeLL");}
 int plat_network_link(void){return CONSOLE_LINK_UNKNOWN;}
 int plat_crt_output_status(void){return 0;}
+void plat_crt_output_query(struct crt_output_status *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    crt_output_evaluate(out, 0);
+}
+bool plat_crt_240p_enter(int width, int height){(void)width;(void)height;return false;}
+bool plat_crt_240p_exit(void){return true;}
+bool plat_crt_240p_active(void){return false;}
 int plat_display_refresh_x100(void) {return 6000;}
 bool plat_system_ui_active(void) {return false;}
 bool plat_power_available(void) {return false;}

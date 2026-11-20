@@ -166,6 +166,61 @@ int font_draw(canvas_t *c, int face, float px, int x, int y, uint32_t argb, cons
     return (int)draw_run(c, face, (int)(px + 0.5f), (float)x, y, argb, text, NULL);
 }
 
+static float tabular_digit_advance(int face, int size)
+{
+    float widest = 0;
+    for (uint32_t d = '0'; d <= '9'; d++) {
+        const struct glyph *g = get_glyph(face, size, d);
+        if (g && g->advance > widest)
+            widest = g->advance;
+    }
+    return widest;
+}
+
+int font_text_width_tabular(int face, float px, const char *text)
+{
+    int size = (int)(px + 0.5f);
+    float digit_w = tabular_digit_advance(face, size);
+    float w = 0;
+
+    while (*text) {
+        uint32_t cp = next_cp(&text);
+        if (cp >= '0' && cp <= '9') {
+            w += digit_w;
+        } else {
+            const struct glyph *g = get_glyph(face, size, cp);
+            if (g)
+                w += g->advance;
+        }
+    }
+    return (int)ceilf(w);
+}
+
+int font_draw_tabular(canvas_t *c, int face, float px, int x, int y, uint32_t argb, const char *text)
+{
+    int size = (int)(px + 0.5f);
+    float digit_w = tabular_digit_advance(face, size);
+    float pen = (float)x;
+
+    while (*text) {
+        uint32_t cp = next_cp(&text);
+        const struct glyph *g = get_glyph(face, size, cp);
+        if (g == NULL)
+            continue;
+        float adv = (cp >= '0' && cp <= '9') ? digit_w : g->advance;
+        float offset = (cp >= '0' && cp <= '9') ? (digit_w - g->advance) * 0.5f : 0.0f;
+        if (c && g->bitmap) {
+            int gx = (int)floorf(pen + offset + 0.5f) + g->xoff, gy = y + g->yoff;
+            if (c == sink_canvas && glyph_sink)
+                glyph_sink(c, gx, gy, g->bitmap, g->w, g->h, g->w, argb);
+            else
+                cv_mask(c, gx, gy, g->bitmap, g->w, g->h, g->w, argb);
+        }
+        pen += adv;
+    }
+    return (int)ceilf(pen);
+}
+
 int font_draw_fit(canvas_t *c, int face, float px, int x, int y, int max_w, uint32_t argb, const char *text)
 {
     int size = (int)(px + 0.5f);

@@ -43,3 +43,37 @@ to distribute an SDK-linked executable. Review the actual SDK terms and the
 GPL's applicable linking/System Library provisions for that distribution.
 See the [GNU GPLv3 text](https://www.gnu.org/licenses/gpl.en.html) and
 [GNU license FAQ](https://www.gnu.org/licenses/gpl-faq.en.html).
+
+## Optional Multiplex360 VMX experiment
+
+`xdk/ffmpeg_xbox/multiplex_qpel.c` and `multiplex_chroma.c` adapt only the
+pixel kernels from HG-ERIK/multiplex360, commit
+`bda33b8602b9a0b9869effdd5cd7c0fadcb34216`:
+`external/ffmpeg360/libavcodec/xbox360/h264_qpel_xb.c` and
+`h264_chroma_xb.c`. The repository supplies GPL-3.0; see this project's GPL-3.0
+LICENSE and <https://github.com/HG-ERIK/multiplex360/tree/bda33b8602b9a0b9869effdd5cd7c0fadcb34216>.
+The modified files identify their origin and changes. No FFmpeg 0.7 context,
+initialization, threading or complete decoder is imported. These routines are
+compiled only with `XDK_VMX_AB_EXPERIMENT=1` and remain offline benchmark
+candidates; they are not installed in streaming dispatch tables.
+
+## Optional `t240.xex` / 240p CRT Ecosystem Interoperability Notes
+
+MoonX360's optional CRT Retro support was designed alongside technical
+reference inspection of:
+
+- <https://github.com/Tupapa2712/xbox360-240p-plugin> (GNU AGPLv3)
+- <https://github.com/danibiker/Salvia> (GNU AGPLv3)
+
+Because MoonX360 is licensed under GNU GPLv3 and those reference projects are
+licensed under GNU AGPLv3, **no AGPLv3 source code was copied into MoonX360**:
+
+- External `t240.xex` support in `xdk/src/crt_output_bridge.h/.cpp` and
+  `src/crt_output.h` implements a clean-room client of the documented `S240` v3
+  in-memory beacon struct (`magic = 0x53323430`, `version = 3`) in `.data`.
+- MoonX360 does not embed kernel hooks, direct Xenos MMIO register writes, or
+  bundled copies of `t240.xex`. The user installs and updates any external
+  DashLaunch plugin independently.
+- `ps_yuv_sharp_bilinear_src` in `xdk/src/gfx_xdk.cpp` is an original
+  single-pass Direct3D 9 HLSL YUV sharp-bilinear pixel shader written directly
+  for MoonX360's 3-plane Y/U/V texture pipeline.

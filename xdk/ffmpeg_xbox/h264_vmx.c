@@ -24,6 +24,12 @@
 #include "libavcodec/h264qpel.h"
 #include "libavcodec/videodsp.h"
 #include "xbox_dsp.h"
+#ifndef XDK_VMX_AB_EXPERIMENT
+#define XDK_VMX_AB_EXPERIMENT 0
+#endif
+#if XDK_VMX_AB_EXPERIMENT
+#include "vmx_ab.h"
+#endif
 
 int ff_xbox_vmx_flags = 0;
 unsigned ff_xbox_loopfilter_mask = XVMX_LF_ALL;
@@ -1021,6 +1027,29 @@ static int test_idct_batches(H264DSPContext *dc, void (*log)(const char *))
     }
     return failures;
 }
+
+#if XDK_VMX_AB_EXPERIMENT
+/* Offline only, with every decoder closed. Copy the actual FFmpeg 1.2 C
+ * tables and the raw current VMX implementations; no selftest mask hides a
+ * failing entry from the experiment. Streaming init hooks stay unchanged. */
+void ff_xbox_vmx_ab_tables(struct vmx_ab_tables *reference,struct vmx_ab_tables *moon)
+{
+    H264QpelContext q;
+    H264ChromaContext c;
+    int saved=ff_xbox_vmx_flags,s,op,p;
+    ff_xbox_vmx_flags=0;
+    ff_h264qpel_init(&q,8);ff_h264chroma_init(&c,8);
+    ff_xbox_vmx_flags=saved;
+    for(s=0;s<2;s++)for(op=0;op<2;op++) {
+        for(p=0;p<16;p++) {
+            reference->qpel[s][op][p]=op?q.avg_h264_qpel_pixels_tab[s][p]:q.put_h264_qpel_pixels_tab[s][p];
+            moon->qpel[s][op][p]=vmx_qpel[s][op][p];
+        }
+        reference->chroma[s][op]=op?c.avg_h264_chroma_pixels_tab[s]:c.put_h264_chroma_pixels_tab[s];
+        moon->chroma[s][op]=vmx_chroma[s][op];
+    }
+}
+#endif
 
 /* LF_TEST_BEGIN: also extracted unchanged into the host reference fixture. */
 static int test_loopfilters(H264DSPContext *dc, void (*log)(const char *))

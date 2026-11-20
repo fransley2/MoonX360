@@ -77,6 +77,9 @@ IDENTITY_DEFS=['/D','XDK_WORKER_MAP_PREVIOUS='+str(int(WORKER_MAP=='previous')),
                '/D','XDK_H264_REFERENCE_MODE='+H264_REFERENCE_MODE,
                '/D','XDK_H264_NO_RFI='+H264_NO_RFI,
                '/D','XDK_H264_SINGLE_SLICE_REQUEST='+H264_SINGLE_SLICE_REQUEST]
+VMX_AB_EXPERIMENT=os.environ.get('XDK_VMX_AB_EXPERIMENT','0')
+if VMX_AB_EXPERIMENT not in ('0','1'):raise SystemExit('XDK_VMX_AB_EXPERIMENT must be 0 or 1')
+IDENTITY_DEFS += ['/D','XDK_VMX_AB_EXPERIMENT='+VMX_AB_EXPERIMENT]
 MBEDTLS_DEFS = ["/I", os.path.join(MBEDTLS, "include"), "/I", XDK_DIR,
                 "/D", 'MBEDTLS_USER_CONFIG_FILE="mbedtls_config_xdk.h"']
 
@@ -269,7 +272,7 @@ def target_app():
     shared = [os.path.join(ROOT, "src", f) for f in
               ("app.c", "config.c", "crypto.c", "http.c", "gamestream.c", "mdns.c", "mdns_net.c", "host_cache.c", "wake_net.c",
                "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c")]
-    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk")]
+    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk", "crt_output_bridge")]
     flags = HOT + IDENTITY_DEFS + ["/FIxdk_compat.h", "/I", os.path.join(MLC, "src"), "/I", os.path.join(OPUS, "include")] + MBEDTLS_DEFS
     srcs = [(s, ["/TP"]) for s in shared + platform]
     # Only the video module sees FFmpeg's headers: FFmpeg's root has its own config.h.
@@ -292,6 +295,14 @@ def target_xex():
         raise SystemExit('missing verified FFmpeg build: ' + manifest_path)
     with open(manifest_path) as f:
         ffmpeg_build = json.load(f)
+    if ffmpeg_build.get('vmx_ab_experiment',0)!=int(VMX_AB_EXPERIMENT):
+        raise SystemExit('FFmpeg VMX A/B mode changed; rebuild the isolated FFmpeg output')
+    if VMX_AB_EXPERIMENT=='1':
+        for name in ('h264_vmx.c','vmx_ab.h','vmx_ab_store.h','vmx_ab.c','multiplex_qpel.c','multiplex_chroma.c'):
+            path=os.path.join(XDK_DIR,'ffmpeg_xbox',name)
+            with open(path,'rb') as f:current=hashlib.sha256(f.read()).hexdigest()
+            if ffmpeg_build.get('vmx_ab_inputs',{}).get(name)!=current:
+                raise SystemExit('Unverified VMX A/B source: '+name+'; rebuild isolated FFmpeg')
     with open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),'rb') as f:
         worker_hash = hashlib.sha256(f.read()).hexdigest()
     if (ffmpeg_build.get('profile') != PROFILE or ffmpeg_build.get('worker_sha256') != worker_hash

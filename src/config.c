@@ -11,15 +11,17 @@
 void config_defaults(struct config *c)
 {
     memset(c, 0, sizeof(*c));
+    desktop_defaults(&c->desktop);
     c->ui_motion = true;
     c->menu_sounds = true;c->menu_volume = 18;
     c->width = 1280;
     c->height = 720;
     c->fps = CONFIG_FPS_DEFAULT;
-    c->bitrate_kbps = 12000;
+    c->bitrate_kbps = 6000;
     c->packet_size = 1024;
-    c->fast_decode = true;
+    c->fast_decode = false;
     c->renderer = 0;
+    c->decoder_backend = VIDEO_DECODER_FFMPEG;
     c->vsync = true;
     c->sops = true;
     c->history_enabled = true;
@@ -54,7 +56,8 @@ void config_load(struct config *c)
 {
     char *text, *line, *save=NULL;
     bool have_overlay_mode=false, have_profile=false, have_left_min=false, have_right_min=false;
-    bool have_refresh_ms=false;
+    bool have_refresh_ms=false,have_desktop_speed=false,have_desktop_acceleration=false;
+    bool have_mouse_speed=false,have_mouse_acceleration=false;
 
     config_defaults(c);
     text = storage_read("moonlight.ini", NULL);
@@ -86,6 +89,11 @@ void config_load(struct config *c)
         else if (!strcmp(line,"refresh_smoothing"))c->refresh_smoothing=!strcmp(eq+1,"1")?1:0;
         else if (!strcmp(line,"smoothing_strength"))c->smoothing_strength=!strcmp(eq+1,"1")?1:0;
         else if (!strcmp(line,"crt_clarity"))c->crt_clarity=!strcmp(eq+1,"1");
+        else if (!strcmp(line,"crt_scaling")){int n=atoi(eq+1);c->crt_scaling=n>=0 && n<CRT_SCALE_COUNT?n:CRT_SCALE_AUTO;}
+        else if (!strcmp(line,"crt_aspect")){int n=atoi(eq+1);c->crt_aspect=n>=0 && n<CRT_ASPECT_COUNT?n:CRT_ASPECT_4_3;}
+        else if (!strcmp(line,"crt_pos_x")){int n=atoi(eq+1);c->crt_pos_x=n<-20?-20:n>20?20:n;}
+        else if (!strcmp(line,"crt_pos_y")){int n=atoi(eq+1);c->crt_pos_y=n<-20?-20:n>20?20:n;}
+        else if (!strcmp(line,"crt_origin_preset")){int n=atoi(eq+1);c->crt_origin_preset=config_is_crt_factory(n)?n:0;}
         else if (!strcmp(line,"crt_display_backup"))c->crt_display_backup=!strcmp(eq+1,"1");
         else if (!strcmp(line,"previous_display_mode")){int n=atoi(eq+1);c->previous_display_mode=n>=0 && n<=4?n:0;}
         else if (!strcmp(line,"previous_ui_layout"))c->previous_ui_layout=!strcmp(eq+1,"1");
@@ -103,7 +111,8 @@ void config_load(struct config *c)
         else if (!strcmp(line,"performance_overlay")) {
             static const char *names[]={"off","basic","detailed","developer"};
             c->overlay_mode=0;have_overlay_mode=true;
-            for(int i=0;i<4;i++)if(!strcmp(eq+1,names[i]))c->overlay_mode=i;
+            if(!strcmp(eq+1,"simple"))c->overlay_mode=1;
+            else for(int i=0;i<4;i++)if(!strcmp(eq+1,names[i]))c->overlay_mode=i;
         }
         else if (!strcmp(line, "adaptive_quality")) c->adaptive_quality=atoi(eq+1)==1;
         else if (!strcmp(line, "video_refresh_interval") && !have_refresh_ms) {
@@ -154,6 +163,8 @@ void config_load(struct config *c)
             c->packet_size = atoi(eq + 1);
         else if (!strcmp(line, "fast_decode"))
             c->fast_decode = fast_decode_parse(eq + 1);
+        else if (!strcmp(line, "decoder_backend"))
+            c->decoder_backend = video_decoder_parse(eq + 1);
         else if (!strcmp(line, "renderer")) {
             if (!strcmp(eq + 1, "cpu"))
                 c->renderer = 1;
@@ -186,14 +197,29 @@ void config_load(struct config *c)
             c->history_enabled=atoi(eq+1)!=0;
         else if (!strcmp(line, "diagnostic_log"))
             c->diagnostic_log = atoi(eq + 1) != 0;
-        else if (!strcmp(line,"mouse_speed")){int v=atoi(eq+1);c->mouse_speed=v<25?25:v>200?200:v;}
-        else if (!strcmp(line,"mouse_acceleration"))c->mouse_acceleration=atoi(eq+1)!=0;
+        else if(!strcmp(line,"desktop_start"))c->desktop_start=!strcmp(eq+1,"1");
+        else if(!strcmp(line,"desktop_host")){if(wake_identity_valid(eq+1))snprintf(c->desktop_host,sizeof(c->desktop_host),"%s",eq+1);}
+        else if(!strcmp(line,"desktop_app")){int v=atoi(eq+1);c->desktop_app=v>0?v:0;}
+        else if(!strcmp(line,"desktop_speed")){have_desktop_speed=true;int v=atoi(eq+1);c->desktop.speed=v<25?25:v>200?200:v;}
+        else if(!strcmp(line,"desktop_deadzone")){int v=atoi(eq+1);c->desktop.deadzone=v<0?0:v>30?30:v;}
+        else if(!strcmp(line,"desktop_acceleration")){have_desktop_acceleration=true;c->desktop.acceleration=!strcmp(eq+1,"1");}
+        else if(!strcmp(line,"desktop_precision")){int v=atoi(eq+1);c->desktop.precision=v<10?10:v>75?75:v;}
+        else if(!strcmp(line,"desktop_scroll")){int v=atoi(eq+1);c->desktop.scroll_speed=v<25?25:v>200?200:v;}
+        else if(!strcmp(line,"desktop_keyboard")){int v=atoi(eq+1);c->desktop.keyboard=v>=0 && v<=2?v:0;}
+        else if(!strcmp(line,"desktop_kb_style")){int v=atoi(eq+1);c->desktop.kb_style=v==1?1:0;}
+        else if(!strcmp(line,"desktop_kb_mode")){int v=atoi(eq+1);c->desktop.kb_mode=v==1?1:0;}
+        else if(!strncmp(line,"desktop_map_",12)){char *end;long slot=strtol(line+12,&end,10);if(end!=line+12 && !*end && slot>=0 && slot<DESKTOP_BINDINGS){char *tail;long v=strtol(eq+1,&tail,10);if(tail!=eq+1 && !*tail && v>=0 && v<DA_COUNT)desktop_remap(&c->desktop,(int)slot,(int)v);}}
+        else if (!strcmp(line,"mouse_speed")){have_mouse_speed=true;int v=atoi(eq+1);c->mouse_speed=v<25?25:v>200?200:v;}
+        else if (!strcmp(line,"mouse_acceleration")){have_mouse_acceleration=true;c->mouse_acceleration=atoi(eq+1)!=0;}
         else if (!strcmp(line,"mouse_scroll_ms")){int v=atoi(eq+1);c->mouse_scroll_ms=v<50?50:v>400?400:v;}
         else if (!strcmp(line, "audio_mode")) c->audio_mode=atoi(eq+1)==1?1:0;
         else if (!strcmp(line, "local_audio"))
             c->local_audio = atoi(eq + 1) != 0;
     }
     free(text);
+    /* Read-only migration; saved Desktop values win regardless of INI order. */
+    if(!have_desktop_speed && have_mouse_speed)c->desktop.speed=c->mouse_speed;
+    if(!have_desktop_acceleration && have_mouse_acceleration)c->desktop.acceleration=c->mouse_acceleration;
     if(!have_left_min)c->left_min=c->stick_deadzone;
     if(!have_right_min)c->right_min=c->stick_deadzone;
     if(c->display_mode<0 || c->display_mode>4)c->display_mode=0;
@@ -204,8 +230,10 @@ void config_load(struct config *c)
     c->right_max=c->right_max<50?50:c->right_max>100?100:c->right_max;
     if(!have_overlay_mode)c->overlay_mode=c->stats_overlay?3:0;
     c->stats_overlay=c->overlay_mode!=0;
-    if (!((c->width==640 && c->height==480) ||
+    if (!((c->width==640 && c->height==240) ||
+          (c->width==640 && c->height==480) ||
           (c->width==854 && c->height==480) ||
+          (c->width==960 && c->height==540) ||
           (c->width==1280 && c->height==720) ||
           (c->width==1920 && c->height==1080))) {
         c->width=1280;
@@ -228,8 +256,10 @@ void config_load(struct config *c)
     if(have_profile && !c->user_profile[0] &&
        c->stream_profile==CONFIG_PROFILE_QUALITY &&
        c->width==1280 && c->height==720 && c->fps==60 && c->bitrate_kbps==35000)
-        c->bitrate_kbps=18000;
+        c->bitrate_kbps=10000;
     c->stream_profile=config_video_preset(c);
+    if(have_profile && c->stream_profile==CONFIG_PROFILE_WIRELESS && c->refresh_interval_ms==5000)
+        c->refresh_interval_ms=0;
 }
 
 size_t config_serialize(const struct config *c,char *buf,size_t capacity)
@@ -249,6 +279,8 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "fast_decode=%d\n"
         "# gpu (default), cpu, or cpu_hwcolor (experimental)\n"
         "renderer=%s\n"
+        "# next-session decoder: ffmpeg (default), system_gpu (unavailable), auto\n"
+        "decoder_backend=%s\n"
         "# GPU renderer: wait for vertical blank before showing a frame (no tearing)\n"
         "vsync=%d\n"
         "sops=%d\n"
@@ -260,19 +292,29 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "diagnostic_log=%d\n"
         "overlay_mode=%d\nimage_quality=%d\nhistory_enabled=%d\n"
         "user_profile=%s\nlaunch_cover_ms=%d\nlaunch_animation=%d\nstream_profile=%s\nmdns_discovery=%s\nperformance_overlay=%s\n"
-        "ui_safe_area=%d\nrefresh_smoothing=%d\nsmoothing_strength=%d\ncrt_clarity=%d\ncrt_display_backup=%d\nprevious_display_mode=%d\nprevious_ui_layout=%d\nprevious_safe_area=%d\nadaptive_quality=%d\nvideo_refresh_interval_ms=%d\ndisplay_mode=%d\nui_layout=%d\nlanguage=%d\nthread_layout=%d\ndecode_workers=%d\n"
+        "ui_safe_area=%d\nrefresh_smoothing=%d\nsmoothing_strength=%d\ncrt_clarity=%d\ncrt_scaling=%d\ncrt_aspect=%d\ncrt_pos_x=%d\ncrt_pos_y=%d\ncrt_origin_preset=%d\ncrt_display_backup=%d\nprevious_display_mode=%d\nprevious_ui_layout=%d\nprevious_safe_area=%d\nadaptive_quality=%d\nvideo_refresh_interval_ms=%d\ndisplay_mode=%d\nui_layout=%d\nlanguage=%d\nthread_layout=%d\ndecode_workers=%d\n"
         "left_min=%d\nleft_max=%d\nright_min=%d\nright_max=%d\nui_background=%d\nui_accent=%d\nui_motion=%d\nmenu_sounds=%d\nmenu_volume=%d\nmouse_hud=%d\nstream_menu_style=%d\n"
         "aurora_enabled=%d\naurora_direct_enabled=%d\nartwork_cache_enabled=%d\nartwork_cache_mb=%d\naurora_cache_handling=%d\naurora_shortcuts_folder=%s\naurora_main_xex=%s\naurora_path=%s\naurora_default_profile=%s\n",
         c->host,c->host_uuid, c->width, c->height, c->fps, c->bitrate_kbps, c->packet_size, c->slice_count,
         c->fast_decode, c->renderer == 1 ? "cpu" : c->renderer == 2 ? "cpu_hwcolor" : "gpu",
+        video_decoder_key(c->decoder_backend),
         c->vsync, c->sops, c->local_audio, c->audio_mode,c->mouse_speed,c->mouse_acceleration,c->mouse_scroll_ms, c->quit_combo, c->stick_deadzone, c->session_report,
         config_overlay_mode(c)!=0, c->diagnostic_log,config_overlay_mode(c),c->image_quality,c->history_enabled,
         c->user_profile,c->launch_cover_ms,c->launch_animation,config_profile_key(config_video_preset(c)),c->mdns_discovery?"true":"false",
         config_overlay_mode(c)==0?"off":config_overlay_mode(c)==1?"basic":config_overlay_mode(c)==2?"detailed":"developer",
-        c->ui_safe_area,c->refresh_smoothing,c->smoothing_strength,c->crt_clarity,c->crt_display_backup,c->previous_display_mode,c->previous_ui_layout,c->previous_safe_area,c->adaptive_quality,c->refresh_interval_ms,c->display_mode,c->ui_layout,c->language,c->thread_layout,c->decode_workers,
+        c->ui_safe_area,c->refresh_smoothing,c->smoothing_strength,c->crt_clarity,c->crt_scaling,c->crt_aspect,c->crt_pos_x,c->crt_pos_y,c->crt_origin_preset,c->crt_display_backup,c->previous_display_mode,c->previous_ui_layout,c->previous_safe_area,c->adaptive_quality,c->refresh_interval_ms,c->display_mode,c->ui_layout,c->language,c->thread_layout,c->decode_workers,
         c->left_min,c->left_max,c->right_min,c->right_max,c->ui_background,c->ui_accent,c->ui_motion,c->menu_sounds,c->menu_volume,c->mouse_hud,c->stream_menu_style,
         c->aurora_enabled,c->aurora_direct_enabled,c->artwork_cache_enabled,c->artwork_cache_mb,c->aurora_cache_handling,c->aurora_shortcuts_folder,c->aurora_main_xex,c->aurora_path,c->aurora_default_profile);
-    return n >= 0 && (size_t)n < capacity ? (size_t)n : 0;
+    if(n<0 || (size_t)n>=capacity)return 0;
+    int added=snprintf(buf+n,capacity-n,
+        "desktop_start=%d\ndesktop_host=%s\ndesktop_app=%d\ndesktop_speed=%d\ndesktop_deadzone=%d\ndesktop_acceleration=%d\ndesktop_precision=%d\ndesktop_scroll=%d\ndesktop_keyboard=%d\ndesktop_kb_style=%d\ndesktop_kb_mode=%d\n",
+        c->desktop_start,c->desktop_host,c->desktop_app,c->desktop.speed,c->desktop.deadzone,c->desktop.acceleration,c->desktop.precision,c->desktop.scroll_speed,c->desktop.keyboard,c->desktop.kb_style,c->desktop.kb_mode);
+    if(added<0 || (size_t)added>=capacity-n)return 0;n+=added;
+    for(int i=0;i<DESKTOP_BINDINGS;i++){
+        added=snprintf(buf+n,capacity-n,"desktop_map_%d=%d\n",i,c->desktop.mapping[i]);
+        if(added<0 || (size_t)added>=capacity-n)return 0;n+=added;
+    }
+    return (size_t)n;
 }
 /* Read-only loading never rewrites settings. Before a legacy format-5 value 2
  * is saved as Boolean On/Off, keep the original bytes and verify the backup.
@@ -332,7 +374,7 @@ static bool config_backup_compat_fast(const char *name)
 }
 bool config_save(const struct config *c)
 {
-    char buf[3072];size_t n=config_serialize(c,buf,sizeof(buf));
+    char buf[6144];size_t n=config_serialize(c,buf,sizeof(buf));
     return n && config_backup_compat_fast("moonlight.ini") && storage_write("moonlight.ini",buf,n);
 }
 
@@ -348,29 +390,107 @@ bool config_reset_preferences(struct config *c)
 void config_apply_preset(struct config *c, int preset)
 {
     static const int modes[CONFIG_PROFILE_COUNT][4]={
-        {0,0,0,0},{1280,720,60,12000},{854,480,60,25000},
-        {1280,720,60,18000},{1280,720,30,12000},{1920,1080,24,8000},
-        {1280,720,30,6000},{640,480,60,9000},{640,480,60,10000},{640,480,30,8000},{640,480,60,12000}
+        {0,0,0,0},
+        {1280,720,60,6000},   /* 1: Smooth (720p60 6 Mbps, low decode load) */
+        {960,540,60,3000},    /* 2: Performance (540p60 -> 720p Catmull-Rom, 3 Mbps) */
+        {1280,720,60,10000},  /* 3: Maximum Quality (720p60 10 Mbps, decode ceiling headroom) */
+        {1280,720,30,6000},   /* 4: Standard (720p30 6 Mbps, max headroom) */
+        {1920,1080,30,8000},  /* 5: 1080p (Experimental) (1080p30 8 Mbps) */
+        {854,480,60,2000},    /* 6: Wireless Stable (480p60 2 Mbps, 768 B RTP, VSync Off, no periodic IDR, full deblocking) */
+        {640,480,60,9000},{640,480,60,10000},{640,480,30,8000},{640,480,60,12000}, /* 7..10: hidden legacy CRT */
+        {640,480,60,3000},    /* 11: CRT */
+        {640,240,60,3000}     /* 12: CRT Retro (240p) */
     };
     if(preset<0 || preset>=CONFIG_PROFILE_COUNT)return;
     if(!preset){config_customize_stream(c);return;}
     struct config next=*c;
     next.stream_profile=preset;next.user_profile[0]=0;
-    if(preset) {
-        next.width=modes[preset][0];next.height=modes[preset][1];
-        next.fps=modes[preset][2];next.bitrate_kbps=modes[preset][3];
-    }
-    if(preset>=CONFIG_PROFILE_WIRELESS) {
-        next.fast_decode=true;next.renderer=0;next.vsync=true;next.packet_size=1024;next.slice_count=0;
-        next.image_quality=1;next.adaptive_quality=0;
-        if(preset==CONFIG_PROFILE_WIRELESS)next.refresh_interval_ms=5000;
-        else {next.audio_mode=0;next.sops=false;next.crt_clarity=false;} /* host changes require explicit consent */
+    next.width=modes[preset][0];next.height=modes[preset][1];
+    next.fps=modes[preset][2];next.bitrate_kbps=modes[preset][3];
+    next.crt_scaling=CRT_SCALE_AUTO;next.crt_aspect=CRT_ASPECT_4_3;
+    next.crt_pos_x=0;next.crt_pos_y=0;
+    next.crt_origin_preset=config_is_crt_factory(preset)?preset:0;
+    if(preset==CONFIG_PROFILE_WIRELESS) {
+        next.fast_decode=false;next.renderer=0;next.vsync=false;next.packet_size=768;next.slice_count=0;
+        next.image_quality=0;next.adaptive_quality=0;next.audio_mode=0;
+        next.refresh_interval_ms=0;next.refresh_smoothing=0;next.smoothing_strength=0;
+    } else if(preset>=CONFIG_PROFILE_CRT && preset<=CONFIG_PROFILE_CRT_QUALITY) {
+        next.fast_decode=false;next.renderer=0;next.vsync=true;next.packet_size=1024;next.slice_count=0;
+        next.image_quality=0;next.adaptive_quality=0;
+        next.audio_mode=0;next.sops=false;next.crt_clarity=false; /* host changes require explicit consent */
+    } else if(preset==CONFIG_PROFILE_CRT_DISPLAY || preset==CONFIG_PROFILE_CRT_RETRO_240P) {
+        next.fast_decode=false;next.renderer=0;
+        next.vsync=(preset==CONFIG_PROFILE_CRT_RETRO_240P);
+        next.packet_size=1024;next.slice_count=0;
+        next.image_quality=0;next.adaptive_quality=0;
+        next.audio_mode=0;next.sops=false;next.crt_clarity=false;
+        next.refresh_interval_ms=0;next.refresh_smoothing=0;next.smoothing_strength=0;
+        next.crt_scaling=(preset==CONFIG_PROFILE_CRT_RETRO_240P)?CRT_SCALE_POINT:CRT_SCALE_AUTO;
     }
     *c=next;
 }
+bool config_profile_is_legacy(int preset)
+{
+    return preset>=CONFIG_PROFILE_CRT && preset<=CONFIG_PROFILE_CRT_QUALITY;
+}
+bool config_profile_is_visible(int preset)
+{
+    return preset>0 && preset<CONFIG_PROFILE_COUNT && !config_profile_is_legacy(preset);
+}
+int config_visible_factory_profiles(int *out,int capacity)
+{
+    int n=0;
+    for(int i=1;i<CONFIG_PROFILE_COUNT;i++)if(config_profile_is_visible(i)){
+        if(out && n<capacity)out[n]=i;
+        n++;
+    }
+    return n;
+}
+bool config_is_crt_factory(int preset)
+{
+    return config_profile_is_legacy(preset) || preset==CONFIG_PROFILE_CRT_DISPLAY || preset==CONFIG_PROFILE_CRT_RETRO_240P;
+}
+bool config_is_crt_retro(const struct config *c)
+{
+    if(!c)return false;
+    return c->stream_profile==CONFIG_PROFILE_CRT_RETRO_240P || (c->width==640 && c->height==240);
+}
 bool config_crt_profile(const struct config *c)
 {
-    return c->width==640 && c->height==480 && c->stream_profile>=CONFIG_PROFILE_CRT && c->stream_profile<=CONFIG_PROFILE_CRT_QUALITY;
+    if(!c)return false;
+    return config_is_crt_factory(c->stream_profile) ||
+           config_is_crt_factory(c->crt_origin_preset) ||
+           (c->width==640 && (c->height==480 || c->height==240));
+}
+void config_crt_reset_settings(struct config *c)
+{
+    if(!c)return;
+    c->crt_scaling=config_is_crt_retro(c)?CRT_SCALE_POINT:CRT_SCALE_AUTO;
+    c->crt_clarity=false;
+    c->crt_aspect=CRT_ASPECT_4_3;
+    c->crt_pos_x=0;
+    c->crt_pos_y=0;
+    c->ui_safe_area=0;
+}
+const char *config_crt_scaling_name(int mode)
+{
+    static const char *names[CRT_SCALE_COUNT]={"Auto","Point / Nearest","Bilinear","Sharp-Bilinear"};
+    return names[mode>=0 && mode<CRT_SCALE_COUNT?mode:0];
+}
+const char *config_crt_aspect_name(int mode)
+{
+    static const char *names[CRT_ASPECT_COUNT]={"4:3","Original"};
+    return names[mode>=0 && mode<CRT_ASPECT_COUNT?mode:0];
+}
+int config_cycle_crt_scaling(int mode,int direction)
+{
+    int cur=(mode>=0 && mode<CRT_SCALE_COUNT)?mode:0;
+    return (cur+(direction<0?CRT_SCALE_COUNT-1:1))%CRT_SCALE_COUNT;
+}
+int config_cycle_crt_aspect(int mode,int direction)
+{
+    int cur=(mode>=0 && mode<CRT_ASPECT_COUNT)?mode:0;
+    return (cur+(direction<0?CRT_ASPECT_COUNT-1:1))%CRT_ASPECT_COUNT;
 }
 void config_crt_display_enable(struct config *c)
 {
@@ -402,12 +522,12 @@ bool config_crt_display_commit(struct config *c,bool enable)
 }
 const char *config_preset_name(int preset)
 {
-    static const char *names[]={"Custom","Smooth","Performance","Maximum Quality","Standard","1080p (Experimental)","Wireless Stable","TV CRT (4:3)","CRT Smooth","CRT Stable","CRT Quality Experimental"};
+    static const char *names[]={"Custom","Smooth","Performance","Maximum Quality","Standard","1080p (Experimental)","Wireless Stable","TV CRT (4:3)","CRT Smooth","CRT Stable","CRT Quality Experimental","CRT","CRT Retro (240p)"};
     return names[preset>=0 && preset<CONFIG_PROFILE_COUNT?preset:0];
 }
 const char *config_profile_key(int preset)
 {
-    static const char *names[]={"custom","smooth","performance","maximum_quality","standard","1080_smooth","wireless_stable","tv_crt_4_3","crt_smooth","crt_stable","crt_quality_experimental"};
+    static const char *names[]={"custom","smooth","performance","maximum_quality","standard","1080_smooth","wireless_stable","tv_crt_4_3","crt_smooth","crt_stable","crt_quality_experimental","crt","crt_retro_240p"};
     return names[preset>=0 && preset<CONFIG_PROFILE_COUNT?preset:0];
 }
 
@@ -472,7 +592,7 @@ int config_test_bitrate(const struct config *c,int direction)
     static const int sd[]={4000,6000,8000,10000};
     static const int hd[]={10000,15000,18000,25000};
     static const int fullhd[]={12000,16000,20000,25000};
-    const int *rates=c->width==640 && c->height==480?sd:
+    const int *rates=(c->width==640 && (c->height==480 || c->height==240))?sd:
         c->width>=1920 && c->height>=1080?fullhd:hd;
     int i;
     for(i=0;i<4;i++) if(rates[i]==c->bitrate_kbps) return rates[(i+(direction<0?3:1))%4];
@@ -508,7 +628,7 @@ bool config_profile_name_valid(const char *name)
 }
 static bool profile_options_valid(const struct stream_options *o)
 {
-    return ((o->width==640 && o->height==480)||(o->width==854 && o->height==480)||(o->width==1280 && o->height==720)||(o->width==1920 && o->height==1080)) &&
+    return ((o->width==640 && o->height==240)||(o->width==640 && o->height==480)||(o->width==854 && o->height==480)||(o->width==960 && o->height==540)||(o->width==1280 && o->height==720)||(o->width==1920 && o->height==1080)) &&
         config_fps_supported(o->fps) && o->bitrate_kbps>=CONFIG_BITRATE_MIN && o->bitrate_kbps<=CONFIG_BITRATE_MAX &&
         o->packet_size>=512 && o->packet_size<=1400 && config_slices_supported(o->slice_count) &&
         o->fast_decode>=0 && o->fast_decode<=FAST_DECODE_COMPAT_VALUE && o->renderer>=0 && o->renderer<=2 &&
@@ -516,19 +636,21 @@ static bool profile_options_valid(const struct stream_options *o)
         o->image_quality>=0 && o->image_quality<=2 && o->adaptive_quality>=0 && o->adaptive_quality<=1 &&
         o->thread_layout>=0 && o->thread_layout<=1 && (o->decode_workers==3 || o->decode_workers==4) && o->audio_mode>=0 && o->audio_mode<=1 && config_refresh_interval_supported(o->refresh_interval_ms) && o->crt_clarity>=0 && o->crt_clarity<=1 && o->new_options_owned>=0 && o->new_options_owned<=1 &&
         o->refresh_smoothing>=0 && o->refresh_smoothing<=1 && o->smoothing_strength>=0 && o->smoothing_strength<=1 &&
-        o->smoothing_options_owned>=0 && o->smoothing_options_owned<=1;
+        o->smoothing_options_owned>=0 && o->smoothing_options_owned<=1 &&
+        o->crt_scaling>=0 && o->crt_scaling<CRT_SCALE_COUNT && o->crt_aspect>=0 && o->crt_aspect<CRT_ASPECT_COUNT &&
+        o->crt_pos_x>=-20 && o->crt_pos_x<=20 && o->crt_pos_y>=-20 && o->crt_pos_y<=20 &&
+        o->crt_options_owned>=0 && o->crt_options_owned<=1;
 }
 void config_profile_capture(struct stream_options *o,const struct config *c)
 {
-    int p=config_video_preset(c);
-    bool fast=p==CONFIG_PROFILE_SMOOTH || p==CONFIG_PROFILE_1080_SMOOTH || p==CONFIG_PROFILE_PERFORMANCE;
     o->width=c->width;o->height=c->height;o->fps=c->fps;o->bitrate_kbps=c->bitrate_kbps;
     o->packet_size=c->packet_size;o->slice_count=c->slice_count;
-    o->fast_decode=fast || c->fast_decode;o->renderer=c->renderer;o->vsync=c->vsync;
-    o->sops=c->sops;o->local_audio=c->local_audio;o->image_quality=fast?1:c->image_quality;
+    o->fast_decode=c->fast_decode;o->renderer=c->renderer;o->vsync=c->vsync;
+    o->sops=c->sops;o->local_audio=c->local_audio;o->image_quality=c->image_quality;
     o->adaptive_quality=c->adaptive_quality;o->thread_layout=c->thread_layout;o->decode_workers=c->decode_workers;o->audio_mode=c->audio_mode;
     o->refresh_interval_ms=c->refresh_interval_ms;o->crt_clarity=c->crt_clarity;o->new_options_owned=1;
     o->refresh_smoothing=c->refresh_smoothing;o->smoothing_strength=c->smoothing_strength;o->smoothing_options_owned=1;
+    o->crt_scaling=c->crt_scaling;o->crt_aspect=c->crt_aspect;o->crt_pos_x=c->crt_pos_x;o->crt_pos_y=c->crt_pos_y;o->crt_options_owned=1;
 }
 void config_customize_stream(struct config *c)
 {
@@ -553,12 +675,12 @@ static bool profiles_valid(const struct user_profiles *p)
 size_t config_profiles_serialize(const struct user_profiles *p,char *text,size_t cap)
 {
     if(!profiles_valid(p))return 0;
-    int n=snprintf(text,cap,"XENON_PROFILES 5 %u %d\n",p->generation,p->count);
+    int n=snprintf(text,cap,"XENON_PROFILES 6 %u %d\n",p->generation,p->count);
     if(n<0 || (size_t)n>=cap)return 0;size_t used=(size_t)n;
     for(int i=0;i<p->count;i++) {
         const struct user_stream_profile *r=p->items+i;const struct stream_options *o=&r->options;
-        n=snprintf(text+used,cap-used,"%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",r->name,
-            o->width,o->height,o->fps,o->bitrate_kbps,o->packet_size,o->slice_count,o->fast_decode,o->renderer,o->vsync,o->sops,o->local_audio,o->image_quality,o->adaptive_quality,o->thread_layout,o->decode_workers,o->audio_mode,o->refresh_interval_ms,o->crt_clarity,o->new_options_owned,o->refresh_smoothing,o->smoothing_strength,o->smoothing_options_owned);
+        n=snprintf(text+used,cap-used,"%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",r->name,
+            o->width,o->height,o->fps,o->bitrate_kbps,o->packet_size,o->slice_count,o->fast_decode,o->renderer,o->vsync,o->sops,o->local_audio,o->image_quality,o->adaptive_quality,o->thread_layout,o->decode_workers,o->audio_mode,o->refresh_interval_ms,o->crt_clarity,o->new_options_owned,o->refresh_smoothing,o->smoothing_strength,o->smoothing_options_owned,o->crt_scaling,o->crt_aspect,o->crt_pos_x+20,o->crt_pos_y+20,o->crt_options_owned);
         if(n<0 || (size_t)n>=cap-used)return 0;used+=(size_t)n;
     }
     n=snprintf(text+used,cap-used,"CHECKSUM %08x\n",profiles_checksum(text,used));
@@ -573,8 +695,8 @@ static bool profiles_number(const char **cursor,unsigned limit,char delimiter,un
 }
 static bool profiles_decode(struct user_profiles *out,const char *text,size_t bytes)
 {
-    if(!text || !bytes || bytes>=CONFIG_PROFILES_BYTES || memchr(text,0,bytes) || (strncmp(text,"XENON_PROFILES 1 ",17) && strncmp(text,"XENON_PROFILES 2 ",17) && strncmp(text,"XENON_PROFILES 3 ",17) && strncmp(text,"XENON_PROFILES 4 ",17) && strncmp(text,"XENON_PROFILES 5 ",17)))return false;
-    int fields_count=text[15]>='4'?22:text[15]=='3'?19:text[15]=='2'?16:15;
+    if(!text || !bytes || bytes>=CONFIG_PROFILES_BYTES || memchr(text,0,bytes) || (strncmp(text,"XENON_PROFILES 1 ",17) && strncmp(text,"XENON_PROFILES 2 ",17) && strncmp(text,"XENON_PROFILES 3 ",17) && strncmp(text,"XENON_PROFILES 4 ",17) && strncmp(text,"XENON_PROFILES 5 ",17) && strncmp(text,"XENON_PROFILES 6 ",17)))return false;
+    int fields_count=text[15]>='6'?27:text[15]>='4'?22:text[15]=='3'?19:text[15]=='2'?16:15;
     struct user_profiles p;memset(&p,0,sizeof(p));const char *line=text+17;unsigned count;
     if(!profiles_number(&line,0xffffffffu,' ',&p.generation) || !profiles_number(&line,CONFIG_USER_PROFILE_MAX,'\n',&count))return false;
     p.count=(int)count;
@@ -582,8 +704,12 @@ static bool profiles_decode(struct user_profiles *out,const char *text,size_t by
         const char *tab=strchr(line,'\t');if(!tab || tab==line || tab-line>=CONFIG_PROFILE_NAME_BYTES)return false;
         struct user_stream_profile *r=p.items+i;memcpy(r->name,line,tab-line);r->name[tab-line]=0;line=tab+1;
         struct stream_options *o=&r->options;
-        int *fields[]={&o->width,&o->height,&o->fps,&o->bitrate_kbps,&o->packet_size,&o->slice_count,&o->fast_decode,&o->renderer,&o->vsync,&o->sops,&o->local_audio,&o->image_quality,&o->adaptive_quality,&o->thread_layout,&o->decode_workers,&o->audio_mode,&o->refresh_interval_ms,&o->crt_clarity,&o->new_options_owned,&o->refresh_smoothing,&o->smoothing_strength,&o->smoothing_options_owned};
+        int *fields[]={&o->width,&o->height,&o->fps,&o->bitrate_kbps,&o->packet_size,&o->slice_count,&o->fast_decode,&o->renderer,&o->vsync,&o->sops,&o->local_audio,&o->image_quality,&o->adaptive_quality,&o->thread_layout,&o->decode_workers,&o->audio_mode,&o->refresh_interval_ms,&o->crt_clarity,&o->new_options_owned,&o->refresh_smoothing,&o->smoothing_strength,&o->smoothing_options_owned,&o->crt_scaling,&o->crt_aspect,&o->crt_pos_x,&o->crt_pos_y,&o->crt_options_owned};
         for(int j=0;j<fields_count;j++) {unsigned n;if(!profiles_number(&line,0x7fffffffu,j==fields_count-1?'\n':'\t',&n))return false;*fields[j]=(int)n;}
+        if(text[15]>='6'){
+            if(o->crt_pos_x<0 || o->crt_pos_x>40 || o->crt_pos_y<0 || o->crt_pos_y>40)return false;
+            o->crt_pos_x-=20;o->crt_pos_y-=20;
+        }
         if(text[15]<'5' && o->fast_decode>1)return false;
     }
     if(strncmp(line,"CHECKSUM ",9) || (size_t)(line-text)+18!=bytes)return false;
@@ -603,7 +729,7 @@ bool config_profiles_load(struct user_profiles *p)
     for(int i=0;i<2;i++) {
         size_t n=0;errno=0;char *text=storage_read(names[i],&n);
         if(!text && errno!=ENOENT)unknown=true;
-        if(text && !strncmp(text,"XENON_PROFILES ",15) && strncmp(text,"XENON_PROFILES 1 ",17) && strncmp(text,"XENON_PROFILES 2 ",17) && strncmp(text,"XENON_PROFILES 3 ",17) && strncmp(text,"XENON_PROFILES 4 ",17) && strncmp(text,"XENON_PROFILES 5 ",17))unknown=true;
+        if(text && !strncmp(text,"XENON_PROFILES ",15) && strncmp(text,"XENON_PROFILES 1 ",17) && strncmp(text,"XENON_PROFILES 2 ",17) && strncmp(text,"XENON_PROFILES 3 ",17) && strncmp(text,"XENON_PROFILES 4 ",17) && strncmp(text,"XENON_PROFILES 5 ",17) && strncmp(text,"XENON_PROFILES 6 ",17))unknown=true;
         if(profiles_decode(&candidate,text,n) && (!found || candidate.generation>best.generation)) {best=candidate;best.slot=i;found=true;}
         free(text);
     }
@@ -654,6 +780,8 @@ bool config_profiles_apply(const struct user_profiles *p,int index,struct config
     c->renderer=o->renderer;c->vsync=o->vsync!=0;c->sops=o->sops!=0;c->local_audio=o->local_audio!=0;
     c->image_quality=o->image_quality;c->adaptive_quality=o->adaptive_quality;
     c->thread_layout=o->thread_layout;c->decode_workers=o->decode_workers;c->audio_mode=o->audio_mode;if(o->new_options_owned){c->refresh_interval_ms=o->refresh_interval_ms;c->crt_clarity=o->crt_clarity!=0;}if(o->smoothing_options_owned){c->refresh_smoothing=o->refresh_smoothing;c->smoothing_strength=o->smoothing_strength;}
+    if(o->crt_options_owned){c->crt_scaling=o->crt_scaling;c->crt_aspect=o->crt_aspect;c->crt_pos_x=o->crt_pos_x;c->crt_pos_y=o->crt_pos_y;}
+    c->crt_origin_preset=0;
     c->stream_profile=0;strcpy(c->user_profile,p->items[index].name);return true;
 }
 
@@ -662,6 +790,7 @@ static bool profile_options_match(const struct stream_options *effective,const s
     struct stream_options known=*saved;
     if(!known.new_options_owned){known.refresh_interval_ms=effective->refresh_interval_ms;known.crt_clarity=effective->crt_clarity;known.new_options_owned=1;}
     if(!known.smoothing_options_owned){known.refresh_smoothing=effective->refresh_smoothing;known.smoothing_strength=effective->smoothing_strength;known.smoothing_options_owned=1;}
+    if(!known.crt_options_owned){known.crt_scaling=effective->crt_scaling;known.crt_aspect=effective->crt_aspect;known.crt_pos_x=effective->crt_pos_x;known.crt_pos_y=effective->crt_pos_y;known.crt_options_owned=1;}
     return !memcmp(effective,&known,sizeof(known));
 }
 int config_profiles_selected(const struct user_profiles *p,const struct config *c)
@@ -693,18 +822,24 @@ void config_select_factory(struct config *c,int preset)
     struct user_profiles p;memset(&p,0,sizeof(p));p.count=1;strcpy(p.items[0].name,"Factory");
     config_profile_capture(&p.items[0].options,&factory);
     int refresh=c->refresh_interval_ms;
-    config_profiles_apply(&p,0,c);if(preset!=CONFIG_PROFILE_WIRELESS)c->refresh_interval_ms=refresh;
+    config_profiles_apply(&p,0,c);
+    if(config_profile_is_legacy(preset))
+        c->refresh_interval_ms=refresh;
+    else
+        c->refresh_interval_ms=0;
+    c->crt_origin_preset=config_is_crt_factory(preset)?preset:0;
     c->user_profile[0]=0;c->stream_profile=preset;
 }
 
 bool config_cycle_profile(const struct user_profiles *p,struct config *c,int direction)
 {
     int choices[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX],count=0;
-    for(int i=1;i<CONFIG_PROFILE_COUNT;i++)choices[count++]=i;
+    for(int i=1;i<CONFIG_PROFILE_COUNT;i++)if(config_profile_is_visible(i))choices[count++]=i;
     if(p && !p->read_only && p->count>=0 && p->count<=CONFIG_USER_PROFILE_MAX)
         for(int i=0;i<p->count;i++)if(profile_entry_valid(p,i))choices[count++]=CONFIG_PROFILE_COUNT+i;
-    int personal=config_profiles_selected(p,c);
-    int current=personal>=0?CONFIG_PROFILE_COUNT+personal:config_match_factory(c),position=direction<0?0:count-1;
+    int factory=config_match_factory(c);
+    int personal=(c->user_profile[0] || !factory || c->stream_profile!=factory)?config_profiles_selected(p,c):-1;
+    int current=personal>=0?CONFIG_PROFILE_COUNT+personal:factory,position=direction<0?0:count-1;
     for(int i=0;i<count;i++)if(choices[i]==current){position=i;break;}
     int choice=choices[(position+(direction<0?count-1:1))%count];
     if(choice<CONFIG_PROFILE_COUNT){config_select_factory(c,choice);return true;}

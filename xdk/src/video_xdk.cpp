@@ -13,6 +13,7 @@
  * that replays that recording with and without the VMX code.
  */
 #include "xdk.h"
+#include "crt_output_bridge.h"
 #include "../../src/video_viewport.h"
 #include "../../src/video_h264_diagnostic.h"
 #include "../../src/h264_reference_policy.h"
@@ -29,6 +30,7 @@
 #include "../../src/input.h"
 #include "../../src/platform.h"
 #include "../../src/video.h"
+#include "video_decoder_backend.h"
 #include "../../src/launch_cover.h"
 #include "../../src/video_session.h"
 #include "../../src/video_gpu_policy.h"
@@ -41,6 +43,7 @@
 #include "../../src/stream_metrics.h"
 #include "../../src/decode_deadline.h"
 #include "../../src/timing.h"
+#include "../../src/overlay_hud.h"
 #include "build_identity.h"
 #ifndef DIAGNOSTIC_LEGACY_UPLOAD
 #define DIAGNOSTIC_LEGACY_UPLOAD 0
@@ -89,6 +92,7 @@ static struct video_options options = { true, RENDERER_GPU, true, false, 60, 300
 static bool first_present_logged,last_present_shown,launch_decode_notified;
 static bool freeze_first_present;
 static int session_slices = 8;
+static volatile LONG stream_deblock_off = 0;
 static struct video_h264_diagnostic h264_diagnostic = {1,0,1,0};
 static bool yuv_captured;
 static bool yuv_upload_compared;
@@ -106,8 +110,13 @@ static struct decode_deadline deadline, deadline_overlay;
 static CRITICAL_SECTION telemetry_lock;
 static struct stream_observations observations;
 static struct stream_counters overlay_previous;
-static DWORD overlay_last_ms;
-static bool overlay_has_text, overlay_failed;
+static DWORD overlay_last_ms, overlay_last_video_ms, network_updated_ms;
+static bool overlay_has_text, overlay_failed, overlay_update_pending;
+static int overlay_last_mode, overlay_last_dev_page, overlay_last_alert;
+static uint32_t overlay_last_loss;
+static struct stream_rates overlay_last_rates;
+static bool overlay_rates_valid;
+static struct overlay_alert_tracker overlay_alerts;
 static uint32_t network_rtt, network_variance;
 static int network_video_queue, network_video_queue_peak, network_audio_ms;
 static bool network_valid;
@@ -286,8 +295,10 @@ unsigned video_recover_frame_queue(void)
     return dropped;
 }
 void video_request_decoder_reset(void){InterlockedExchange(&decoder_reset_requested,1);}
+static inline int active_overlay_mode(void) { return input_overlay_mode(); }
+static inline bool overlay_telemetry_active(void) { return options.stats_overlay || active_overlay_mode() != OVERLAY_OFF; }
 static void pipeline_sample(int metric,uint64_t us) {
-    if (!options.stats_overlay) return;
+    if (!overlay_telemetry_active()) return;
     uint32_t value=us>UINT_MAX?UINT_MAX:(uint32_t)us;
     EnterCriticalSection(&telemetry_lock);
     gpu_time_add(&pipeline_times[metric],value);
@@ -342,7 +353,7 @@ class submit_timing_scope {
     bool enabled;
     uint64_t start;
 public:
-    submit_timing_scope() : enabled(options.stats_overlay), start(0) {
+    submit_timing_scope() : enabled(overlay_telemetry_active()), start(0) {
         video_progress_note(VP_CALLBACK_ENTERED);
         if (!enabled) return;
         start=now_us();
@@ -407,6 +418,11 @@ void video_get_quick_info(struct video_quick_info *out)
     out->fast_decode=options.fast_decode;
     out->shader_mode=gpu_shader_fast(requested_shader,gfx_quality_available(),&quality_policy)?1:2;
     out->decode_workers=stats.decode_threads;
+    out->crt_scaling=options.crt_scaling;
+    out->crt_aspect=options.crt_aspect;
+    out->crt_clarity=options.crt_clarity && !options.crt_retro_240p && !gfx_crt_240p_backbuffer_active();
+    out->crt_retro_240p=options.crt_retro_240p;
+    out->crt_active_240p=crt_bridge_is_240p_active();
     snprintf(out->host_name,sizeof(out->host_name),"%s",options.host_name);
     snprintf(out->pipeline,sizeof(out->pipeline),"%s",pipeline_name(current_pipeline()));
     EnterCriticalSection(&telemetry_lock);
@@ -426,6 +442,7 @@ void video_set_network_stats(uint32_t rtt, uint32_t variance, bool valid,
     network_video_queue = video_queue;
     if (video_queue>network_video_queue_peak) network_video_queue_peak=video_queue;
     network_audio_ms = audio_queue_ms;
+    network_updated_ms = GetTickCount();
     /* app.c only calls this after its connecting UI task has finished. This
      * prevents the optional overlay and busy screen sharing the font cache. */
     telemetry_ready = true;
@@ -538,78 +555,161 @@ static void close_h264(AVCodecContext **c)
 
 /* ---------------------------------------------------- render thread */
 
-static void overlay_line(char *out,size_t capacity,const char *format,...)
+static bool overlay_collect(struct overlay_telemetry *out)
 {
-    size_t used=strlen(out);
-    if(used+2>=capacity)return;
-    if(used)out[used++]='\n';
-    va_list args;va_start(args,format);
-    vsnprintf(out+used,capacity-used,ui_translate(format),args);
-    va_end(args);out[capacity-1]=0;
-}
-static bool overlay_text(char *out,size_t capacity)
-{
-    if(!options.stats_overlay || !out || !capacity)return false;
-    struct stream_observations m;struct decode_deadline d;
-    struct stream_counters current;struct stream_rates rates;
+    int mode = active_overlay_mode();
+    if (mode <= OVERLAY_OFF || mode >= OVERLAY_MODE_COUNT || !out) {
+        overlay_last_mode = OVERLAY_OFF;
+        overlay_has_text = false;
+        overlay_update_pending = false;
+        return false;
+    }
+    int dev_page = input_overlay_dev_page();
+    DWORD now = GetTickCount(), elapsed = now - overlay_last_ms;
+    bool mode_changed = !overlay_has_text || overlay_update_pending || mode != overlay_last_mode || dev_page != overlay_last_dev_page;
+    if (!mode_changed && elapsed < 1000) return false;
+
+    struct stream_observations m;
+    struct decode_deadline d;
+    struct stream_counters current;
     struct gpu_time_window decode_window;
-    uint32_t ema[TIME_COUNT],rtt,variance;
-    DWORD now=GetTickCount(),elapsed=now-overlay_last_ms;
-    int video_queue,audio_ms,bb_w,bb_h;
-    bool valid;char queue_age[32],host[32],network[32];
-    double budget=1000.0/(options.target_fps>0?options.target_fps:30);
-    if(overlay_has_text && elapsed<1000)return false;
+    uint32_t ema[TIME_COUNT], rtt, variance;
+    DWORD net_ts;
+    int video_queue, audio_ms;
+    bool valid;
+
     EnterCriticalSection(&telemetry_lock);
-    m=observations;d=deadline_overlay;rtt=network_rtt;variance=network_variance;valid=network_valid;
-    video_queue=network_video_queue;audio_ms=network_audio_ms;
-    decode_window=pipeline_times[TIME_DECODE];memcpy(ema,pipeline_ema,sizeof(ema));
+    m = observations;
+    d = deadline_overlay;
+    rtt = network_rtt;
+    variance = network_variance;
+    valid = network_valid;
+    net_ts = network_updated_ms;
+    video_queue = network_video_queue;
+    audio_ms = network_audio_ms;
+    if (mode == OVERLAY_DEVELOPER) {
+        decode_window = pipeline_times[TIME_DECODE];
+        memcpy(ema, pipeline_ema, sizeof(ema));
+    } else {
+        memset(&decode_window, 0, sizeof(decode_window));
+        memset(ema, 0, sizeof(ema));
+    }
     LeaveCriticalSection(&telemetry_lock);
-    current.received=stats.received;current.decoded=stats.decoded;current.shown=stats.rendered;current.payload_bytes=m.payload_bytes;
-    rates=stream_rates_between(&overlay_previous,&current,elapsed);
-    int mode=options.overlay_mode>=1 && options.overlay_mode<=3?options.overlay_mode:3;
-    /* One snapshot/sort at 1 Hz, outside the producer lock. Basic needs no sort. */
-    double p95=mode>1?gpu_time_percentile(&decode_window,95)/1000.0:0;
-    double p99=mode>1?gpu_time_percentile(&decode_window,99)/1000.0:0;
-    if(d.queue_valid)snprintf(queue_age,sizeof(queue_age),"%.1f ms",d.queue_us/1000.0);else snprintf(queue_age,sizeof(queue_age),"%s",ui_translate("N/A"));
-    if(m.have_host)snprintf(host,sizeof(host),"%.1f ms",m.host_us/1000.0);else snprintf(host,sizeof(host),"%s",ui_translate("N/A"));
-    if(valid)snprintf(network,sizeof(network),"%u ms",rtt);else snprintf(network,sizeof(network),"%s",ui_translate("N/A"));
-    const char *status=stats.decoded<30?"Measuring...":
-        stats.avg_decode_us/1000.0>budget?"Decoder overloaded":
-        (d.queue_valid && d.queue_us>budget*1000.0) || video_queue>1?"Video is waiting":
-        rates.shown+1.0<options.target_fps?"Below target FPS":"Keeping up";
-    const char *filter;
-    const char *fast_status;
-    filter=options.fast_decode ? "Fast" : d.recovery ? "Reduced (recovery)" : "Full";
-    fast_status=fast_decode_name(options.fast_decode);
-    out[0]=0;
-    overlay_line(out,capacity,"Stream: %dx%d | %.1f / %d FPS",vid_w,vid_h,rates.shown,options.target_fps);
-    overlay_line(out,capacity,"Bitrate: %.2f / %.2f Mbps (actual / set)",rates.payload_mbps,options.bitrate_kbps/1000.0);
-    overlay_line(out,capacity,"Status: %s",ui_translate(status));
-    overlay_line(out,capacity,"H.264 filter: %s | Fast Decode: %s",ui_translate(filter),ui_translate(fast_status));
-    overlay_line(out,capacity,"GPU image: %s | Active: %s%s",
-        ui_translate(options.shader_mode==1?"Fast":options.shader_mode==2?"Quality":"Auto Quality"),
-        ui_translate(gpu_shader_fast(requested_shader,gfx_quality_available(),&quality_policy)?"Fast":"Quality"),
-        shader_diagnostic_override?ui_translate(" (diagnostic)"):"");
-    if(mode>1) {
-        overlay_line(out,capacity,"FPS requested / negotiated: %d / unknown",options.target_fps);
-        overlay_line(out,capacity,"FPS callback / decoded / presented: %.1f / %.1f / %.1f",rates.received,rates.decoded,rates.shown);
-        overlay_line(out,capacity,"Decode: %.2f ms | Budget: %.2f ms",stats.avg_decode_us/1000.0,budget);
-        overlay_line(out,capacity,"Network RTT: %s | Video queue: %s",network,queue_age);
-        overlay_line(out,capacity,"Skipped display: %u | Decode errors: %u",stats.dropped,stats.decode_errors);
-        overlay_line(out,capacity,"Audio queue: %d ms | Host: %s",audio_ms,host);
+
+    current.received = stats.received;
+    current.decoded = stats.decoded;
+    current.shown = stats.rendered;
+    current.payload_bytes = m.payload_bytes;
+
+    bool new_video = (current.received != overlay_previous.received) || (current.decoded != overlay_previous.decoded);
+    if (new_video) overlay_last_video_ms = now;
+
+    struct stream_rates rates = overlay_last_rates;
+    bool fps_valid = overlay_rates_valid;
+    bool window_tick = (elapsed >= 1000) || (!overlay_has_text && elapsed >= 250);
+    if (window_tick) {
+        rates = stream_rates_between(&overlay_previous, &current, elapsed);
+        overlay_previous = current;
+        overlay_last_ms = now;
+        overlay_last_rates = rates;
+        overlay_rates_valid = true;
+        fps_valid = true;
     }
-    if(mode==3) {
-        gfx_backbuffer_size(&bb_w,&bb_h);
-        overlay_line(out,capacity,"Setup FPS argument: %d | V-Sync: %s",setup_fps_argument,options.vsync?"On":"Off");
-        overlay_line(out,capacity,"Decode p95 / p99 (last 256): %.2f / %.2f ms",p95,p99);
-        overlay_line(out,capacity,"Workers: %d | Slices: %d | Recovery: %u",stats.decode_threads,session_slices,d.recoveries);
-        overlay_line(out,capacity,"Full / reduced frames: %u / %u",d.full_frames,d.fast_frames);
-        overlay_line(out,capacity,"Pipeline %s | Copy: %.2f ms",pipeline_name(current_pipeline()),ema[TIME_FRAME_COPY]/1000.0);
-        overlay_line(out,capacity,"CPU submit / fence check / Present call: %.2f / %.2f / %.2f ms",ema[TIME_GPU_SUBMIT]/1000.0,ema[TIME_FENCE_WAIT]/1000.0,ema[TIME_PRESENT_WAIT]/1000.0);
-        overlay_line(out,capacity,"Display: %dx%d / %.2f Hz",bb_w,bb_h,gfx_display_hz());
-        overlay_line(out,capacity,"Video backlog: %d frames | GPU busy: %u",video_queue,gpu_slot_starvation);
+
+    memset(out, 0, sizeof(*out));
+    out->mode = mode;
+    out->dev_page = dev_page;
+    out->fps_valid = fps_valid;
+    out->fps_received = rates.received;
+    out->fps_decoded = rates.decoded;
+    out->fps_presented = rates.shown;
+    out->payload_mbps = rates.payload_mbps;
+    out->target_fps = options.target_fps > 0 ? options.target_fps : 60;
+    out->budget_ms = 1000.0 / out->target_fps;
+
+    out->video_stale = (overlay_last_video_ms != 0 && (now - overlay_last_video_ms) >= 2000) ||
+                       (fps_valid && rates.received < 0.5 && rates.decoded < 0.5);
+    out->network_stale = valid && net_ts != 0 && (now - net_ts) > 3000;
+    out->decode_stale = out->video_stale || (fps_valid && rates.decoded < 0.5);
+
+    out->avg_decode_us = stats.avg_decode_us;
+    if (mode == OVERLAY_DEVELOPER && decode_window.count >= 8) {
+        out->percentiles_valid = true;
+        out->decode_window_samples = decode_window.count < GPU_TIME_SAMPLES ? decode_window.count : GPU_TIME_SAMPLES;
+        out->decode_p50_us = gpu_time_percentile(&decode_window, 50);
+        out->decode_p95_us = gpu_time_percentile(&decode_window, 95);
+        out->decode_p99_us = gpu_time_percentile(&decode_window, 99);
     }
-    overlay_previous=current;overlay_last_ms=now;overlay_has_text=true;return true;
+
+    out->network_valid = valid;
+    out->rtt_ms = rtt;
+    out->jitter_ms = variance;
+
+    out->video_queue = video_queue;
+    out->audio_queue_ms = audio_ms;
+    out->queue_age_valid = d.queue_valid;
+    out->queue_age_us = d.queue_us;
+    if (m.have_timing) {
+        out->frame_age_valid = true;
+        out->frame_age_us = m.assembly_us + m.queue_us + stats.avg_decode_us;
+    } else if (d.queue_valid) {
+        out->frame_age_valid = true;
+        out->frame_age_us = d.queue_us + stats.avg_decode_us;
+    }
+
+    out->dropped = stats.dropped;
+    out->render_superseded = stats.render_superseded;
+    out->decode_errors = stats.decode_errors;
+    out->frame_gaps = m.frame_gaps;
+
+    struct perf_pressure pressure;
+    perf_pressure_read(&pressure);
+    out->pressure_valid = pressure.valid;
+    if (pressure.valid) {
+        out->rtp_lost = pressure.lost;
+        out->fec_recovered = pressure.recovered;
+        out->fec_failed = pressure.missing;
+        out->queue_overflows = pressure.overflows;
+        uint32_t loss_now = pressure.lost + pressure.missing;
+        out->recent_loss_delta = (overlay_has_text && loss_now > overlay_last_loss) ? (loss_now - overlay_last_loss) : 0;
+        if (elapsed >= 1000 || !overlay_has_text) overlay_last_loss = loss_now;
+    }
+
+    if (mode == OVERLAY_DEVELOPER) {
+        out->timing_valid = (ema[TIME_FRAME_COPY] || ema[TIME_TEXTURE_COPY] || ema[TIME_GPU_SUBMIT] || ema[TIME_PRESENT_WAIT]);
+        out->upload_us = ema[TIME_TEXTURE_COPY] ? ema[TIME_TEXTURE_COPY] : ema[TIME_FRAME_COPY];
+        out->gpu_submit_us = ema[TIME_GPU_SUBMIT];
+        out->present_wait_us = ema[TIME_PRESENT_WAIT];
+    }
+
+    out->recoveries = d.recoveries;
+    out->in_recovery = d.recovery;
+    out->fast_decode = options.fast_decode != 0;
+    out->decode_threads = stats.decode_threads;
+    out->slices = session_slices;
+    LONG pipe = current_pipeline();
+    out->pipeline_cached = (pipe == PIPE_CACHED);
+    out->shader_fast = gpu_shader_fast(requested_shader, gfx_quality_available(), &quality_policy);
+    unsigned ready = 0, in_flight = 0;
+    if (pipe == PIPE_CACHED) cached_video_snapshot(&ready, &in_flight);
+    out->slots_ready = ready;
+    out->slots_in_flight = in_flight;
+    out->gpu_starvation = gpu_slot_starvation;
+
+    out->actual_w = vid_w;
+    out->actual_h = vid_h;
+    out->display_hz = gfx_display_hz();
+    snprintf(out->backend_name, sizeof(out->backend_name), "FFmpeg");
+
+    if (window_tick || !overlay_has_text)
+        overlay_last_alert = overlay_alert_update(&overlay_alerts, out);
+    out->alert_kind = overlay_last_alert;
+    out->alert_filtered = true;
+
+    overlay_last_mode = mode;
+    overlay_last_dev_page = dev_page;
+    overlay_has_text = true;
+    return true;
 }
 
 static bool create_legacy_video(void)
@@ -635,13 +735,15 @@ static void activate_legacy_fallback(void)
 }
 
 static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
-                           const char *text,bool update,uint64_t ready_us,uint32_t serial,uint64_t picture=0)
+                           const struct overlay_telemetry *telemetry,bool update,uint64_t ready_us,uint32_t serial,uint64_t picture=0)
 {
     last_present_shown=false;
     bool available=gfx_quality_available();
-    bool clarity=options.crt_clarity && vid_h<=480 && gfx_crt_clarity_available();
-    bool control=requested_shader==0 && available && !quality_policy.tested && !clarity && !options.refresh_smoothing;
-    bool measure=options.stats_overlay || control || perf_enabled();
+    bool is_240p_bb=gfx_crt_240p_backbuffer_active();
+    bool clarity=options.crt_clarity && !options.crt_retro_240p && !is_240p_bb && vid_h<=480 && gfx_crt_clarity_available();
+    bool control=requested_shader==0 && available && !quality_policy.tested && !clarity && !options.refresh_smoothing && options.crt_scaling==CRT_SCALE_AUTO;
+    bool telemetry_on=overlay_telemetry_active();
+    bool measure=telemetry_on || control || perf_enabled();
     uint64_t t=measure?now_us():0;
     int i;D3DTexture *history[3]={NULL,NULL,NULL};float previous_weight=0;int smoothing_history=-1;
     if(options.refresh_smoothing && (launch_active() || gfx_launch_pending()))cached_video_invalidate_history();
@@ -655,20 +757,60 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
         float transition[4];smoothing_constants(previous_weight,transition);d->SetPixelShaderConstantF(2,transition,1);
     }
     /* Rebind constants with the shader: RGB UI/overlay shares this device. */
-    float coefficients[4],texel[4]={1.0f/vid_w,1.0f/vid_h,0,0};
+    float coefficients[4],texel[4]={1.0f/vid_w,1.0f/vid_h,(float)vid_w,(float)vid_h};
     video_yuv_coefficients(options.color_space,coefficients);
     d->SetPixelShaderConstantF(0,coefficients,1);d->SetPixelShaderConstantF(1,texel,1);
     int bw,bh,left,top,right,bottom;
     gfx_backbuffer_size(&bw,&bh);
-    video_fit_rect(vid_w,vid_h,bw,bh,&left,&top,&right,&bottom);
+    if(options.crt_picture_context || options.crt_scaling!=CRT_SCALE_AUTO || options.crt_retro_240p || is_240p_bb)
+        video_crt_fit_rect(vid_w,vid_h,bw,bh,options.crt_aspect,is_240p_bb?1:0,
+                           options.ui_safe_area,options.crt_pos_x,options.crt_pos_y,&left,&top,&right,&bottom);
+    else
+        video_fit_rect(vid_w,vid_h,bw,bh,&left,&top,&right,&bottom);
     if(left || top || right!=bw || bottom!=bh)
         d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
     int shader=clarity?GFX_SHADER_CRT_CLARITY:fast?GFX_SHADER_YUV_FAST:GFX_SHADER_YUV_QUALITY;
-    if(options.refresh_smoothing)shader=temporal?(clarity?GFX_SHADER_YUV_SMOOTH_CRT:GFX_SHADER_YUV_SMOOTH):
-        smoothing_history==-2 && clarity?GFX_SHADER_CRT_CLARITY:GFX_SHADER_YUV_FAST;
+    bool point_samplers=false;
+    if(options.crt_scaling==CRT_SCALE_POINT) {
+        point_samplers=true;
+    } else if(options.crt_scaling==CRT_SCALE_BILINEAR) {
+        /* Explicit bilinear: keep single-pass YUV conversion without bicubic/post-deblock overrides. */
+    } else if(options.crt_scaling==CRT_SCALE_SHARP_BILINEAR && !clarity && !temporal && gfx_sharp_bilinear_available()) {
+        float sx=(float)(right-left)/(float)vid_w;
+        float sy=(float)(bottom-top)/(float)vid_h;
+        float point_y=(is_240p_bb && vid_h<=256)?1.0f:0.0f;
+        float sb[4]={sx>1.0f?sx:1.0f,sy>1.0f?sy:1.0f,point_y,0.0f};
+        d->SetPixelShaderConstantF(2,sb,1);
+        shader=GFX_SHADER_YUV_SHARP_BILINEAR;
+    } else if(options.refresh_smoothing) {
+        shader=temporal?(clarity?GFX_SHADER_YUV_SMOOTH_CRT:GFX_SHADER_YUV_SMOOTH):
+            smoothing_history==-2 && clarity?GFX_SHADER_CRT_CLARITY:GFX_SHADER_YUV_FAST;
+    } else if(!clarity && InterlockedCompareExchange(&stream_deblock_off,0,0) && gfx_post_deblock_available()) {
+        /* R50 validated GPU post-deblock (+0.58 ms GPU, 0 CPU) when host disables in-loop deblocking. */
+        float pd[4]={18.0f/255.0f,10.0f/255.0f,0.30f,0.15f};
+        d->SetPixelShaderConstantF(2,pd,1);
+        shader=GFX_SHADER_YUV_POST_DEBLOCK;
+    } else if(!clarity && vid_h<=576 && vid_w<bw && vid_h<bh && gfx_bicubic_available()) {
+        /* R49/R50 validated pure Catmull-Rom bicubic upscale (+0.71 ms GPU) for 540p/480p -> 720p+. */
+        float bc[4]={0.0f,0.0f,0.0f,0.0f};
+        d->SetPixelShaderConstantF(2,bc,1);
+        shader=GFX_SHADER_YUV_BICUBIC;
+    }
+    if(point_samplers) {
+        for(i=0;i<3;i++) {
+            d->SetSamplerState(i,D3DSAMP_MINFILTER,D3DTEXF_POINT);
+            d->SetSamplerState(i,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+        }
+    }
     gfx_draw_rect(d,shader,
                   (float)left*GFX_WIDTH/bw,(float)top*GFX_HEIGHT/bh,
                   (float)right*GFX_WIDTH/bw,(float)bottom*GFX_HEIGHT/bh);
+    if(point_samplers) {
+        for(i=0;i<3;i++) {
+            d->SetSamplerState(i,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);
+            d->SetSamplerState(i,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
+        }
+    }
     if(temporal)cached_video_smoothing_drawn();
     for (i=0;i<(temporal?6:3);i++) d->SetTexture(i,NULL);
     if (measure) {
@@ -677,19 +819,32 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
         perf_record(PERF_CPU_SUBMIT,submit);
         if (control) gpu_quality_sample(&quality_policy,(uint32_t)submit);
     }
-    if (options.stats_overlay && input_stats_visible() && telemetry_ready && !overlay_failed) {
-        if (update && !gfx_overlay_set(text)) { gfx_overlay_clear(d);overlay_failed=true; }
+    int om = active_overlay_mode();
+    if (om == OVERLAY_OFF) {
+        overlay_has_text = false;
+        overlay_last_mode = OVERLAY_OFF;
+        overlay_update_pending = false;
+    } else if (telemetry_ready && !overlay_failed) {
+        if (update) {
+            if (!gfx_overlay_update(telemetry)) {
+                gfx_overlay_clear(d);
+                overlay_failed = true;
+                overlay_update_pending = false;
+            } else {
+                overlay_update_pending = gfx_overlay_deferred();
+            }
+        }
         if (!overlay_failed) gfx_overlay_draw(d);
     }
     gfx_mouse_draw(d);
-    gfx_stream_menu_draw(d,stats.decoded,stats.rendered,stats.dropped,stats.avg_decode_us,options.stats_overlay);
+    gfx_stream_menu_draw(d,stats.decoded,stats.rendered,stats.dropped,stats.avg_decode_us,true);
     if(gfx_launch_pending())gfx_launch_draw(d,true);
     DWORD fence=d->InsertFence();
     video_progress_note(VP_GPU_SUBMITTED);
     gfx_stream_menu_submitted(fence); /* AFTER all three textures have been unbound */
     if (cached_slot>=0) cached_video_submitted(cached_slot,fence);
-    if (options.stats_overlay) gfx_overlay_mark_used(fence);
-    t=options.stats_overlay?now_us():0;
+    if (om != OVERLAY_OFF && !overlay_failed) gfx_overlay_mark_used(fence);
+    t=telemetry_on?now_us():0;
     if(!gfx_system_ui_active()) {
         uint64_t present_started=perf_enabled()?perf_clock():0;
         if(present_started) {
@@ -730,7 +885,7 @@ static DWORD present_video(D3DDevice *d,D3DTexture **planes,int cached_slot,
         if(!first_present_logged && !launch_active()){first_present_logged=true;perf_mark(PERF_FIRST_PRESENTED);vlog("[NET] total start-to-video: %u ms\n",GetTickCount()-options.connection_started_ms);}
     }
     if(cached_slot>=0)cached_video_presented(cached_slot,last_present_shown);
-    if (options.stats_overlay) pipeline_sample(TIME_PRESENT_WAIT,now_us()-t);
+    if (telemetry_on) pipeline_sample(TIME_PRESENT_WAIT,now_us()-t);
     return fence;
 }
 
@@ -742,36 +897,38 @@ static int draw_cached_frame(void)
      * signalled for the next wait; latest-frame selection still happens only
      * after acquiring D3D, so this peek never pins an older frame. */
     if(!cached_video_has_ready())return 0;
-    char text[1536];
-    bool update=options.stats_overlay && telemetry_ready && !overlay_failed && overlay_text(text,sizeof(text));
+    struct overlay_telemetry telemetry;
+    bool update = active_overlay_mode() != OVERLAY_OFF && telemetry_ready && !overlay_failed && overlay_collect(&telemetry);
     uint64_t acquire_start=perf_enabled()?perf_clock():0;
     D3DDevice *d=gfx_begin();
     if(acquire_start)perf_record(PERF_D3D_ACQUIRE,perf_clock()-acquire_start);
     D3DTexture *planes[3];unsigned discarded=0;
     int slot=cached_video_take(planes,&discarded);
     if (discarded) { InterlockedExchangeAdd((volatile LONG*)&stats.dropped,discarded);stats.render_superseded+=discarded; }
-    if (slot<0) { gfx_end();return 0; }
+    if (slot<0) { if (update) overlay_update_pending = true; gfx_end(); return 0; }
     video_progress_note(VP_SELECTED);
-    present_video(d,planes,slot,text,update,cached_video_ready_time(slot),cached_video_frame_serial(slot),cached_video_picture(slot));gfx_end();return last_present_shown?1:0;
+    present_video(d,planes,slot,&telemetry,update,cached_video_ready_time(slot),cached_video_frame_serial(slot),cached_video_picture(slot));gfx_end();return last_present_shown?1:0;
 }
 
 static bool draw_frame(int slot)
 {
-    char text[1536];
-    bool update = options.stats_overlay && telemetry_ready && !overlay_failed && overlay_text(text, sizeof(text));
+    struct overlay_telemetry telemetry;
+    bool update = active_overlay_mode() != OVERLAY_OFF && telemetry_ready && !overlay_failed && overlay_collect(&telemetry);
     D3DDevice *d = gfx_begin();
     int k = tex_next;
     bool uploaded;
     const struct staging *s;
-    uint64_t timing = options.stats_overlay ? now_us() : 0;
+    bool telemetry_on = overlay_telemetry_active();
+    uint64_t timing = telemetry_on ? now_us() : 0;
 
     if(gfx_fence_pending(tex_fence[k]) && !gfx_fence_pending(tex_fence[k^1]))k^=1;
     tex_next = k ^ 1;
     if(gfx_system_ui_active() || gfx_fence_pending(tex_fence[k])) {
+        if (update) overlay_update_pending = true;
         EnterCriticalSection(&mailbox_lock);slot_rendering=-1;LeaveCriticalSection(&mailbox_lock);
         gfx_end();return false;
     }
-    if (options.stats_overlay) {
+    if (telemetry_on) {
         uint64_t finished = now_us();
         stats.avg_gpu_wait_us = stream_smooth(stats.avg_gpu_wait_us, (uint32_t)(finished - timing));
         pipeline_sample(TIME_FENCE_WAIT,finished-timing);
@@ -796,13 +953,13 @@ static bool draw_frame(int slot)
     struct gfx_copy_cost cost={0,0};
     uint64_t upload_started=perf_enabled()?perf_clock():0;
     video_progress_note(VP_UPLOAD_STARTED);
-    uploaded = gfx_upload_timed(tex[k][0], s->plane[0], vid_w, vid_w, vid_h, options.stats_overlay?&cost:NULL) &&
-               gfx_upload_timed(tex[k][1], s->plane[1], chroma_w, chroma_w, chroma_h, options.stats_overlay?&cost:NULL) &&
-               gfx_upload_timed(tex[k][2], s->plane[2], chroma_w, chroma_w, chroma_h, options.stats_overlay?&cost:NULL);
+    uploaded = gfx_upload_timed(tex[k][0], s->plane[0], vid_w, vid_w, vid_h, telemetry_on?&cost:NULL) &&
+               gfx_upload_timed(tex[k][1], s->plane[1], chroma_w, chroma_w, chroma_h, telemetry_on?&cost:NULL) &&
+               gfx_upload_timed(tex[k][2], s->plane[2], chroma_w, chroma_w, chroma_h, telemetry_on?&cost:NULL);
     if(upload_started)perf_record(PERF_LEGACY_TEXTURE_UPLOAD,perf_clock()-upload_started);
     pipeline_sample(TIME_TEXTURE_LOCK,cost.lock_us);pipeline_sample(TIME_TEXTURE_COPY,cost.copy_us);
 
-    if (options.stats_overlay)
+    if (telemetry_on)
         stats.avg_upload_us = stream_smooth(stats.avg_upload_us, (uint32_t)(now_us() - timing));
 
     /* Snapshot metadata before releasing producer ownership. The producer may
@@ -815,13 +972,14 @@ static bool draw_frame(int slot)
     LeaveCriticalSection(&mailbox_lock);
 
     if (!uploaded) {
+        if (update) overlay_update_pending = true;
         gfx_end();
         return false;
     }
     video_progress_note(VP_UPLOADED);
 
     legacy_fence_submitted_ms[k]=GetTickCount();
-    tex_fence[k]=present_video(d,tex[k],-1,text,update,ready_us,serial,picture);
+    tex_fence[k]=present_video(d,tex[k],-1,&telemetry,update,ready_us,serial,picture);
     gfx_end();
     return last_present_shown;
 }
@@ -1112,6 +1270,7 @@ static void free_video_buffers(void)
             gfx_wait_fence(d,tex_fence[i]);
     d->BlockUntilIdle();
     gfx_overlay_clear(d);
+    gfx_stream_menu_reset(d);
     for (i = 0; i < 2; i++) {
         for (k = 0; k < 3; k++) {
             if (tex[i][k])
@@ -1197,7 +1356,13 @@ static int video_setup(int format, int width, int height, int fps, void *ctx, in
     LeaveCriticalSection(&telemetry_lock);
     memset(&overlay_previous, 0, sizeof(overlay_previous));
     overlay_last_ms = GetTickCount();
-    overlay_has_text = overlay_failed = false;
+    overlay_last_video_ms = overlay_last_ms;
+    network_updated_ms = 0;
+    overlay_has_text = overlay_failed = overlay_update_pending = false;
+    InterlockedExchange(&stream_deblock_off, 0);
+    overlay_last_mode = 0; overlay_last_dev_page = 0; overlay_last_alert = OVERLAY_ALERT_NONE; overlay_last_loss = 0;
+    overlay_rates_valid = false; memset(&overlay_last_rates, 0, sizeof(overlay_last_rates));
+    memset(&overlay_alerts, 0, sizeof(overlay_alerts));
     gfx_display_size(&stats.display_w,&stats.display_h);
     stats.renderer = RENDERER_GPU;
     stats_last = stats;
@@ -1539,6 +1704,7 @@ static void video_cleanup(void)
         char report[8192];
         int n = snprintf(report, sizeof(report),
             "telemetry_schema=4\nbuild_profile=%s\nworker_map=%s\nworkers_requested=%d\nworkers_active=%d\nthread_layout=%s\n"
+            "decoder_requested=%s\ndecoder_active=ffmpeg\nsystem_gpu_compiled=0\n"
             "video=%dx%d@%d\nbitrate_kbps=%d\nfast_decode_config=%d\nfast_decode_active=%s\nfast_decode_change=next_session\n"
             "h264_fast_flag=%d\nh264_rfi=%d\nh264_workers_effective=%d\nh264_reference_mode=%d\n"
             "frame_budget_us=%u\ndecode_current_us=%u\ndecode_ema_us=%u\n"
@@ -1553,6 +1719,7 @@ static void video_cleanup(void)
             "pipeline_percentiles=rolling_256_samples; CPU_wall_times; overlay_required\n",
             XDK_BUILD_PROFILE_LABEL,XDK_WORKER_MAP_LABEL,options.decode_workers==3?3:4,stats.decode_threads,
             options.thread_layout?"balanced":"legacy_aux",
+            video_decoder_key(options.decoder_backend),
             vid_w, vid_h, options.target_fps, options.bitrate_kbps, options.fast_decode,fast_decode_name(options.fast_decode),
             h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
             h264_diagnostic.rfi && !XDK_H264_NO_RFI,h264_workers(),XDK_H264_REFERENCE_MODE,
@@ -1573,6 +1740,7 @@ static void video_cleanup(void)
             n+=snprintf(report+n,sizeof(report)-n,
                 "pipeline=%s\ngpu_slot_starvation=%u\ncached_failovers=%u\ncached_row_bytes=%I64u\n"
                 "backbuffer=%dx%d\ndisplay=%dx%d\ndisplay_hz=%.3f\ndisplay_interlaced=%d\nshader=%s\nquality_trial=%u\n"
+                "crt_retro_240p=%d\ncrt_scaling=%s\ncrt_aspect=%s\ncrt_pos=%d,%d\ncrt_240p_confirmed=%d\n"
                 "quality_submit_p99_us=%u\nfast_submit_p99_us=%u\n"
                 "image_quality_config=%d\nshader_requested=%d\nshader_diagnostic_override=%d\n"
                 "gpu_execution_timestamp=unavailable; gpu_submit_is_CPU_wall_time\n",
@@ -1580,7 +1748,11 @@ static void video_cleanup(void)
                 (unsigned long long)cached_video_memory(),bb_w,bb_h,physical_w,physical_h,
                 gfx_display_hz(),gfx_display_interlaced(),
                 gpu_shader_fast(requested_shader,gfx_quality_available(),&quality_policy)?"FAST":"QUALITY",
-                quality_policy.tested,quality_policy.quality_p99,quality_policy.fast_p99,
+                quality_policy.tested,
+                options.crt_retro_240p?1:0,config_crt_scaling_name(options.crt_scaling),
+                config_crt_aspect_name(options.crt_aspect),options.crt_pos_x,options.crt_pos_y,
+                crt_bridge_is_240p_active()?1:0,
+                quality_policy.quality_p99,quality_policy.fast_p99,
                 options.shader_mode,requested_shader,shader_diagnostic_override);
             n+=snprintf(report+n,sizeof(report)-n,
 #if XDK_SLICE_DISPATCH_BATCHED
@@ -1637,8 +1809,8 @@ static void video_cleanup(void)
                     names[metric],pipeline_peak[metric]);
                 if(n<0 || (size_t)n>=sizeof(report)) break;
                 uint32_t current=w->count?w->us[(w->next+GPU_TIME_SAMPLES-1)%GPU_TIME_SAMPLES]:0;
-                n+=snprintf(report+n,sizeof(report)-n,"%s_us=%u\n%s_samples=%u\n%s_p95_us=%u\n%s_p99_us=%u\n%s_max_us=%u\n",
-                    names[metric],current,names[metric],w->count,names[metric],gpu_time_percentile(w,95),
+                n+=snprintf(report+n,sizeof(report)-n,"%s_us=%u\n%s_samples=%u\n%s_p50_us=%u\n%s_p95_us=%u\n%s_p99_us=%u\n%s_max_us=%u\n",
+                    names[metric],current,names[metric],w->count,names[metric],gpu_time_percentile(w,50),names[metric],gpu_time_percentile(w,95),
                     names[metric],gpu_time_percentile(w,99),names[metric],gpu_time_percentile(w,100));
             }
             if (n>0 && (size_t)n<sizeof(report)) storage_write("decoder-session.txt",report,(size_t)n);
@@ -1731,7 +1903,8 @@ static int video_submit(PDECODE_UNIT du)
     stats.received++;
     if(du->frameType==FRAME_TYPE_IDR)idr_received++;
     if(du->frameHostProcessingLatency)perf_record(PERF_HOST_PROCESSING,(uint32_t)du->frameHostProcessingLatency*100);
-    if (options.stats_overlay) {
+    bool telemetry_on = overlay_telemetry_active();
+    if (telemetry_on) {
         uint64_t submitted = LiGetMicroseconds();
         EnterCriticalSection(&telemetry_lock);
         stream_observe(&observations, (uint32_t)du->frameNumber, du->fullLength,
@@ -1815,6 +1988,11 @@ static int video_submit(PDECODE_UNIT du)
     if(trace){trace->decode_us=(uint32_t)dt;trace->got=got;trace->ret=ret;
         trace->flags=got?av_frame_get_decode_error_flags(dec_frame):0;trace->output=got?(uint32_t)dec_frame->reordered_opaque>>1:0;}
     parallel_observe((uint32_t)du->frameNumber,dt,du->frameType==FRAME_TYPE_IDR);
+    if (stats.decoded < 8 || (stats.decoded & 63) == 0) {
+        FFH264ParallelDiagnostic pd;
+        if (ff_h264_xbox_parallel_diagnostic(codec_ctx, &pd) && pd.slices > 0)
+            InterlockedExchange(&stream_deblock_off, (pd.raw_idc[1] == pd.slices) ? 1 : 0);
+    }
     perf_record(PERF_H264_DECODE,dt);
     uint64_t post_decode_start=perf_enabled()?perf_clock():0;
     pipeline_sample(TIME_DECODE,dt);
@@ -1822,7 +2000,7 @@ static int video_submit(PDECODE_UNIT du)
                           ret >= 0 && got, dt > UINT_MAX ? UINT_MAX : (uint32_t)dt);
     stats.avg_decode_us = deadline.decode_samples == 1 ? deadline.decode_us :
                          stream_smooth(stats.avg_decode_us, deadline.decode_us);
-    if (options.stats_overlay) {
+    if (telemetry_on) {
         EnterCriticalSection(&telemetry_lock);
         deadline_overlay = deadline;
         LeaveCriticalSection(&telemetry_lock);
@@ -1891,7 +2069,7 @@ static int video_submit(PDECODE_UNIT du)
     return DR_OK;
 }
 
-void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
+static void video_ffmpeg_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
 {
     LiInitializeVideoCallbacks(cb);
     cb->setup = video_setup;
@@ -1910,6 +2088,39 @@ void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
          XDK_H264_REFERENCE_MODE,h264_reference_fast_flag(XDK_H264_REFERENCE_MODE,h264_diagnostic.fast_flag,options.fast_decode),
          h264_workers(),h264_diagnostic.rfi && !XDK_H264_NO_RFI,
          h264_diagnostic.capture_yuv,session_slices);
+}
+
+static const struct video_decoder_backend *video_find_decoder_backend(int requested)
+{
+    static const struct video_decoder_backend backends[] = {
+        {VIDEO_DECODER_FFMPEG, video_ffmpeg_init_callbacks}
+    };
+    int selected=video_decoder_resolve(requested);
+    for(unsigned i=0;i<sizeof(backends)/sizeof(backends[0]);i++)
+        if(backends[i].decoder==selected)return backends+i;
+    return NULL;
+}
+
+static int video_decoder_unavailable_setup(int format,int width,int height,int fps,void *ctx,int flags)
+{
+    (void)format;(void)width;(void)height;(void)fps;(void)ctx;(void)flags;
+    vlog("[DECODER] setup rejected: %s\n",video_decoder_unavailable_reason());
+    return -1;
+}
+
+void video_init_callbacks(DECODER_RENDERER_CALLBACKS *cb)
+{
+    const struct video_decoder_backend *backend=video_find_decoder_backend(options.decoder_backend);
+    if(!backend) {
+        /* A second boundary for non-UI callers: reject setup, advertise no
+         * capabilities, and never install callbacks for a nonexistent backend. */
+        LiInitializeVideoCallbacks(cb);
+        cb->setup=video_decoder_unavailable_setup;
+        return;
+    }
+    if(options.decoder_backend==VIDEO_DECODER_AUTO)
+        vlog("[DECODER] Auto selected FFmpeg: system GPU ABI unavailable in this build\n");
+    backend->init_callbacks(cb);
 }
 
 /* ---------------------------------------------------- benchmark */
@@ -2123,8 +2334,16 @@ bool plat_benchmark_available(void)
     return storage_dir() != NULL;
 }
 
+#if XDK_VMX_AB_EXPERIMENT
+#include "vmx_ab_xdk.h"
+#endif
+
 void plat_run_benchmark(void)
 {
+#if XDK_VMX_AB_EXPERIMENT
+    vmx_ab_screen();
+    return;
+#endif
     struct bench b;
     struct ui_stat rows[BENCH_RUNS + 1];
     HANDLE th;

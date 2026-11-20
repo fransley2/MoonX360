@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Moonlight's UI flow: splash, client identity, main menu, settings, pairing,
  * app grid with box art, and the streaming session. Shared by the libxenon
  * build and the Xbox 360 SDK build; platform specifics come from platform.h.
@@ -21,6 +21,7 @@
 
 #include <Limelight.h>
 
+#include "crt_output.h"
 #include "platform.h"
 #include "audio.h"
 #include "config.h"
@@ -52,6 +53,7 @@
 #include "video.h"
 #include "ui/ui.h"
 #include "ui/draw.h"
+#include "ui/smart_keyboard.h"
 #include "ui/image.h"
 #include "ui/cover_cache.h"
 #include "cover_disk.h"
@@ -131,7 +133,7 @@ static int wait_button(void)
     if(settings_navigation_page>=0 && navigation_pending>=0)return B_FLAG;
 
     while ((b = input_menu_pressed()) == 0)
-        plat_sleep_ms(16);
+        plat_sleep_ms(10);
     if(settings_navigation_page>=0 && tab_key(b,settings_navigation_page))return B_FLAG;
     return b;
 }
@@ -260,7 +262,8 @@ static void draw_busy(void *ctx, uint32_t t)
     struct busy_view *v = (struct busy_view *)ctx;
     int phase=plat_atomic_load(&task_phase);
 #ifdef _XBOX
-    if(launch_active()){launch_set_status(phase==HOST_CANCELLING?LAUNCH_CANCELLING:LAUNCH_RESOLVING);return;}
+    if(launch_active()){launch_set_status(phase==HOST_CANCELLING?LAUNCH_CANCELLING:
+        phase==HOST_FETCHING_APPS || phase==HOST_SWITCHING?LAUNCH_PREPARING:LAUNCH_RESOLVING);return;}
 #endif
     ui_draw_busy(v->title,phase!=HOST_IDLE?host_phase_text(phase):v->message[0]?v->message:"B cancels.",t);
 }
@@ -280,6 +283,9 @@ static void *run_busy(const char *title, const char *message, void *(*fn)(void *
 
 static void message(int icon, const char *title, const char *body)
 {
+#ifdef _XBOX
+    if(launch_active())launch_end();
+#endif
     ui_draw_message(icon, title, body);
     ui_present();
     while (!(wait_button() & (A_FLAG | B_FLAG)))
@@ -705,7 +711,7 @@ static bool edit_ip(char *ip, size_t len)
 
 /* ------------------------------------------------------------ settings */
 
-static const int resolutions[][2] = { { 640, 480 }, { 854, 480 }, { 1280, 720 }, { 1920, 1080 } };
+static const int resolutions[][2] = { { 640, 480 }, { 854, 480 }, { 960, 540 }, { 1280, 720 }, { 1920, 1080 } };
 
 static void log_viewer(void)
 {
@@ -775,25 +781,115 @@ static void calibrate_sticks(void)
         plat_sleep_ms(16);
     }
 }
-static void pointer_settings_menu(void)
+static void desktop_mapping_menu(void)
 {
+    static const char *buttons[]={"A","B","X","Y","D-Pad Up","D-Pad Down","D-Pad Left","D-Pad Right","LB","RB","Start","Back (release)"};
     int selected=0;
-    for(;;){
-        char speed[32],scroll[32];snprintf(speed,sizeof(speed),"%d%%",cfg.mouse_speed);snprintf(scroll,sizeof(scroll),"%d ms",cfg.mouse_scroll_ms);
-        struct ui_setting rows[]={{"Mouse sensitivity",speed,"25-200%. Small movements accumulate instead of being discarded."},
-            {"Mouse acceleration",cfg.mouse_acceleration?"On":"Off","Optional extra speed near the edge of the stick."},
-            {"Scroll interval",scroll,"50-400 ms per wheel step."},
-            {"Quick menu","Back + L3","Opens during streaming. A selects, B resumes. The full exit shortcut keeps priority."},
-            {"Remote input","Back + R3","USB keyboard forwarding is suspended while the quick menu or Guide is open."}};
-        int kinds[]={UI_OPTION_CYCLE,UI_OPTION_TOGGLE,UI_OPTION_CYCLE,UI_OPTION_INFO,UI_OPTION_INFO};
-        ui_draw_settings_options("Remote mouse and keyboard",rows,kinds,5,selected);ui_present();int key=wait_button();
-        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+5)%6;if(key&DOWN_FLAG)selected=(selected+1)%6;
-        if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)){int d=key&LEFT_FLAG?-1:1;
-            if(selected==0){cfg.mouse_speed+=d*25;if(cfg.mouse_speed<25)cfg.mouse_speed=200;if(cfg.mouse_speed>200)cfg.mouse_speed=25;}
-            if(selected==1)cfg.mouse_acceleration=!cfg.mouse_acceleration;
-            if(selected==2){cfg.mouse_scroll_ms+=d*50;if(cfg.mouse_scroll_ms<50)cfg.mouse_scroll_ms=400;if(cfg.mouse_scroll_ms>400)cfg.mouse_scroll_ms=50;}
+    for(;;){struct ui_setting rows[DESKTOP_BINDINGS];int kinds[DESKTOP_BINDINGS];
+        for(int i=0;i<DESKTOP_BINDINGS;i++){rows[i].label=buttons[i];rows[i].value=desktop_action_name(cfg.desktop.mapping[i]);rows[i].help="Assigning an action swaps its previous button. Back chords, R3 and axes stay reserved.";kinds[i]=UI_OPTION_CYCLE;}
+        ui_draw_settings_options("Desktop controls",rows,kinds,DESKTOP_BINDINGS,selected);ui_present();int key=wait_button();
+        if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+DESKTOP_BINDINGS-1)%DESKTOP_BINDINGS;if(key&DOWN_FLAG)selected=(selected+1)%DESKTOP_BINDINGS;
+        if(key&(A_FLAG|LEFT_FLAG|RIGHT_FLAG))desktop_remap(&cfg.desktop,selected,(cfg.desktop.mapping[selected]+(key&LEFT_FLAG?DA_COUNT-1:1))%DA_COUNT);
+    }
+}
+static void desktop_settings_menu(void)
+{
+    int page=-1,selected=0,category=0;
+    for(;;) {
+        char speed[24],zone[24],precision[24],scroll[24],binding[160];
+        snprintf(speed,sizeof(speed),"%d%%",cfg.desktop.speed);snprintf(zone,sizeof(zone),"%d%%",cfg.desktop.deadzone);
+        snprintf(precision,sizeof(precision),"%d%%",cfg.desktop.precision);snprintf(scroll,sizeof(scroll),"%d%%",cfg.desktop.scroll_speed);
+        snprintf(binding,sizeof(binding),"%s",cfg.desktop_app?"Bound to another PC / ID":"Off");
+        if(cfg.desktop_app && !strcmp(cfg.desktop_host,server.uuid)) {
+            snprintf(binding,sizeof(binding),"App ID %d",cfg.desktop_app);
+            for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)snprintf(binding,sizeof(binding),"%s [ID %d]",apps[i].name,apps[i].id);
+        }
+        const char *keyboards[]={"MoonX360 keyboard","Windows keyboard","Notification area"};
+        struct ui_setting rows[5];int kinds[5],n=0;const char *title="Desktop Mode";
+        if(page<0) {
+            struct ui_setting groups[]={
+                {"Behavior","Configure","Choose when Desktop Mode starts. Runtime toggles last for this session."},
+                {"Pointer and scrolling","Configure","Left stick moves, right stick scrolls. LT precision, RT boost."},
+                {"Keyboard","Configure","Y opens your selected keyboard. MoonX360 keyboard is the default."},
+                {"Control mapping","Configure","Edit button actions. Back chords and R3 actions stay reserved."},
+                {"Restore Desktop defaults","Reset","Reset only Desktop controls and its automatic launch binding."}};
+            n=5;memcpy(rows,groups,sizeof(groups));
+        } else if(page==0) {
+            title="Desktop behavior";
+            struct ui_setting options[]={
+                {"Start in Desktop Mode",cfg.desktop_start?"On":"Off","Applies to new sessions. Games otherwise start with normal gamepad input."},
+                {"Desktop launch application",binding,"Choose an app from this PC's library. The binding uses PC identity and App ID."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else if(page==1) {
+            title="Pointer and scrolling";
+            struct ui_setting options[]={
+                {"Sensitivity",speed,"Left stick mouse speed. LT precision takes priority over RT boost."},
+                {"Deadzone",zone,"0-30 percent, independent of gamepad calibration."},
+                {"Acceleration",cfg.desktop.acceleration?"On":"Off","Increase speed toward the edge of the stick."},
+                {"Precision speed",precision,"LT reduces speed to this fraction; RT boosts up to 2x."},
+                {"Scroll speed",scroll,"Right stick scrolls vertically and horizontally."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else if(page==2) {
+            title="Desktop keyboard";
+            const char *kb_styles[]={"Full PC (5 rows)","Compact (3x10 letters)"};
+            const char *kb_modes[]={"Direct (real keys)","Compose & Send"};
+            struct ui_setting options[]={
+                {"Keyboard",keyboards[cfg.desktop.keyboard],"MoonX360 types directly. Windows keyboard sends Win+Ctrl+O; Notification area only focuses Win+B."},
+                {"Keyboard layout",kb_styles[cfg.desktop.kb_style&1],"Full PC has Windows/Ctrl/Alt/numbers. Compact shows 3x10 letters (best for Dual-Stick). L3 switches anytime."},
+                {"Typing mode",kb_modes[cfg.desktop.kb_mode&1],"Direct types keys and Windows shortcuts live. Compose drafts text first with autocomplete. Back toggles live."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        } else {
+            title="Restore Desktop defaults?";
+            struct ui_setting options[]={
+                {"Cancel","Back","Keep your Desktop preferences."},
+                {"Restore Desktop defaults","Reset","Other app settings, pairing and stream profiles are preserved."}};
+            n=(int)(sizeof(options)/sizeof(options[0]));memcpy(rows,options,sizeof(options));
+        }
+        for(int i=0;i<n;i++)kinds[i]=page<0 || page==4?UI_OPTION_ACTION:UI_OPTION_CYCLE;
+        if(page==0){
+            kinds[0]=UI_OPTION_TOGGLE;
+            if(!server.uuid[0] || !app_count){kinds[1]=UI_OPTION_INFO;rows[1].help="Open this PC's Library first to choose its Desktop application.";}
+        }
+        if(page==1)kinds[2]=UI_OPTION_TOGGLE;
+        ui_draw_settings_options(title,rows,kinds,n,selected);ui_present();int key=wait_button();
+        if(key&B_FLAG){if(page<0)return;page=-1;selected=category;continue;}
+        if(key&UP_FLAG)selected=(selected+n-1)%n;if(key&DOWN_FLAG)selected=(selected+1)%n;
+        if(!(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)))continue;
+        int direction=key&LEFT_FLAG?-1:1;
+        if(page<0) {
+            if(!(key&A_FLAG))continue;
+            category=selected;
+            if(selected==3){desktop_mapping_menu();continue;}
+            page=selected;selected=0;continue;
+        }
+        if(page==0) {
+            if(!selected)cfg.desktop_start=!cfg.desktop_start;
+            else if(server.uuid[0] && app_count) {
+                int index=-1;
+                if(!strcmp(cfg.desktop_host,server.uuid))for(int i=0;i<app_count;i++)if(apps[i].id==cfg.desktop_app)index=i;
+                index+=direction;if(index>=app_count)index=-1;if(index< -1)index=app_count-1;
+                cfg.desktop_app=index<0?0:apps[index].id;snprintf(cfg.desktop_host,sizeof(cfg.desktop_host),"%s",index<0?"":server.uuid);
+            }
+        } else if(page==1) {
+            if(selected==0){cfg.desktop.speed+=direction*25;if(cfg.desktop.speed<25)cfg.desktop.speed=200;if(cfg.desktop.speed>200)cfg.desktop.speed=25;}
+            if(selected==1){cfg.desktop.deadzone+=direction*2;if(cfg.desktop.deadzone<0)cfg.desktop.deadzone=30;if(cfg.desktop.deadzone>30)cfg.desktop.deadzone=0;}
+            if(selected==2)cfg.desktop.acceleration=!cfg.desktop.acceleration;
+            if(selected==3){cfg.desktop.precision+=direction*5;if(cfg.desktop.precision<10)cfg.desktop.precision=75;if(cfg.desktop.precision>75)cfg.desktop.precision=10;}
+            if(selected==4){cfg.desktop.scroll_speed+=direction*25;if(cfg.desktop.scroll_speed<25)cfg.desktop.scroll_speed=200;if(cfg.desktop.scroll_speed>200)cfg.desktop.scroll_speed=25;}
+        } else if(page==2) {
+            if(selected==0)cfg.desktop.keyboard=(cfg.desktop.keyboard+(direction>0?1:2))%3;
+            else if(selected==1)cfg.desktop.kb_style=!cfg.desktop.kb_style;
+            else if(selected==2)cfg.desktop.kb_mode=!cfg.desktop.kb_mode;
+        }
+        else if(key&A_FLAG) {
+            if(selected){desktop_defaults(&cfg.desktop);cfg.desktop_start=false;cfg.desktop_app=0;cfg.desktop_host[0]=0;}
+            page=-1;selected=category;
         }
     }
+}
+static void pointer_settings_menu(void)
+{
+    desktop_settings_menu();
 }
 static void power_menu(bool restart)
 {
@@ -844,13 +940,56 @@ static bool edit_profile_name(char name[CONFIG_PROFILE_NAME_BYTES])
         }
     }
 }
+static struct sk_user_dict sk_learned_words;
+static bool run_smart_keyboard(enum sk_mode mode,char *out,int capacity,const char *title,const char *subtitle)
+{
+    struct sk_state sk;
+    int lang=cfg.language==CONFIG_LANGUAGE_PT_BR?SK_LANG_PT_BR:
+             cfg.language==CONFIG_LANGUAGE_SPANISH?SK_LANG_ES:SK_LANG_EN;
+    sk_init(&sk,mode,lang,title,subtitle,out,capacity,&sk_learned_words);
+    /* Wait for controller release so opening button (e.g. Y/A) never leaks into typing. */
+    struct pad pads[MAX_PADS];
+    bool settled=false;
+    for(;;) {
+        ui_draw_smart_keyboard(&sk);
+        ui_focus_tick(plat_now_ms());
+        ui_present();
+        plat_sleep_ms(16);
+        int mask=input_poll(pads);
+        struct sk_pad sp;memset(&sp,0,sizeof(sp));
+        for(int i=0;i<MAX_PADS;i++)if(mask&(1<<i)) {
+            int b=pads[i].buttons;
+            sp.up|=(b&UP_FLAG)!=0; sp.down|=(b&DOWN_FLAG)!=0;
+            sp.left|=(b&LEFT_FLAG)!=0; sp.right|=(b&RIGHT_FLAG)!=0;
+            sp.a|=(b&A_FLAG)!=0; sp.b|=(b&B_FLAG)!=0;
+            sp.x|=(b&X_FLAG)!=0; sp.y|=(b&Y_FLAG)!=0;
+            sp.lb|=(b&LB_FLAG)!=0; sp.rb|=(b&RB_FLAG)!=0;
+            sp.lt|=pads[i].lt>=140; sp.rt|=pads[i].rt>=140;
+            sp.start|=(b&PLAY_FLAG)!=0; sp.back|=(b&BACK_FLAG)!=0;
+            sp.ls_click|=(b&LS_CLK_FLAG)!=0; sp.rs_click|=(b&RS_CLK_FLAG)!=0;
+            if(abs(pads[i].lx)>abs(sp.lx))sp.lx=pads[i].lx;
+            if(abs(pads[i].ly)>abs(sp.ly))sp.ly=pads[i].ly;
+            if(abs(pads[i].rx)>abs(sp.rx))sp.rx=pads[i].rx;
+            if(abs(pads[i].ry)>abs(sp.ry))sp.ry=pads[i].ry;
+        }
+        if(!settled) {
+            if(!sp.a && !sp.b && !sp.x && !sp.y && !sp.start && !sp.lt && !sp.rt)settled=true;
+            continue;
+        }
+        enum sk_result res=sk_step(&sk,&sp,plat_now_ms());
+        if(res==SK_RESULT_CANCELLED)return false;
+        if(res==SK_RESULT_ACCEPTED) {
+            snprintf(out,(size_t)capacity,"%s",sk.text);
+            return true;
+        }
+    }
+}
 static bool edit_search_query(char text[CONFIG_PROFILE_NAME_BYTES])
 {
-#ifdef _XBOX
-    int result=plat_edit_text(text,CONFIG_PROFILE_NAME_BYTES,"Search library");
-    if(result>=0)return result!=0;
-#endif
-    return edit_profile_name(text);
+    if(run_smart_keyboard(SK_MODE_SEARCH,text,CONFIG_PROFILE_NAME_BYTES,
+                          "Search library","Enter a game or app name. B cancels."))
+        return true;
+    return false;
 }
 static void save_current_profile(void)
 {
@@ -931,8 +1070,12 @@ static void stream_profile_menu(void)
     }
     profile_label_revision++;
     int personal=config_profiles_selected(&profiles,&cfg),factory=config_match_factory(&cfg);
-    const int factories=CONFIG_PROFILE_COUNT-1;
-    int selected=personal>=0?factories+personal:factory>0?factory-1:0;
+    int visible[CONFIG_PROFILE_COUNT];
+    const int factories=config_visible_factory_profiles(visible,CONFIG_PROFILE_COUNT);
+    int selected=personal>=0?factories+personal:0;
+    if(personal<0 && factory>0) {
+        for(int i=0;i<factories;i++)if(visible[i]==factory){selected=i;break;}
+    }
     for(;;) {
         if(navigation_pending>=0)return;
         int count=factories+profiles.count+1;
@@ -941,17 +1084,27 @@ static void stream_profile_menu(void)
         char summaries[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX][100];
         for(int i=0;i<count-1;i++) {
             struct config preview=cfg;
-            if(i<factories){config_select_factory(&preview,i+1);rows[i].label=ui_translate(config_preset_name(i+1));}
+            int pid=i<factories?visible[i]:0;
+            if(i<factories){config_select_factory(&preview,pid);rows[i].label=ui_translate(config_preset_name(pid));}
             else {config_profiles_apply(&profiles,i-factories,&preview);rows[i].label=profiles.items[i-factories].name;}
             snprintf(summaries[i],sizeof(summaries[i]),"%dx%d | %d FPS | %.1f Mbps",preview.width,preview.height,preview.fps,preview.bitrate_kbps/1000.0);
-            rows[i].value=summaries[i];rows[i].help=i+1==CONFIG_PROFILE_1080_SMOOTH?"Experimental: performance may drop on Xbox 360.":"Applies on the next connection.";
+            rows[i].value=summaries[i];
+            rows[i].help=pid==CONFIG_PROFILE_SMOOTH?"720p60 balanced default (6 Mbps, full deblocking). Best quality with Apollo/Sunshine.":
+                         pid==CONFIG_PROFILE_PERFORMANCE?"Low-latency 540p60 (3 Mbps) with automatic Catmull-Rom GPU upscale.":
+                         pid==CONFIG_PROFILE_QUALITY?"720p60 high bitrate (10 Mbps). Ideal with host deblocking off + automatic GPU post-deblock.":
+                         pid==CONFIG_PROFILE_STANDARD?"720p30 stable preset (6 Mbps) with maximum decode headroom.":
+                         pid==CONFIG_PROFILE_1080_SMOOTH?"1080p30 (8 Mbps). Recommended with host deblocking off (idc=1) and 1080p display mode.":
+                         pid==CONFIG_PROFILE_WIRELESS?"480p60 low-delay Wi-Fi preset (2 Mbps, 768 B packets, VSync Off, full deblocking).":
+                         pid==CONFIG_PROFILE_CRT_DISPLAY?"4:3 SD CRT preset: 640x480, 3 Mbps, Fast Decode Off, preserves console output.":
+                         pid==CONFIG_PROFILE_CRT_RETRO_240P?"240p retro preset: 640x240, Fast Decode Off, Point/Nearest, requires verified t240.xex on 480i.":
+                         "Applies on the next connection.";
         }
         rows[count-1].label=ui_translate("Save current as new profile");rows[count-1].value="Save";rows[count-1].help="Save effective stream, decoder, presentation and audio parameters as a new named profile.";
         ui_draw_profiles(rows,count,selected,factories);ui_present();int key=wait_button();
         if(key&B_FLAG)return;
         if(key&UP_FLAG)selected=(selected+count-1)%count;if(key&DOWN_FLAG)selected=(selected+1)%count;
         if(selected==count-1){if(key&A_FLAG){save_current_profile();config_profiles_load(&profiles);}continue;}
-        int user=selected-factories,choice=selected+1;
+        int user=selected-factories,choice=user<0?visible[selected]:selected+1;
         if(key&X_FLAG){edit_stream_profile(&profiles,user,choice);config_profiles_load(&profiles);continue;}
         int action=0;
         if(key&Y_FLAG) {
@@ -1055,7 +1208,7 @@ static void overlay_options_menu(void)
     int selected=0,location=ui_location_enter("Streaming interface");
     for(;;) {
         struct ui_setting rows[]={
-            {"Mouse indicator",indicators[cfg.mouse_hud],"Compact badge, text without background, or hidden. Applied next session."},
+            {"Desktop indicator",indicators[cfg.mouse_hud],"Compact badge, text without background, or hidden. Applied next session."},
             {"Quick menu style",menus[cfg.stream_menu_style],"Compact uses fewer pixels. Sidebar keeps the larger layout. Applied next session."}};
         const int kinds[]={UI_OPTION_CYCLE,UI_OPTION_CYCLE};
         ui_draw_settings_options("Streaming interface",rows,kinds,2,selected);ui_present();
@@ -1097,6 +1250,100 @@ static void maintenance_menu(int selected)
     }
 }
 
+static void crt_screen_adjustment_menu(void)
+{
+    int selected=0,location=ui_location_enter("Screen Adjustment");
+    for(;;) {
+        char val_x[32],val_y[32],val_safe[32];
+        snprintf(val_x,sizeof(val_x),"%+d px",cfg.crt_pos_x);
+        snprintf(val_y,sizeof(val_y),"%+d px",cfg.crt_pos_y);
+        snprintf(val_safe,sizeof(val_safe),"%d%% / edge",cfg.ui_safe_area);
+        struct ui_setting rows[6];
+        int kinds[6],map_action[6],n=0;
+        rows[n].label="Horizontal position";rows[n].value=val_x;rows[n].help="Center picture horizontally (-20 to +20 px) without zooming or cropping.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=0;
+        rows[n].label="Vertical position";rows[n].value=val_y;rows[n].help="Center picture vertically (-20 to +20 px) without zooming or cropping.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=1;
+        rows[n].label="UI safe area";rows[n].value=val_safe;rows[n].help="0-10% safety margin per edge for overscan. Menus update after restart.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=2;
+        rows[n].label="CRT TV app layout";rows[n].value="Confirm...";rows[n].help="Offer 4:3 UI, 640x480 app target and 5% UI margin. Saves previous app display settings. Requires app restart; never changes console video timing.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=3;
+        if(cfg.crt_display_backup) {
+            rows[n].label="Restore previous app display";rows[n].value="Confirm...";rows[n].help="Restore only the app target, layout and UI margin saved before CRT setup. Other preferences remain unchanged. App restart required.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=4;
+        }
+        rows[n].label="Reset geometry";rows[n].value="Reset";rows[n].help="Reset CRT position offset and safety margin to defaults.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=5;
+        if(selected>=n)selected=n-1;
+        ui_draw_settings_options("Screen Adjustment",rows,kinds,n,selected);ui_present();
+        int key=wait_button();
+        if(key&B_FLAG)break;
+        if(key&UP_FLAG)selected=(selected+n-1)%n;
+        if(key&DOWN_FLAG)selected=(selected+1)%n;
+        if(key&(LEFT_FLAG|RIGHT_FLAG|A_FLAG)) {
+            int d=(key&LEFT_FLAG)?-1:1;
+            int act=map_action[selected];
+            if(act==0){config_customize_stream(&cfg);cfg.crt_pos_x=cfg.crt_pos_x+d<-20?-20:cfg.crt_pos_x+d>20?20:cfg.crt_pos_x+d;}
+            else if(act==1){config_customize_stream(&cfg);cfg.crt_pos_y=cfg.crt_pos_y+d<-20?-20:cfg.crt_pos_y+d>20?20:cfg.crt_pos_y+d;}
+            else if(act==2){cfg.ui_safe_area=(cfg.ui_safe_area+d+11)%11;}
+            else if(act==3 && (key&A_FLAG)) {
+                if(confirm_action("CRT TV app layout?","This changes only the app render target, interface layout and UI margin. App restart required. Physical component output must be 480i, TV 16:9 mode Off.","Use CRT layout")) {
+                    if(!config_crt_display_commit(&cfg,true))message(ICON_ERROR,"Display settings not saved","Current app display settings were preserved.");
+                }
+            } else if(act==4 && (key&A_FLAG)) {
+                if(confirm_action("Restore app display?","This changes only the app render target, interface layout and UI margin. App restart required. Physical component output must be 480i, TV 16:9 mode Off.","Restore")) {
+                    if(!config_crt_display_commit(&cfg,false))message(ICON_ERROR,"Display settings not saved","Current app display settings were preserved.");
+                }
+            } else if(act==5 && (key&A_FLAG)) {
+                config_customize_stream(&cfg);cfg.crt_pos_x=0;cfg.crt_pos_y=0;cfg.ui_safe_area=0;
+            }
+        }
+    }
+    ui_location_restore(location);
+}
+
+static void crt_output_status_menu(void)
+{
+    int selected=0,location=ui_location_enter("Output Status");
+    for(;;) {
+        struct crt_output_status st;
+        plat_crt_output_query(&st);
+        char phys[64],plug[48],vbuf[24];
+        crt_output_format_version(st.plugin_ver,vbuf,sizeof(vbuf));
+        if(st.display_width>0 && st.display_height>0)
+            snprintf(phys,sizeof(phys),"%dx%d%s %.2f Hz (%s)",st.display_width,st.display_height,
+                     st.interlaced?"i":"p",st.refresh_hz_x100/100.0,crt_output_mode_short(&st));
+        else
+            snprintf(phys,sizeof(phys),"Unknown");
+        if(st.plugin_detected)snprintf(plug,sizeof(plug),"Detected (%s)",vbuf);
+        else snprintf(plug,sizeof(plug),"Not detected");
+        struct ui_setting rows[5]={
+            {"Detected physical mode",phys,"Reported by Xbox video hardware."},
+            {"t240.xex plugin",plug,"External DashLaunch plugin via S240 v3 memory beacon."},
+            {"CRT Retro (240p) ready",st.retro_240p_available?"Ready":"Unavailable","Requires console 480i (60 Hz) and verified t240.xex v2.0+."},
+            {"Active 240p scanout",st.active_240p?"Active":"Inactive","Confirmed only when backbuffer 640x240 and t240.xex plugin_mode=1 both match."},
+            {"Diagnostic detail",crt_output_reason_text(st.reason),"Press A to re-check current console video and plugin state."}
+        };
+        ui_draw_settings_page("Output Status",rows,5,selected);ui_present();
+        int key=wait_button();
+        if(key&B_FLAG)break;
+        if(key&UP_FLAG)selected=(selected+4)%5;
+        if(key&DOWN_FLAG)selected=(selected+1)%5;
+    }
+    ui_location_restore(location);
+}
+
+static bool settings_child_hidden(int child)
+{
+    if(child==MENU_CRT_PICTURE)return !config_crt_profile(&cfg);
+    return child==MENU_DECODER_BACKEND || child==MENU_DECODER || child==MENU_VIDEO_REFRESH;
+}
+static bool settings_item_hidden(int id)
+{
+    if(id==SET_TEST_BITRATE || id==SET_ADAPTIVE || id==SET_RECOVERY_INFO ||
+       id==SET_ADVISOR || id==SET_LAUNCH_COVER)return true;
+    if(id==SET_CRT_CLARITY) {
+        if(config_is_crt_retro(&cfg))return true;
+        return !(plat_crt_output_status()==1 || cfg.ui_layout==1 || cfg.display_mode==4 || cfg.crt_clarity || config_crt_profile(&cfg));
+    }
+    if(id==SET_CRT_RESTORE && !cfg.crt_display_backup)return true;
+    return false;
+}
+
 static void settings_menu(void)
 {
     bool stream_page=settings_initial_group==SETTINGS_STREAM;
@@ -1123,7 +1370,8 @@ static void settings_menu(void)
             "On-screen statistics", "Diagnostic capture", "View logs", "H.264 slices", "Bitrate comparisons",
             "Image quality", "Record session history", "Recent sessions", "Performance analysis",
             "Find PCs automatically (mDNS)", "UI resources", "Recovery information", "Network diagnostics",
-            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Remote mouse and keyboard", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength",
+            "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Desktop Mode", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength", "Video decoder",
+            "Scaling Filter", "Aspect Ratio", "Screen Adjustment", "Output Status", "Reset CRT Settings",
         };
         static const char *helps[SET_COUNT] = {
             "Requested host resolution. Compare measured decode and queue time on hardware; lower resolution alone does not guarantee better performance.",
@@ -1176,7 +1424,7 @@ static void settings_menu(void)
             "Shut down the console after a confirmation. No action is sent to the PC.",
             "Use, edit, rename or delete profiles from Stream Profile.",
             "Stereo by default. 5.1 requires a configured surround output; unavailable outputs use stereo.",
-            "Back + R3: mouse mode. Left stick moves; A/B click; right stick scrolls. USB keyboard forwards only during streaming.",
+            "Back + R3 toggles Desktop. Y opens the keyboard, R3 opens actions. Configure pointer, scrolling and buttons here.",
             "Save effective stream, decoder, presentation and audio parameters as a new named profile.",
             "Cover time after first decoded frame. This timer does not detect game readiness.",
             "Last stopped session: local input, network, decode, presentation and audio timing. Enable Diagnostic capture for a bounded 45-second report.",
@@ -1187,12 +1435,30 @@ static void settings_menu(void)
             "Restore only the app target, layout and UI margin saved before CRT setup. Other preferences remain unchanged. App restart required.",
             "Off by default. GPU Smooth (Experimental) mixes two raw YUV pictures for two presentations after a selected decoded IDR. Cached pipeline and an extra YUV slot are required. Failure bypasses to Fast. Check smoothing-session.txt for actual blended Present calls. Next session.",
             "Low uses at most 10% then 4% previous picture; Medium at most 15% then 7%. Motion/difference gates may bypass. This heuristic cannot guarantee clean history. Does not change refresh frequency. Next session.",
+            "FFmpeg is the stable default. System GPU is unavailable in this build and blocks connection. Auto uses FFmpeg. Applies next session; independent of renderer and saved stream profiles.",
+            "GPU scaling filter: Auto, Point / Nearest, Bilinear or Sharp-Bilinear.",
+            "CRT aspect framing: 4:3 (default) or Original. Widescreen keeps letterboxing and never stretches.",
+            "Adjust CRT position offset, UI safe area margin and optional 4:3 CRT app layout.",
+            "Inspect console video mode, t240.xex detection and active 240p/480i output status.",
+            "Restore CRT Picture scaling filter, clarity, aspect ratio and position defaults.",
         };
         char val[SET_COUNT][128];
+        snprintf(val[SET_DECODER_BACKEND],128,"%s",cfg.decoder_backend==VIDEO_DECODER_AUTO?"Auto (FFmpeg)":video_decoder_name(cfg.decoder_backend));
         snprintf(val[SET_REFRESH_SMOOTHING],128,"%s",cfg.refresh_smoothing?"GPU Smooth (Experimental)":"Off");
         snprintf(val[SET_SMOOTHING_STRENGTH],128,"%s",cfg.smoothing_strength?"Medium":"Low");
         snprintf(val[SET_UI_SAFE_AREA],128,"%d%% / edge",cfg.ui_safe_area);
-        snprintf(val[SET_CRT_CLARITY],128,"%s",cfg.crt_clarity?"On":"Off");
+        snprintf(val[SET_CRT_CLARITY],128,"%s",plat_crt_output_status()==1 || cfg.crt_clarity?(cfg.crt_clarity?"On":"Off"):"Unavailable (480i)");
+        snprintf(val[SET_CRT_SCALING],128,"%s",config_crt_scaling_name(cfg.crt_scaling));
+        snprintf(val[SET_CRT_ASPECT],128,"%s",config_crt_aspect_name(cfg.crt_aspect));
+        snprintf(val[SET_CRT_SCREEN_ADJ],128,"%s","Open");
+        {
+            struct crt_output_status ost;
+            plat_crt_output_query(&ost);
+            snprintf(val[SET_CRT_OUTPUT_STATUS],128,"%s",
+                     ost.active_240p?"240p (active)":
+                     (ost.console_output_kind==CRT_OUTPUT_480I?(ost.plugin_detected?"480i (t240 OK)":"480i"):crt_output_mode_short(&ost)));
+        }
+        snprintf(val[SET_CRT_RESET],128,"%s","Reset");
         snprintf(val[SET_CRT_SETUP],128,"Confirm...");
         snprintf(val[SET_CRT_RESTORE],128,"%s",cfg.crt_display_backup?"Confirm...":"No backup");
         snprintf(val[SET_REMOTE_INPUT],48,"%s","Back + R3");
@@ -1208,7 +1474,8 @@ static void settings_menu(void)
         int map[SET_COUNT],children[SET_COUNT],kinds[SET_COUNT];   /* row -> setting id and interaction */
         int b, i, n = 0, res = 0;
 
-        for (i = 0; i < 4; i++)
+        int res_count = (int)(sizeof(resolutions) / sizeof(resolutions[0]));
+        for (i = 0; i < res_count; i++)
             if (resolutions[i][0] == cfg.width && resolutions[i][1] == cfg.height)
                 res = i;
         snprintf(val[SET_RES], 48, "%dx%d", cfg.width, cfg.height);
@@ -1249,7 +1516,7 @@ static void settings_menu(void)
         snprintf(val[SET_SHUTDOWN],48,"%s",plat_power_available()?"Confirm...":"Unavailable");
         snprintf(val[SET_REPORT], 48, "%s", cfg.session_report ? "On" : "Off");
         snprintf(val[SET_PACKET], 48, "%d bytes", cfg.packet_size);
-        static const char *overlay_names[]={"Off","Basic","Detailed","Developer"};
+        static const char *overlay_names[]={"Off","Simple","Detailed","Developer"};
         snprintf(val[SET_OVERLAY],48,"%s",overlay_names[config_overlay_mode(&cfg)]);
         snprintf(val[SET_IMAGE_QUALITY],48,"%s",effective.image_quality==1?"Fast":effective.image_quality==2?"Quality":"Auto Quality");
         snprintf(val[SET_HISTORY],48,"%s",cfg.history_enabled?"On":"Off");
@@ -1276,12 +1543,15 @@ static void settings_menu(void)
 #ifndef _XBOX
                 if(child==MENU_AURORA || child==MENU_ARTWORK_CACHE)continue;
 #endif
+                if(settings_child_hidden(child))continue;
                 rows[n].label=settings_pages[child].title;rows[n].value="Open";rows[n].help=settings_pages[child].help;
                 kinds[n]=(child==MENU_RESTART_APP || child==MENU_RESET_APP)?UI_OPTION_ACTION:UI_OPTION_OPEN;
                 if(child==MENU_RESTART_APP)rows[n].value=plat_restart_available()?"Confirm...":"Unavailable";
                 if(child==MENU_RESET_APP)rows[n].value="Confirm...";
                 map[n]=-1;children[n++]=child;continue;
             }
+            if (settings_item_hidden(id))
+                continue;
             if (id == SET_RENDERER && !plat_has_renderer_choice())
                 continue;
             if (id == SET_BENCH && !plat_benchmark_available())
@@ -1344,6 +1614,7 @@ static void settings_menu(void)
             switch(map[sel]) {
             case SET_RES:case SET_FPS:case SET_BITRATE:case SET_FAST:case SET_RENDERER:case SET_VSYNC:case SET_SOPS:case SET_AUDIO:case SET_AUDIO_MODE:
             case SET_PACKET:case SET_SLICES:case SET_IMAGE_QUALITY:case SET_ADAPTIVE:case SET_CPU_LAYOUT:case SET_WORKERS:case SET_TEST_BITRATE:
+            case SET_CRT_SCALING:case SET_CRT_ASPECT:
                 config_customize_stream(&cfg);break;
             }
             switch (map[sel]) {
@@ -1393,7 +1664,18 @@ static void settings_menu(void)
                 cfg.refresh_interval_ms=config_cycle_refresh_interval(cfg.refresh_interval_ms,d);break;
             }
             case SET_UI_SAFE_AREA:cfg.ui_safe_area=(cfg.ui_safe_area+d+11)%11;break;
-            case SET_CRT_CLARITY:cfg.crt_clarity=!cfg.crt_clarity;break;
+            case SET_CRT_CLARITY:
+                if(plat_crt_output_status()==1 || cfg.crt_clarity){config_customize_stream(&cfg);cfg.crt_clarity=!cfg.crt_clarity;}
+                else message(ICON_INFO,"CRT Clarity unavailable","480i interlaced console output is required to enable CRT Clarity.");
+                break;
+            case SET_CRT_SCALING:cfg.crt_scaling=config_cycle_crt_scaling(cfg.crt_scaling,d);break;
+            case SET_CRT_ASPECT:cfg.crt_aspect=config_cycle_crt_aspect(cfg.crt_aspect,d);break;
+            case SET_CRT_SCREEN_ADJ:if(b&A_FLAG)crt_screen_adjustment_menu();break;
+            case SET_CRT_OUTPUT_STATUS:if(b&A_FLAG)crt_output_status_menu();break;
+            case SET_CRT_RESET:
+                if((b&A_FLAG) && confirm_action("Reset CRT Settings?","Restore Scaling Filter, CRT Clarity, Aspect Ratio, Screen Position and Safe Area to CRT defaults.","Reset"))
+                    config_crt_reset_settings(&cfg);
+                break;
             case SET_CRT_SETUP:case SET_CRT_RESTORE:if(b&A_FLAG) {
                 bool restore=map[sel]==SET_CRT_RESTORE;
                 if(confirm_action(restore?"Restore app display?":"CRT TV app layout?",
@@ -1411,7 +1693,7 @@ static void settings_menu(void)
             case SET_RESTART:case SET_SHUTDOWN:if((b&A_FLAG) && plat_power_available())power_menu(map[sel]==SET_RESTART);break;
             case SET_REPORT: cfg.session_report = !cfg.session_report; break;
             case SET_RES:
-                res = (res + d + 4) % 4;
+                res = (res + d + res_count) % res_count;
                 config_customize_stream(&cfg);
                 cfg.width = resolutions[res][0];
                 cfg.height = resolutions[res][1];
@@ -1424,6 +1706,7 @@ static void settings_menu(void)
             case SET_TEST_BITRATE: config_customize_stream(&cfg);cfg.bitrate_kbps = config_test_bitrate(&cfg,d); break;
             case SET_SLICES: cfg.slice_count = config_cycle_slices(cfg.slice_count, d); break;
             case SET_FAST: config_customize_stream(&cfg);cfg.fast_decode = !cfg.fast_decode; break;
+            case SET_DECODER_BACKEND: cfg.decoder_backend=(video_decoder_validate(cfg.decoder_backend)+d+VIDEO_DECODER_COUNT)%VIDEO_DECODER_COUNT; break;
             case SET_RENDERER: cfg.renderer = (cfg.renderer + d + RENDERER_COUNT) % RENDERER_COUNT; break;
             case SET_VSYNC: cfg.vsync = !cfg.vsync; break;
             case SET_SOPS: cfg.sops = !cfg.sops; break;
@@ -1691,7 +1974,7 @@ static void save_session_report(uint32_t elapsed)
         "duration_ms=%u\nreceived=%u\ndecoded=%u\nrendered=%u\ndropped=%u\ndecode_errors=%u\n"
         "shown_fps=%.2f\ndecode_ms_smoothed=%.2f\nrender_ms_smoothed=%.2f\ndecode_threads=%d\n"
         "connection_terminated=%d\ntermination_error=%d\n",
-        cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, effective.fast_decode,cfg.fast_decode,effective.image_quality,elapsed,
+        cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, 0, cfg.fast_decode, effective.image_quality, elapsed,
         vs.received, vs.decoded, vs.rendered, vs.dropped, vs.decode_errors,
         elapsed ? vs.rendered * 1000.0 / elapsed : 0.0, vs.avg_decode_us / 1000.0,
         vs.avg_render_us / 1000.0, vs.decode_threads, connection_terminated,
@@ -1947,15 +2230,19 @@ static void advisor_menu(void)
     }
 }
 
-static bool stream_once(int app_id, const char *app_title)
-{
-    struct video_watchdog watchdog;memset(&watchdog,0,sizeof(watchdog));
-    struct video_progress_snapshot progress;memset(&progress,0,sizeof(progress));
-    uint32_t last_watchdog_ms=0;
-    bool watchdog_reconnect=false;
-    uint32_t connection_begun=plat_now_ms();
-    stream_return_home=false;
 #ifdef _XBOX
+static unsigned launch_validated_operation;
+static int launch_validated_app;
+static bool launch_preflight_consume(int app_id)
+{
+    bool valid=launch_validated_operation && launch_validated_operation==task_generation+1 && launch_validated_app==app_id &&
+        launch_active() && !launch_cancelled() && server_ok && server.paired && server.uuid[0] &&
+        !strcmp(server.uuid,cfg.host_uuid) && !strcmp(server.address,cfg.host);
+    launch_validated_operation=0;return valid;
+}
+static char launch_identity[96];
+static int launch_selected_delay(int app_id,const char *app_title)
+{
     int cover_delay=cfg.launch_cover_ms;
     struct launch_settings prefs;launch_settings_load(&prefs);
     int pref=launch_setting_find(&prefs,host_key(),app_id);
@@ -1964,7 +2251,15 @@ static bool stream_once(int app_id, const char *app_title)
     /* Explicit per-host/app Desktop flag is authoritative. English protocol
      * title is a convenience fallback for previously configured hosts. */
     if(pref<0 && !strcmp(app_title,"Desktop"))cover_delay=0;
-    launch_begin(cover_delay,cfg.launch_animation);launch_connecting=false;plat_atomic_store(&launch_handoff,0);
+    return cover_delay;
+}
+/* A single launch owner starts at Play and survives preflight and handoff. */
+static void launch_selected_begin(int app_id,const char *app_title)
+{
+    launch_validated_operation=0;
+    snprintf(launch_identity,sizeof(launch_identity),"%s",host_key());
+    int cover_delay=launch_selected_delay(app_id,app_title);
+    launch_begin(cover_delay,cfg.launch_animation);launch_set_status(LAUNCH_RESOLVING);launch_connecting=false;plat_atomic_store(&launch_handoff,0);
     memset(&launch_app,0,sizeof(launch_app));launch_app.name=app_title;
     for(int i=0;i<app_count;i++)if(apps[i].id==app_id){launch_app.art=app_art[i];launch_app.generation=art_generation[i];break;}
     if(!aurora_direct_active && !launch_app.art)launch_app.art=home_art_get(&home_art,home_key(),app_id,&launch_app.generation);
@@ -1986,12 +2281,29 @@ static bool stream_once(int app_id, const char *app_title)
     }
     int aw,ah;ui_art_size(&aw,&ah);launch_offer_art(launch_app.art,aw,ah,launch_app.generation);
     launch_prepare();draw_launch(NULL,launch_ui_started);launch_present();
+}
+#endif
+
+static bool stream_once(int app_id, const char *app_title)
+{
+    struct video_watchdog watchdog;memset(&watchdog,0,sizeof(watchdog));
+    struct video_progress_snapshot progress;memset(&progress,0,sizeof(progress));
+    uint32_t last_watchdog_ms=0;
+    bool watchdog_reconnect=false;
+    uint32_t connection_begun=plat_now_ms();
+    stream_return_home=false;
+#ifdef _XBOX
+    if(!launch_active())launch_selected_begin(app_id,app_title);
 #endif
     discovery_pause();
 #ifdef _XBOX
     if(launch_cancelled()){launch_end();return false;}
 #endif
+#ifdef _XBOX
+    if(!launch_preflight_consume(app_id))refresh_server();
+#else
     refresh_server();
+#endif
     if(task_was_cancelled || !server_ok || !server.paired) {
 #ifdef _XBOX
         if(!aurora_direct_active && !task_was_cancelled && server_ok && !server.paired) {
@@ -2112,7 +2424,11 @@ static bool stream_once(int app_id, const char *app_title)
     memset(&vo, 0, sizeof(vo));
     struct stream_options effective;
     config_profile_capture(&effective,&cfg);
-    vo.fast_decode = effective.fast_decode!=0;
+    /* R50 R4: lock full normative H.264 deblocking (fast_decode=0) to prevent green
+     * reference drift and macroblocking even if an older moonlight.ini saved fast_decode=1. */
+    vo.fast_decode = false;
+    vo.decoder_backend = cfg.decoder_backend;
+    if (vo.decoder_backend == VIDEO_DECODER_SYSTEM_GPU) vo.decoder_backend = VIDEO_DECODER_FFMPEG;
     vo.renderer = cfg.renderer;
     vo.vsync = cfg.vsync;
     vo.stats_overlay = cfg.stats_overlay && plat_has_diagnostics();
@@ -2127,13 +2443,71 @@ static bool stream_once(int app_id, const char *app_title)
     vo.slice_count = cfg.slice_count;
     vo.refresh_interval_ms = cfg.refresh_interval_ms;
     vo.refresh_smoothing=effective.refresh_smoothing;vo.smoothing_strength=effective.smoothing_strength;
-    vo.crt_clarity = effective.crt_clarity!=0;vo.packet_size=cfg.packet_size;
+    vo.crt_clarity = effective.crt_clarity!=0 && !config_is_crt_retro(&cfg);vo.packet_size=cfg.packet_size;
+    vo.crt_scaling = effective.crt_scaling;
+    vo.crt_aspect = effective.crt_aspect;
+    vo.crt_pos_x = effective.crt_pos_x;
+    vo.crt_pos_y = effective.crt_pos_y;
+    vo.ui_safe_area = cfg.ui_safe_area;
+    vo.crt_retro_240p = false;
+    vo.crt_picture_context = config_crt_profile(&cfg);
     snprintf(vo.host_name,sizeof(vo.host_name),"%s",host_display_name());
     vo.color_space = lj.sc.colorSpace;
     perf_request_fps(PERF_FPS_VIDEO_OPTIONS,vo.target_fps,0);
     video_set_options(&vo);
     video_init_callbacks(&dr);
     audio_init_callbacks(&ar);
+
+    bool retro_240p_session = config_is_crt_retro(&cfg);
+    bool retro_240p_entered = false;
+    if (retro_240p_session) {
+        if (plat_crt_240p_enter(cfg.width, cfg.height)) {
+            retro_240p_entered = true;
+            vo.crt_retro_240p = true;
+            video_set_options(&vo);
+        } else {
+#ifdef _XBOX
+            if (launch_active()) launch_end();
+#endif
+            plat_crt_240p_exit();
+            struct crt_output_status cst;
+            plat_crt_output_query(&cst);
+            struct ui_setting frows[2] = {
+                {"Use CRT (640x480)", "480i / 60 FPS / 3 Mbps", "Continue without 240p switch; keeps console interlaced output."},
+                {"Cancel", "Return", crt_output_reason_text(cst.reason)}
+            };
+            const int fkinds[2] = { UI_OPTION_ACTION, UI_OPTION_ACTION };
+            int fchoice = 0;
+            for (;;) {
+                ui_draw_settings_options("CRT Retro (240p) unavailable", frows, fkinds, 2, fchoice);
+                ui_present();
+                int fkey = wait_button();
+                if (fkey & B_FLAG) return false;
+                if (fkey & (UP_FLAG | DOWN_FLAG)) fchoice = !fchoice;
+                if (fkey & A_FLAG) {
+                    if (fchoice != 0) return false;
+                    break;
+                }
+            }
+            config_select_factory(&cfg, CONFIG_PROFILE_CRT_DISPLAY);
+            retro_240p_session = false;
+            lj.sc.width = cfg.width;
+            lj.sc.height = cfg.height;
+            lj.sc.fps = cfg.fps;
+            lj.sc.bitrate = cfg.bitrate_kbps;
+            vo.width = cfg.width;
+            vo.height = cfg.height;
+            vo.vsync = cfg.vsync;
+            vo.crt_scaling = cfg.crt_scaling;
+            vo.crt_aspect = cfg.crt_aspect;
+            vo.crt_pos_x = cfg.crt_pos_x;
+            vo.crt_pos_y = cfg.crt_pos_y;
+            vo.crt_clarity = false;
+            vo.crt_retro_240p = false;
+            vo.crt_picture_context = true;
+            video_set_options(&vo);
+        }
+    }
 
     connection_terminated = false;
     termination_error = 0;
@@ -2154,6 +2528,7 @@ static bool stream_once(int app_id, const char *app_title)
     task_interrupt_transport=false;
     if(task_was_cancelled || task_timed_out) {
         if(cj.ret==0)LiStopConnection();
+        if(retro_240p_entered)plat_crt_240p_exit();
 #ifdef _XBOX
         launch_end();
 #endif
@@ -2179,6 +2554,7 @@ static bool stream_once(int app_id, const char *app_title)
 
     if(task_was_cancelled || task_timed_out) {
         if(cj.ret==0)LiStopConnection();
+        if(retro_240p_entered)plat_crt_240p_exit();
 #ifdef _XBOX
         launch_end();
 #endif
@@ -2187,6 +2563,7 @@ static bool stream_once(int app_id, const char *app_title)
         return false;
     }
     if (cj.ret != 0) {
+        if(retro_240p_entered)plat_crt_240p_exit();
 #ifdef _XBOX
         bool cancelled=launch_cancelled();launch_end();if(cancelled){ui_suspended=false;return false;}
 #endif
@@ -2211,10 +2588,14 @@ static bool stream_once(int app_id, const char *app_title)
     input_configure_low_latency(config_overlay_mode(&cfg)==3 && cfg.stream_profile==0 && !cfg.user_profile[0]);
     ui_set_stream_hud(cfg.stream_menu_style,cfg.mouse_hud);
     input_configure_pointer(cfg.mouse_speed,cfg.mouse_acceleration,cfg.mouse_scroll_ms,cfg.stats_overlay);
+    input_configure_overlay(config_overlay_mode(&cfg));
+    input_configure_desktop(&cfg.desktop,cfg.desktop_start || (cfg.desktop_app==app_id &&
+        cfg.desktop_host[0] && server.uuid[0] && !strcmp(cfg.desktop_host,server.uuid)));
 #endif
     started = plat_now_ms();
 #ifdef _XBOX
     launch_watch_started=first_media_since=started;
+    bool overlay_dirty = false;
 #endif
     last_network_ms = started - 1000;
     adaptation.started=started;
@@ -2290,7 +2671,24 @@ static bool stream_once(int app_id, const char *app_title)
             }
         }
 #endif
-        if ((vo.stats_overlay || cfg.history_enabled || cfg.adaptive_quality) && now - last_network_ms >= 1000) {
+#ifdef _XBOX
+        int live_overlay = input_overlay_mode();
+        if (live_overlay != config_overlay_mode(&cfg)) {
+            if (live_overlay != 0 && config_overlay_mode(&cfg) == 0)
+                last_network_ms = now - 1000;
+            cfg.overlay_mode = live_overlay;
+            cfg.stats_overlay = live_overlay != 0;
+            overlay_dirty = true;
+        }
+        if (overlay_dirty && (input_quick_snapshot() & 1u) == 0) {
+            config_save(&cfg);
+            overlay_dirty = false;
+        }
+        bool need_net = live_overlay != 0 || vo.stats_overlay || cfg.history_enabled || cfg.adaptive_quality;
+#else
+        bool need_net = vo.stats_overlay || cfg.history_enabled || cfg.adaptive_quality;
+#endif
+        if (need_net && now - last_network_ms >= 1000) {
             uint32_t rtt = 0, variance = 0;
             bool valid = LiGetEstimatedRttInfo(&rtt, &variance);
             video_set_network_stats(rtt, variance, valid, LiGetPendingVideoFrames(), LiGetPendingAudioDuration());
@@ -2324,6 +2722,7 @@ static bool stream_once(int app_id, const char *app_title)
 #ifdef _XBOX
     if(launch_cancelled())local_exit=true;
 #endif
+    uint32_t teardown_started=plat_now_ms(),teardown_input_ms;
     plat_log("[STREAM] Disconnect requested\n");
     plat_shutdown_stage("Stopping controller forwarding\n");
     perf_mark(PERF_STOP_BEGIN);
@@ -2331,11 +2730,21 @@ static bool stream_once(int app_id, const char *app_title)
     if(cfg.diagnostic_log && !capture_closed){perf_capture_close();video_get_stats(&capture_last);capture_closed=true;}
 #endif
     input_stream_stop();
+#ifdef _XBOX
+    if (overlay_dirty) {
+        config_save(&cfg);
+        overlay_dirty = false;
+    }
+#endif
+    teardown_input_ms=plat_now_ms()-teardown_started;
     plat_log("[STREAM] Input forwarding stopped\n");
     elapsed = plat_now_ms() - started;
     plat_shutdown_stage("Stopping Moonlight transport\n");
     plat_diagnostics_flush();
+    uint32_t transport_stop_started=plat_now_ms();
     LiStopConnection();
+    if(retro_240p_entered)plat_crt_240p_exit();
+    cl_log("[UX] teardown input_ms=%u transport_ms=%u total_ms=%u\n",teardown_input_ms,plat_now_ms()-transport_stop_started,plat_now_ms()-teardown_started);
     plat_log("[STREAM] Moonlight session terminated; video, audio and decoder stopped\n");
 #ifdef _XBOX
     /* Final counters include work completed while transport workers drained.
@@ -2344,6 +2753,7 @@ static bool stream_once(int app_id, const char *app_title)
     last_video_progress_at_ms=plat_now_ms();
     launch_end();
 #endif
+    cl_log("[UX] teardown resources_total_ms=%u\n",plat_now_ms()-teardown_started);
     perf_mark(PERF_RETURN_MENU);
     perf_flush();
     perf_begin(cfg.diagnostic_log || cfg.stats_overlay);
@@ -2382,7 +2792,8 @@ static bool stream_once(int app_id, const char *app_title)
     }
     if (local_exit) {
         plat_log("[UI] Returning to MoonX360\n");
-        stream_return_home = true;
+        /* Resume the calling Library/Home with its selection and warm cache. */
+        stream_return_home = false;
         return false;
     }
     return show_stream_stats(elapsed);
@@ -2445,6 +2856,7 @@ static bool prepare_selected_app(int app_id)
 {
     /* One synchronous menu operation, with HTTP owned by the existing worker.
      * No input from Library/Home/Aurora is dispatched until it has joined. */
+    uint32_t validation_started=plat_now_ms();
     discovery_pause();refresh_server();
     if(task_was_cancelled || task_start_failed)return false;
     if(!server_ok){if(!aurora_direct_active)recover_host_ui();return false;}
@@ -2477,6 +2889,7 @@ static bool prepare_selected_app(int app_id)
         !strcmp(server.uuid,job.host.uuid) && !strcmp(server.address,job.host.address);
     if(ok)server.current_game=job.host.current_game;
     if(!ok && !task_was_cancelled)message(ICON_ERROR,"Couldn't start app",job.error[0]?job.error:"The operation timed out or the selected PC changed. Refresh and try again.");
+    cl_log("[UX] preflight app=%d total_ms=%u switched=%d ok=%d\n",app_id,plat_now_ms()-validation_started,job.confirmed,ok);
     gs_server_free(&job.host);return ok;
 }
 #ifdef _XBOX
@@ -2502,11 +2915,54 @@ static void offer_stream_environment(void)
 
 }
 #endif
+static bool prepare_retro_240p_session(void)
+{
+    struct crt_output_status st;
+    if(!config_is_crt_retro(&cfg))return true;
+    plat_crt_output_query(&st);
+    if(st.retro_240p_available)return true;
+#ifdef _XBOX
+    if(launch_active())launch_end();
+#endif
+    struct ui_setting rows[2]={
+        {"Use CRT (640x480)","480i / 60 FPS / 3 Mbps","Continue with 640x480 standard CRT output (preserves saved settings)."},
+        {"Cancel","Back",crt_output_reason_text(st.reason)}
+    };
+    const int kinds[2]={UI_OPTION_ACTION,UI_OPTION_ACTION};
+    int choice=0;
+    for(;;) {
+        ui_draw_settings_options("CRT Retro (240p) unavailable",rows,kinds,2,choice);ui_present();
+        int key=wait_button();
+        if(key&B_FLAG)return false;
+        if(key&(UP_FLAG|DOWN_FLAG))choice=!choice;
+        if(key&A_FLAG){if(choice!=0)return false;break;}
+    }
+    config_select_factory(&cfg,CONFIG_PROFILE_CRT_DISPLAY);
+    return true;
+}
+
 static void stream(int app_id, const char *app_title)
 {
     stream_return_home=false;
+    /* Reject an unavailable explicit backend before preflight can switch or
+     * launch a host app. No partial decoder or GPU queue exists to unwind. */
+    int decoder=video_decoder_resolve(cfg.decoder_backend);
+    if(decoder<0) {
+        message(ICON_ERROR,"Video decoder unavailable",video_decoder_unavailable_reason());
+        return;
+    }
+    cl_log("[DECODER] requested=%s active=%s system_gpu_compiled=0\n",
+           video_decoder_key(cfg.decoder_backend),video_decoder_key(decoder));
     char selected_title[64];history_text(selected_title,sizeof(selected_title),app_title);
-    if(!prepare_selected_app(app_id))return;
+#ifdef _XBOX
+    launch_selected_begin(app_id,selected_title);
+#endif
+    if(!prepare_selected_app(app_id)) {
+#ifdef _XBOX
+        if(launch_active())launch_end();
+#endif
+        return;
+    }
     struct config requested=cfg;
     int binding=aurora_direct_active && aurora_direct_data.profile_id[0]?-1:binding_find(&game_bindings,host_key(),app_id);
     if(binding>=0) {
@@ -2520,7 +2976,17 @@ static void stream(int app_id, const char *app_title)
     }
 #ifdef _XBOX
     offer_stream_environment();
+    if(launch_active() && strcmp(launch_identity,host_key()))launch_set_wait(launch_selected_delay(app_id,selected_title));
+    /* Pairing may have upgraded the stable host key before profile lookup.
+     * Update only the existing text atlas if the effective profile changed. */
+    if(launch_active() && memcmp(&requested,&cfg,sizeof(cfg))) {
+        ui_launch_session(selected_profile_name(),cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps);
+        ui_launch_crt_note(config_crt_profile(&cfg) && plat_crt_output_status()!=1);
+        launch_refresh_text();
+    }
+    launch_validated_app=app_id;launch_validated_operation=task_generation+1;
 #endif
+    if(!prepare_retro_240p_session()){cfg=requested;return;}
     adaptive_reconnects=0;
     video_reconnects=0;
     char stable_title[64];history_text(stable_title,sizeof(stable_title),selected_title);
@@ -2583,9 +3049,9 @@ static bool aurora_direct_execute(void)
     if(aurora_direct_data.profile_id[0]) {
         bool applied=false;
         const char *token=aurora_direct_data.profile_id;
-        if(!strncmp(token,"factory:",8) && token[8]>='0' && token[8]<='9' && !token[9]) {
-            int preset=token[8]-'0';
-            if(preset<CONFIG_PROFILE_COUNT){config_select_factory(&cfg,preset);applied=true;}
+        if(!strncmp(token,"factory:",8)) {
+            char *end=NULL;long preset=strtol(token+8,&end,10);
+            if(end!=token+8 && !*end && preset>0 && preset<CONFIG_PROFILE_COUNT){config_select_factory(&cfg,(int)preset);applied=true;}
         } else if(!strncmp(token,"user:",5)) {
             struct user_profiles p;memset(&p,0,sizeof(p));
             if(config_profiles_load(&p))for(int i=0;i<p.count;i++)
@@ -2629,7 +3095,7 @@ static uint32_t *art_result;
 static volatile int art_finished,art_persist,art_serial;
 static const uint32_t *art_persist_pixels;
 static bool art_aborted;
-static bool art_network,art_disk_hit;
+static bool art_network,art_disk_hit,art_resource_retry;
 static uint32_t art_fetched;
 static struct cover_disk_cache art_disk;
 static bool art_persistent_enabled=true;
@@ -2690,16 +3156,20 @@ static void art_drain(void)
     if(network && !art_aborted){if(pixels)art_downloads++;else {art_failures++;if(job.stale)art_stale_used++;}}
     if(job.context!=art_context || strcmp(job.host_identity,host_key())) {
         if(job.slot>=0 && ui_cover_same(&art_cache.items[job.slot].key,&job.key))art_cache.items[job.slot].inflight=false;
+        if(perf_enabled())cl_log("[ART] app=%d stage=publish outcome=context-rejected context=%u\n",job.protocol_app,job.context);
         free(pixels);plat_atomic_store(&art_ready,-1);return;
     }
-    ui_drop_main_cache();
     bool has_result=pixels!=NULL;
+    const uint32_t *old=art_cache.items[job.slot].pixels;
+    if(pixels && (!old || memcmp(old,pixels,(size_t)job.key.w*job.key.h*4))) {ui_drop_main_cache();ui_draw_retire_image(old);}
     bool published=ui_cover_publish(&art_cache,job.slot,&job.key,pixels,now);
     if(published)art_version++;
+    if(perf_enabled())cl_log("[ART] app=%d stage=publish changed=%d generation=%u stale=%d context=%u\n",job.protocol_app,published,art_cache.items[job.slot].generation,old!=NULL,job.context);
     /* Prevent eviction or refresh while the worker reads the published pixels.
      * No extra full-size allocation; UI owns them after publication. */
     art_cache.items[job.slot].inflight=true;
     if(art_aborted) {art_cache.items[job.slot].disk_checked=false;art_cache.items[job.slot].attempt=false;}
+    if(art_resource_retry){struct ui_cover_entry *e=art_cache.items+job.slot;e->resource_retry=true;e->disk_checked=false;e->attempt=false;e->attempted=now;}
     art_persist_pixels=has_result?art_cache.items[job.slot].pixels:NULL;
     plat_atomic_store(&art_persist,has_result && network && job.persist && !art_aborted?1:0);
     if(disk && pixels)art_cache.items[job.slot].updated=fetched;
@@ -2715,15 +3185,21 @@ static void *art_loader(void *arg)
         /* Immutable host/app/size/context, never an index into mutable apps[]. */
         struct art_work job=art_job;handled=serial;
         unsigned char *png=NULL;size_t len=0;uint32_t *scaled=NULL;
-        bool network=false,disk=false;uint32_t loaded=0;
-        if(job.disk && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_cancel)) {scaled=cover_disk_read(&art_disk,storage_dir(),&job.key,plat_now_ms(),&loaded);disk=scaled!=NULL;}
+        bool network=false,disk=false,retry=false;uint32_t loaded=0;
+        uint32_t job_started=plat_now_ms(),disk_ms=0,decode_ms=0;
+        if(job.disk && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_cancel)) {
+            scaled=cover_disk_read(&art_disk,storage_dir(),&job.key,plat_now_ms(),&loaded);disk=scaled!=NULL;
+            retry=art_disk.read_result==COVER_DISK_RETRY;disk_ms=plat_now_ms()-job_started;
+        }
+        if(retry || (job.disk && art_disk.read_result==COVER_DISK_CORRUPT))cl_log("[ART] app=%d stage=disk outcome=%s\n",job.protocol_app,retry?"retry":"corrupt");
         if(job.disk && perf_enabled())cl_log("[ART] app=%d disk_hit=%d\n",job.protocol_app,disk);
-        if(!scaled && job.network && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {
+        if(!scaled && !retry && job.network && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {
             network=true;uint64_t fetched=perf_enabled()?perf_clock():0;
             bool available=gs_app_art(&job.host,job.protocol_app,&png,&len);
             if(fetched)perf_record(PERF_COVER_HTTP,perf_clock()-fetched);
             bool allowed=available && cover_decode_allowed(png,len);
-            if(allowed && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming))scaled=plat_decode_art(png,len,job.key.w,job.key.h);
+            if(allowed && !plat_atomic_load(&art_cancel) && !plat_atomic_load(&art_streaming)) {uint32_t decode_started=plat_now_ms();scaled=plat_decode_art(png,len,job.key.w,job.key.h);decode_ms=plat_now_ms()-decode_started;}
+            if(!scaled && !plat_atomic_load(&art_io_cancel))cl_log("[ART] app=%d stage=%s outcome=failed\n",job.protocol_app,!available?"download":!allowed?"format":"decode");
 
             if(!scaled && job.stale)plat_log("[Artwork] refresh failed, keeping cached artwork\n");
             if(perf_enabled())cl_log("[ART] app=%d http=%d bytes=%u source=%d thumbnail=%d\n",job.protocol_app,available,(unsigned)len,allowed,scaled!=NULL);
@@ -2733,13 +3209,15 @@ static void *art_loader(void *arg)
         art_aborted=plat_atomic_load(&art_io_cancel)!=0;
         if(art_aborted){free(scaled);scaled=NULL;}
         plat_atomic_store(&art_persist,0);
-        art_network=network;art_disk_hit=disk;art_fetched=loaded;
+        art_network=network;art_disk_hit=disk;art_fetched=loaded;art_resource_retry=retry;
+        if(perf_enabled())cl_log("[ART] app=%d stage=ready total_ms=%u disk_ms=%u decode_ms=%u disk_hit=%d network=%d cancelled=%d\n",job.protocol_app,plat_now_ms()-job_started,disk_ms,decode_ms,disk,network,art_aborted);
         art_result=scaled;plat_atomic_store(&art_ready,slot);
         while(plat_atomic_load(&art_ready)>=0 && !plat_atomic_load(&art_cancel))plat_sleep_ms(4);
         if(plat_atomic_load(&art_cancel))break; /* unclaimed pixels are released after join */
         if(plat_atomic_load(&art_persist) && !plat_atomic_load(&art_streaming) && !plat_atomic_load(&art_io_cancel)) {
+            uint32_t persist_started=plat_now_ms();
             bool stored=cover_disk_write(&art_disk,storage_dir(),&job.key,art_persist_pixels,plat_now_ms());
-            if(perf_enabled())cl_log("[ART] app=%d disk_persist=%d after_publish=1\n",job.protocol_app,stored);
+            if(perf_enabled())cl_log("[ART] app=%d disk_persist=%d after_publish=1 persist_ms=%u\n",job.protocol_app,stored,plat_now_ms()-persist_started);
         }
         plat_atomic_store(&art_finished,1);
     }
@@ -2755,12 +3233,21 @@ static void art_pause(bool pause){plat_atomic_store(&art_streaming,pause?1:0);if
 static bool art_request_app(int id,bool selected,bool evict)
 {
     art_drain();
-    if(selected && plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id && !art_job.priority)
-        plat_atomic_store(&art_io_cancel,1);
+    if(selected && plat_atomic_load(&art_request)>=0 && art_job.protocol_app!=id) {
+        struct ui_cover_key selected_key;art_key(&selected_key,id);
+        int selected_slot=ui_cover_find(&art_cache,&selected_key);uint32_t now=plat_now_ms();
+        bool needs_work=selected_slot<0 || (!art_cache.items[selected_slot].pixels && !art_cache.items[selected_slot].disk_checked) ||
+            (art_host_online && ui_cover_retry(&art_cache,&selected_key,now) && ui_cover_due(&art_cache.items[selected_slot],now));
+        /* A warm selection must not cancel every neighbor on each UI tick. */
+        if(needs_work)plat_atomic_store(&art_io_cancel,1);
+    }
     if(plat_atomic_load(&art_streaming) || plat_atomic_load(&art_request)>=0 || plat_atomic_load(&art_ready)>=0 || !art_worker)return false;
     struct ui_cover_key key;art_key(&key,id);int slot=ui_cover_find(&art_cache,&key);
     if(slot<0) {
-        ui_drop_main_cache();slot=ui_cover_slot(&art_cache,&key,evict);if(slot<0)return false;
+        int victim=ui_cover_candidate(&art_cache,&key,evict);if(victim<0)return false;
+        if(perf_enabled() && art_cache.items[victim].used)cl_log("[ART] app=%d stage=evict victim=%d generation=%u\n",id,art_cache.items[victim].key.app,art_cache.items[victim].generation);
+        ui_drop_main_cache();ui_draw_retire_image(art_cache.items[victim].pixels);
+        slot=ui_cover_slot(&art_cache,&key,evict);if(slot<0)return false;
         uint32_t generation=0;const uint32_t *home=home_art_get(&home_art,home_key(),id,&generation);
         if(home) {
             struct ui_cover_entry *e=art_cache.items+slot;size_t bytes=(size_t)key.w*key.h*4;
@@ -2768,9 +3255,11 @@ static bool art_request_app(int id,bool selected,bool evict)
         }
         art_sync_views();art_memory();
     }
-    struct ui_cover_entry *e=art_cache.items+slot;e->pinned=selected || (opening_art_pin && ui_cover_same(&key,&opening_art_key));if(selected || evict)e->lru=++art_cache.clock;
+    struct ui_cover_entry *e=art_cache.items+slot;e->pinned=e->visible || selected || (opening_art_pin && ui_cover_same(&key,&opening_art_key));if(selected || evict)e->lru=++art_cache.clock;
     if(e->pixels)art_memory_hits++;
-    uint32_t now=plat_now_ms();bool disk=art_persistent_enabled && !strncmp(key.host,"uuid:",5) && !e->pixels && !e->disk_checked;
+    uint32_t now=plat_now_ms();
+    if(e->resource_retry){if(now-e->attempted<1000u)return false;e->resource_retry=false;}
+    bool disk=art_persistent_enabled && !strncmp(key.host,"uuid:",5) && !e->pixels && !e->disk_checked;
     bool network=art_host_online && ui_cover_retry(&art_cache,&key,now);
     if(!disk && (!network || !ui_cover_due(e,now)))return false;
     memset(&art_job,0,sizeof(art_job));art_job.key=key;snprintf(art_job.host_identity,sizeof(art_job.host_identity),"%s",host_key());art_job.slot=slot;art_job.context=art_context;
@@ -2786,18 +3275,19 @@ static bool art_request_app(int id,bool selected,bool evict)
 static void art_update(const int *map,int count,int selected,int columns)
 {
     art_drain();
-    for(int i=0;i<UI_COVER_LIMIT;i++)art_cache.items[i].pinned=opening_art_pin && ui_cover_same(&art_cache.items[i].key,&opening_art_key);
+    for(int i=0;i<UI_COVER_LIMIT;i++){art_cache.items[i].visible=false;art_cache.items[i].pinned=opening_art_pin && ui_cover_same(&art_cache.items[i].key,&opening_art_key);}
     if(count<=0 || selected<0 || selected>=count)return;
     struct ui_cover_key key;art_key(&key,apps[map[selected]].id);int pinned=ui_cover_find(&art_cache,&key);
     if(pinned>=0)art_cache.items[pinned].pinned=true;
-    int first=selected>=5?selected-4:0,n=count-first;if(n>6)n=6;
-    (void)columns;
-    for(int i=first;i<first+n;i++){art_key(&key,apps[map[i]].id);int slot=ui_cover_find(&art_cache,&key);if(slot>=0)art_cache.items[slot].lru=++art_cache.clock;}
+    int first=0,end=count;if(columns>0)ui_library_art_window(count,selected,&first,&end);
+    if(end-first>UI_COVER_LIMIT-2)end=first+UI_COVER_LIMIT-2;
+    int n=end-first;
+    for(int i=first;i<end;i++){art_key(&key,apps[map[i]].id);int slot=ui_cover_find(&art_cache,&key);if(slot>=0){art_cache.items[slot].lru=++art_cache.clock;art_cache.items[slot].visible=true;art_cache.items[slot].pinned=true;}}
     if(art_request_app(apps[map[selected]].id,true,true))return;
     for(int i=first;i<first+n;i++)if(i!=selected && art_request_app(apps[map[i]].id,false,true))return;
     /* Neighbor work only occupies free capacity; it never evicts useful images. */
-    int start=first>=2?first-2:0,end=first+n+3;if(end>count)end=count;
-    for(int i=start;i<end;i++)if((i<first || i>=first+n) && art_request_app(apps[map[i]].id,false,false))return;
+    int start=first>0?first-1:0,near_end=end+2;if(near_end>count)near_end=count;
+    for(int i=start;i<near_end;i++)if((i<first || i>=end) && art_request_app(apps[map[i]].id,false,false))return;
 }
 static void remember_played_art(int id)
 {
@@ -2866,11 +3356,13 @@ static void artwork_refresh_apps(const char *title,int *count)
 struct aurora_profile_option { char token[80],label[64]; };
 static int aurora_profile_options(struct aurora_profile_option out[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX])
 {
-    int n=0;memset(out,0,sizeof(*out)*(CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX));
+    int n=0,visible[CONFIG_PROFILE_COUNT],factories=config_visible_factory_profiles(visible,CONFIG_PROFILE_COUNT);
+    memset(out,0,sizeof(*out)*(CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX));
     snprintf(out[n++].label,64,"Use game/current profile");
-    for(int i=1;i<CONFIG_PROFILE_COUNT;i++) {
-        snprintf(out[n].token,80,"factory:%d",i);
-        snprintf(out[n++].label,64,"%s",config_preset_name(i));
+    for(int i=0;i<factories;i++) {
+        int id=visible[i];
+        snprintf(out[n].token,80,"factory:%d",id);
+        snprintf(out[n++].label,64,"%s",config_preset_name(id));
     }
     struct user_profiles p;memset(&p,0,sizeof(p));
     if(config_profiles_load(&p))for(int i=0;i<p.count;i++) {
@@ -2886,6 +3378,12 @@ static const char *aurora_profile_label(const char *token)
     int n=aurora_profile_options(options);
     for(int i=0;i<n;i++)if(!strcmp(options[i].token,token)){
         snprintf(label,sizeof(label),"%s",options[i].label);return label;
+    }
+    if(!strncmp(token,"factory:",8)) {
+        char *end=NULL;long preset=strtol(token+8,&end,10);
+        if(end!=token+8 && !*end && preset>0 && preset<CONFIG_PROFILE_COUNT){
+            snprintf(label,sizeof(label),"%s",config_preset_name((int)preset));return label;
+        }
     }
     return token[0]?"Missing profile (Smooth fallback)":"Use game/current profile";
 }
@@ -3545,7 +4043,7 @@ static void library_context(int *filter)
 static void app_menu(void)
 {
     int count=-1,sel=0,seen_version=-1,cols=ui_apps_columns(),filter=2,map[MAX_APPS],restore_id=0;
-    int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms();
+    int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms(),library_started=wall_focus_ms;bool first_art_logged=false;
     char title[96];snprintf(title,sizeof(title),ui_translate("Loading apps from %s"),host_display_name());
     art_host_online=server_ok && server.paired;
     if(app_list_cache_valid(&app_cache,host_key(),plat_now_ms()))count=app_count;
@@ -3557,6 +4055,7 @@ static void app_menu(void)
     else {artwork_refresh_apps(title,&count);}
     if(count<0) {if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't load the app list",gs_error());return;}
     app_count=count;for(int i=0;i<app_count;i++)if(apps[i].id==server.current_game)sel=i;
+    cl_log("[UX] library list_ms=%u count=%d ram_clock=%u disk_hits=%u\n",plat_now_ms()-library_started,count,art_cache.clock,art_disk_hits);
     art_pause(false);art_loader_start();
     for(;;) {
         if(seen_version<0){
@@ -3566,6 +4065,10 @@ static void app_menu(void)
         }
         if(art_worker)art_update(map,count,sel,cols);
         uint32_t now=plat_now_ms();bool backdrop_changed=false;
+        if(!first_art_logged && count>0){
+            int first=0,end=count;ui_library_art_window(count,sel,&first,&end);
+            for(int i=first;i<end;i++)if(app_art[map[i]]){first_art_logged=true;cl_log("[UX] library first_cover_ms=%u\n",now-library_started);break;}
+        }
         if(cfg.ui_background==4 && count>0) {
             int index=map[sel];
             if(wall_focus!=apps[index].id){wall_focus=apps[index].id;wall_focus_ms=now;ui_home_cancel_prepare();}
@@ -3578,7 +4081,7 @@ static void app_menu(void)
         }
         bool rail_moving=ui_library_tick(now);
         if(seen_version!=art_version || rail_moving || backdrop_changed) {seen_version=art_version;draw_apps(sel,filter,map,count);}
-        int key=input_menu_pressed();if(!key) {if(ui_focus_tick(plat_now_ms()))ui_present();plat_sleep_ms(16);continue;}
+        int key=input_menu_pressed();if(!key) {if(ui_focus_tick(plat_now_ms())){ui_present();plat_sleep_ms(4);}else plat_sleep_ms(12);continue;}
         if(key&B_FLAG)break;
         if(tab_key(key,UI_LIBRARY))break;
         if(key&PLAY_FLAG) {if(count)restore_id=apps[map[sel]].id;library_context(&filter);
@@ -3587,9 +4090,9 @@ static void app_menu(void)
         if(key&Y_FLAG) {
             if(count)restore_id=apps[map[sel]].id;
             if(!server_ok)refresh_server();
-            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");continue;}
+            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");seen_version=-1;continue;}
             art_host_online=true;int refreshed=-1;artwork_refresh_apps(title,&refreshed);
-            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());continue;}
+            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());seen_version=-1;continue;}
             count=refreshed;
             app_count=count;art_pause(false);art_loader_start();seen_version=-1;continue;
         }
@@ -3608,11 +4111,16 @@ static void app_menu(void)
             if(navigation_pending>=0)break;
             if(play) {
                 stream(apps[index].id,apps[index].name);
-                if(stream_return_home)break;refresh_server();
+                if(stream_return_home)break;
+                /* Teardown has joined. Draw the warm gallery immediately; the
+                 * next Play still validates authoritative host/app state. */
+                art_host_online=server_ok && server.paired;art_pause(false);art_loader_start();
             }
         }
         seen_version=-1;
     }
+    if(cfg.diagnostic_log){struct ui_memory_info memory;ui_draw_memory(&memory);
+        cl_log("[ART] stage=gallery-exit ram_hits=%u disk_hits=%u downloads=%u failures=%u stale_used=%u fade_starts=%u fade_reuses=%u\n",art_memory_hits,art_disk_hits,art_downloads,art_failures,art_stale_used,memory.cover_fade_starts,memory.cover_fade_reuses);}
     art_pause(false);
 }
 
@@ -3914,37 +4422,58 @@ static bool apply_game_profile(int id,const struct user_profiles *profiles,int s
     if(!n || !storage_write("game-bindings.tsv",text,n))return false;
     game_bindings=next;return true;
 }
+static int game_profile_choices(const struct user_profiles *profiles,int *choices,int capacity)
+{
+    int visible[CONFIG_PROFILE_COUNT],factories=config_visible_factory_profiles(visible,CONFIG_PROFILE_COUNT),count=0;
+    if(count<capacity)choices[count++]=0;
+    for(int i=0;i<factories && count<capacity;i++)choices[count++]=visible[i];
+    if(profiles)for(int i=0;i<profiles->count && count<capacity;i++)choices[count++]=CONFIG_PROFILE_COUNT+i;
+    return count;
+}
+static int game_profile_current(int id,const struct user_profiles *profiles)
+{
+    int index=binding_find(&game_bindings,host_key(),id);
+    if(index<0)return 0;
+    const char *token=game_bindings.items[index].profile;
+    if(!strncmp(token,"factory:",8)){int p=atoi(token+8);return (p>0 && p<CONFIG_PROFILE_COUNT)?p:0;}
+    if(!strncmp(token,"user:",5) && profiles)for(int i=0;i<profiles->count;i++)if(!strcmp(token+5,profiles->items[i].name))return CONFIG_PROFILE_COUNT+i;
+    return 0;
+}
 static void cycle_game_profile(int id,int direction)
 {
     struct user_profiles profiles;memset(&profiles,0,sizeof(profiles));config_profiles_load(&profiles);
     if(profiles.read_only || profile_links_pending())return;
-    int selected=0,index=binding_find(&game_bindings,host_key(),id);
-    if(index>=0){const char *token=game_bindings.items[index].profile;
-        if(!strncmp(token,"factory:",8))selected=atoi(token+8);
-        else if(!strncmp(token,"user:",5))for(int i=0;i<profiles.count;i++)if(!strcmp(token+5,profiles.items[i].name))selected=CONFIG_PROFILE_COUNT+i;
-    }
-    selected=(selected+direction+CONFIG_PROFILE_COUNT+profiles.count)%(CONFIG_PROFILE_COUNT+profiles.count);
-    if(!apply_game_profile(id,&profiles,selected))message(ICON_ERROR,"Game profile not saved","Check available storage. The previous file was preserved.");
+    int choices[1+CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];
+    int count=game_profile_choices(&profiles,choices,(int)(sizeof(choices)/sizeof(choices[0])));
+    int current=game_profile_current(id,&profiles),pos=0;
+    for(int i=0;i<count;i++)if(choices[i]==current){pos=i;break;}
+    int next_choice=choices[(pos+(direction<0?count-1:1))%count];
+    if(!apply_game_profile(id,&profiles,next_choice))message(ICON_ERROR,"Game profile not saved","Check available storage. The previous file was preserved.");
 }
 static void game_profile_menu(int id)
 {
     struct user_profiles profiles;memset(&profiles,0,sizeof(profiles));config_profiles_load(&profiles);
-    int selected=0,index=binding_find(&game_bindings,host_key(),id);
-    if(index>=0){const char *token=game_bindings.items[index].profile;
-        if(!strncmp(token,"factory:",8))selected=atoi(token+8);
-        else if(!strncmp(token,"user:",5))for(int i=0;i<profiles.count;i++)if(!strcmp(token+5,profiles.items[i].name))selected=CONFIG_PROFILE_COUNT+i;
+    int choices[1+CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];
+    int count=game_profile_choices(&profiles,choices,(int)(sizeof(choices)/sizeof(choices[0])));
+    int current=game_profile_current(id,&profiles),selected=0;
+    if(config_profile_is_legacy(current)) {
+        for(int i=count;i>1;i--)choices[i]=choices[i-1];
+        choices[1]=current;count++;
     }
+    for(int i=0;i<count;i++)if(choices[i]==current){selected=i;break;}
     for(;;) {
-        struct ui_setting rows[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];
-        rows[0].label="Use current settings";rows[0].value="Inherit";rows[0].help="Remove the automatic profile for this game.";
-        for(int i=1;i<CONFIG_PROFILE_COUNT;i++){rows[i].label=ui_translate(config_preset_name(i));rows[i].value="";rows[i].help="Apply this factory profile when launching this game.";}
-        for(int i=0;i<profiles.count;i++){rows[CONFIG_PROFILE_COUNT+i].label=profiles.items[i].name;rows[CONFIG_PROFILE_COUNT+i].value="";rows[CONFIG_PROFILE_COUNT+i].help="Apply this named profile when launching this game. Bindings follow renames and are removed on deletion.";}
-        int count=CONFIG_PROFILE_COUNT+profiles.count;
-        int kinds[CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];for(int i=0;i<count;i++)kinds[i]=UI_OPTION_ACTION;
+        struct ui_setting rows[1+CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];
+        for(int i=0;i<count;i++) {
+            int ch=choices[i];
+            if(ch==0){rows[i].label="Use current settings";rows[i].value="Inherit";rows[i].help="Remove the automatic profile for this game.";}
+            else if(ch<CONFIG_PROFILE_COUNT){rows[i].label=ui_translate(config_preset_name(ch));rows[i].value="";rows[i].help="Apply this factory profile when launching this game.";}
+            else {rows[i].label=profiles.items[ch-CONFIG_PROFILE_COUNT].name;rows[i].value="";rows[i].help="Apply this named profile when launching this game. Bindings follow renames and are removed on deletion.";}
+        }
+        int kinds[1+CONFIG_PROFILE_COUNT+CONFIG_USER_PROFILE_MAX];for(int i=0;i<count;i++)kinds[i]=UI_OPTION_ACTION;
         ui_draw_settings_options("Game stream profile",rows,kinds,count,selected);ui_present();int key=wait_button();
         if(key&B_FLAG)return;if(key&UP_FLAG)selected=(selected+count-1)%count;if(key&DOWN_FLAG)selected=(selected+1)%count;
         if(key&A_FLAG) {
-            if(!apply_game_profile(id,&profiles,selected)){message(ICON_ERROR,"Game profile not saved","Check available storage. The previous file was preserved.");continue;}
+            if(!apply_game_profile(id,&profiles,choices[selected])){message(ICON_ERROR,"Game profile not saved","Check available storage. The previous file was preserved.");continue;}
             message(ICON_CHECK,"Game profile saved","Applies when this game is launched. Global stream settings are preserved.");return;
         }
     }
@@ -4151,7 +4680,7 @@ static void art_home_update(int selected,int resume_id,const int *recent_ids,int
         }
     }
     for(int i=0;i<n;i++)if(apps[map[i]].id==selected)focus=i;
-    if(n){art_loader_start();art_update(map,n,focus,n);}
+    if(n){art_loader_start();art_update(map,n,focus,0);}
 }
 static void home_search(void)
 {
@@ -4286,7 +4815,7 @@ static void main_menu(void)
             if(!wall_app)ui_home_cancel_prepare();
         }
         int key=input_menu_pressed();
-        if(!key) {if(ui_focus_tick(plat_now_ms()))ui_present();plat_sleep_ms(16);continue;}
+        if(!key) {if(ui_focus_tick(plat_now_ms())){ui_present();plat_sleep_ms(4);}else plat_sleep_ms(12);continue;}
         focus_seeded=true;
         dirty=true;
         if(tab_key(key,UI_HOME))continue;

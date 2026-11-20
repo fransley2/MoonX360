@@ -21,12 +21,19 @@
 #define COVER_DISK_SLOTS 256
 #define COVER_DISK_BUDGET (128u*1024u*1024u)
 #define COVER_DISK_PAYLOAD_MAX (512u*1024u)
+#ifndef COVER_DISK_ALLOC
+#define COVER_DISK_ALLOC malloc
+#endif
+#ifndef COVER_DISK_OPEN
+#define COVER_DISK_OPEN fopen
+#endif
 #ifndef COVER_DISK_RENAME
 #define COVER_DISK_RENAME rename
 #endif
 struct cover_disk_header {char magic[8];struct ui_cover_key key;uint32_t bytes,checksum,serial,stored,packed,saved_at;};
 struct cover_disk_item {struct cover_disk_header header;uint32_t touched,fetched;bool used,seen;};
-struct cover_disk_cache {bool loaded,write_failed;uint32_t clock,failed_at;size_t bytes,budget_bytes;struct cover_disk_item items[COVER_DISK_SLOTS];};
+enum cover_disk_result {COVER_DISK_MISS,COVER_DISK_HIT,COVER_DISK_RETRY,COVER_DISK_CORRUPT};
+struct cover_disk_cache {bool loaded,write_failed;uint32_t clock,failed_at;size_t bytes,budget_bytes;enum cover_disk_result read_result;struct cover_disk_item items[COVER_DISK_SLOTS];};
 static bool cover_disk_path(char *out,size_t size,const char *dir,int slot)
 {
     if(!dir || !*dir)return false;
@@ -70,6 +77,11 @@ static bool cover_disk_header_valid(const struct cover_disk_header *h)
         h->bytes==(size_t)h->key.w*h->key.h*4 && h->bytes<=COVER_DISK_PAYLOAD_MAX &&
         h->stored>0 && h->stored<=h->bytes && h->packed<=1 && (h->packed || h->stored==h->bytes);
 }
+static void cover_disk_scan_retry(struct cover_disk_cache *cache)
+{
+    memset(cache->items,0,sizeof(cache->items));cache->bytes=0;cache->clock=0;
+    cache->loaded=false;cache->read_result=COVER_DISK_RETRY;
+}
 static void cover_disk_init(struct cover_disk_cache *cache,const char *dir)
 {
     if(!dir || !*dir || cache->loaded || !cover_disk_directory(dir))return;cache->loaded=true;
@@ -95,19 +107,23 @@ static void cover_disk_init(struct cover_disk_cache *cache,const char *dir)
             if(primary)fclose(primary);
             else rename(backup,path); /* interrupted replacement */
         }
-        FILE *f=fopen(path,"rb");if(!f)continue;
+        FILE *f=fopen(path,"rb");if(!f){if(errno!=ENOENT){cover_disk_scan_retry(cache);return;}continue;}
         struct cover_disk_header h;bool ok=fread(&h,1,sizeof(h),f)==sizeof(h) && cover_disk_header_valid(&h);
-        if(ok)ok=!fseek(f,0,SEEK_END) && ftell(f)==(long)(sizeof(h)+h.stored);
+        bool retry=ferror(f)!=0;
+        if(ok){if(fseek(f,0,SEEK_END))retry=true;else {long size=ftell(f);if(size<0)retry=true;else ok=size==(long)(sizeof(h)+h.stored);}}
         fclose(f);
+        if(retry){cover_disk_scan_retry(cache);return;} /* Retry the complete scan. */
         if(!ok && backup_len>0 && backup_len<(int)sizeof(backup)) {
             remove(path);
             if(!rename(backup,path)) {
                 f=fopen(path,"rb");
                 if(f){ok=fread(&h,1,sizeof(h),f)==sizeof(h) && cover_disk_header_valid(&h);
-                    if(ok)ok=!fseek(f,0,SEEK_END) && ftell(f)==(long)(sizeof(h)+h.stored);
+                    retry=ferror(f)!=0;
+                    if(ok){if(fseek(f,0,SEEK_END))retry=true;else {long size=ftell(f);if(size<0)retry=true;else ok=size==(long)(sizeof(h)+h.stored);}}
                     fclose(f);}
             }
         }
+        if(retry){cover_disk_scan_retry(cache);return;}
         if(!ok){remove(path);continue;}
         if(backup_len>0 && backup_len<(int)sizeof(backup))remove(backup);
         struct cover_disk_item *e=cache->items+i;e->used=true;e->header=h;
@@ -125,17 +141,22 @@ static bool cover_disk_remove(struct cover_disk_cache *cache,const char *dir,int
 }
 static uint32_t *cover_disk_read(struct cover_disk_cache *cache,const char *dir,const struct ui_cover_key *key,uint32_t now,uint32_t *fetched)
 {
+    cache->read_result=COVER_DISK_MISS;
     cover_disk_init(cache,dir);int slot=cover_disk_find(cache,key);if(slot<0)return NULL;
     struct cover_disk_item *e=cache->items+slot;char path[256];
     if(!cover_disk_path(path,sizeof(path),dir,slot))return NULL;
-    FILE *f=fopen(path,"rb");if(!f){if(errno==ENOENT){cache->bytes-=sizeof(e->header)+e->header.stored;memset(e,0,sizeof(*e));}return NULL;}
+    FILE *f=COVER_DISK_OPEN(path,"rb");if(!f){if(errno==ENOENT){cache->bytes-=sizeof(e->header)+e->header.stored;memset(e,0,sizeof(*e));}else cache->read_result=COVER_DISK_RETRY;return NULL;}
     struct cover_disk_header h;uint32_t *pixels=NULL;
+    bool retry=false;
     if(fread(&h,1,sizeof(h),f)==sizeof(h) && cover_disk_header_valid(&h) && ui_cover_same(&h.key,key)) {
-        pixels=(uint32_t*)malloc(h.bytes);
+        pixels=(uint32_t*)COVER_DISK_ALLOC(h.bytes);
+        if(!pixels)retry=true;
         if(pixels && (!cover_unpack(f,pixels,NULL,h.bytes/4,h.packed!=0) || cover_disk_hash(pixels,h.bytes)!=h.checksum)) {free(pixels);pixels=NULL;}
     }
-    fclose(f);
-    if(!pixels){remove(path);cache->bytes-=sizeof(e->header)+e->header.stored;memset(e,0,sizeof(*e));return NULL;}
+    retry=retry || ferror(f)!=0;
+    if(fclose(f))retry=true;
+    if(retry){free(pixels);cache->read_result=COVER_DISK_RETRY;return NULL;}
+    if(!pixels){remove(path);cache->bytes-=sizeof(e->header)+e->header.stored;memset(e,0,sizeof(*e));cache->read_result=COVER_DISK_CORRUPT;return NULL;}
     e->touched=++cache->clock;if(!e->seen){
         e->seen=true;time_t epoch=time(NULL);uint32_t age=0;
         if(epoch>0 && h.saved_at && (uint64_t)epoch>=h.saved_at) {
@@ -144,7 +165,7 @@ static uint32_t *cover_disk_read(struct cover_disk_cache *cache,const char *dir,
         }
         e->fetched=now-age;
     }
-    *fetched=e->fetched;return pixels;
+    *fetched=e->fetched;cache->read_result=COVER_DISK_HIT;return pixels;
 }
 static bool cover_disk_write(struct cover_disk_cache *cache,const char *dir,const struct ui_cover_key *key,const uint32_t *pixels,uint32_t now)
 {

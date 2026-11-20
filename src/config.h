@@ -2,10 +2,18 @@
 
 #include <stdbool.h>
 #include "fast_decode.h"
+#include "video_decoder.h"
+#include "desktop_options.h"
 #include <stddef.h>
 
 enum config_language { CONFIG_LANGUAGE_ENGLISH, CONFIG_LANGUAGE_SPANISH,
                        CONFIG_LANGUAGE_PT_BR, CONFIG_LANGUAGE_COUNT };
+
+enum crt_scaling_filter { CRT_SCALE_AUTO = 0, CRT_SCALE_POINT = 1,
+                          CRT_SCALE_BILINEAR = 2, CRT_SCALE_SHARP_BILINEAR = 3,
+                          CRT_SCALE_COUNT };
+
+enum crt_aspect_mode { CRT_ASPECT_4_3 = 0, CRT_ASPECT_ORIGINAL = 1, CRT_ASPECT_COUNT };
 
 struct config {
     char host[64];
@@ -17,10 +25,15 @@ struct config {
     int refresh_interval_ms; /* optional periodic IDR: 0, 125, 250, 1000..60000 ms */
     int fast_decode; /* On/Off; format-5 value 2 loads as On */
     int renderer;       /* enum video_renderer: 0 GPU, 1 CPU, 2 CPU + display colour matrix */
+    int decoder_backend; /* global next-session preference; absent config = FFmpeg */
     bool vsync;
     bool sops;          /* let the host change its resolution to match */
     int quit_combo;     /* 0: LB+RB+L3+R3; 1: legacy combo, both held 2 s */
     int mouse_speed,mouse_acceleration,mouse_scroll_ms; /* global input options */
+    struct desktop_options desktop;
+    bool desktop_start;
+    char desktop_host[80];
+    int desktop_app; /* explicit host + app ID binding; never inferred from title */
     int stick_deadzone; /* 0..30 percent; default 0 preserves input */
     bool session_report; /* write last-session.txt after stopping, never during video */
     bool stats_overlay;  /* optional SDK telemetry panel, off by default */
@@ -43,6 +56,10 @@ struct config {
     int ui_safe_area; /* 0..10 percent per edge; UI only, next app start */
     int refresh_smoothing,smoothing_strength; /* 0 Off / 1 experimental; strength 0 Low / 1 Medium */
     bool crt_clarity; /* optional spatial interlace shader; never temporal IDR blending */
+    int crt_scaling; /* enum crt_scaling_filter */
+    int crt_aspect;  /* enum crt_aspect_mode */
+    int crt_pos_x,crt_pos_y; /* bounded picture alignment offset (-20..20 px) */
+    int crt_origin_preset; /* tracks CRT preset provenance across derived Custom profiles */
     bool crt_display_backup;
     int previous_display_mode,previous_ui_layout,previous_safe_area;
     int mouse_hud,stream_menu_style; /* global: compact/text/hidden HUD; compact/sidebar menu */
@@ -102,8 +119,20 @@ int config_cycle_fps(int fps, int direction);
 #define CONFIG_PROFILE_CRT_SMOOTH 8
 #define CONFIG_PROFILE_CRT_STABLE 9
 #define CONFIG_PROFILE_CRT_QUALITY 10
-#define CONFIG_PROFILE_COUNT 11
+#define CONFIG_PROFILE_CRT_DISPLAY 11
+#define CONFIG_PROFILE_CRT_RETRO_240P 12
+#define CONFIG_PROFILE_COUNT 13
+bool config_profile_is_legacy(int preset);
+bool config_profile_is_visible(int preset);
+int config_visible_factory_profiles(int *out,int capacity);
+bool config_is_crt_factory(int preset);
+bool config_is_crt_retro(const struct config *c);
 bool config_crt_profile(const struct config *c);
+void config_crt_reset_settings(struct config *c);
+const char *config_crt_scaling_name(int mode);
+const char *config_crt_aspect_name(int mode);
+int config_cycle_crt_scaling(int mode,int direction);
+int config_cycle_crt_aspect(int mode,int direction);
 void config_crt_display_enable(struct config *c);
 bool config_crt_display_restore(struct config *c);
 bool config_crt_display_commit(struct config *c,bool enable);
@@ -131,6 +160,7 @@ struct stream_options {
     int adaptive_quality,thread_layout,decode_workers,audio_mode;
     int refresh_interval_ms,crt_clarity,new_options_owned;
     int refresh_smoothing,smoothing_strength,smoothing_options_owned; /* v1/v2 snapshots leave new options unchanged */
+    int crt_scaling,crt_aspect,crt_pos_x,crt_pos_y,crt_options_owned; /* v1..v5 snapshots leave CRT picture options unchanged */
 };
 struct user_stream_profile { char name[CONFIG_PROFILE_NAME_BYTES]; struct stream_options options; };
 struct user_profiles {

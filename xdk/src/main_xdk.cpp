@@ -5,6 +5,7 @@
  * settings and client certificate next to the .xex (game:\moonlight).
  */
 #include "xdk.h"
+#include "crt_output_bridge.h"
 #include "../../src/performance.h"
 
 #include <stdio.h>
@@ -133,6 +134,8 @@ const char *plat_console_ip(void)
 void plat_fixup_config(struct config *cfg)
 {
     cfg->renderer = 0;   /* always the GPU here */
+    if (cfg->decoder_backend == VIDEO_DECODER_SYSTEM_GPU)
+        cfg->decoder_backend = VIDEO_DECODER_FFMPEG;
 }
 
 bool plat_has_renderer_choice(void)
@@ -566,24 +569,39 @@ int plat_network_link(void)
 }
 int plat_crt_output_status(void)
 {
-    XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
-    if(!mode.dwDisplayWidth || !mode.dwDisplayHeight || mode.RefreshRate<20)return 0;
-    return mode.dwDisplayHeight==480 && mode.dwDisplayWidth<=720 && mode.fIsInterlaced &&
-        mode.RefreshRate>=59 && mode.RefreshRate<=61?1:-1;
+    struct crt_output_status st;
+    crt_bridge_query(&st);
+    if (st.console_output_kind == CRT_OUTPUT_480I && !st.active_240p &&
+        st.display_height == 480 && st.refresh_hz_x100 >= 5900 && st.refresh_hz_x100 <= 6100) {
+        return 1;
+    }
+    if (!st.display_width || !st.display_height || st.refresh_hz_x100 < 2000) return 0;
+    return -1;
 }
+void plat_crt_output_query(struct crt_output_status *out) { crt_bridge_query(out); }
+bool plat_crt_240p_enter(int width, int height) { return crt_bridge_enter_240p(width, height); }
+bool plat_crt_240p_exit(void) { return crt_bridge_exit_240p(); }
+bool plat_crt_240p_active(void) { return crt_bridge_is_240p_active(); }
 static void write_console_environment(void)
 {
     XVIDEO_MODE mode;ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
     DWORD link=XNetGetEthernetLinkStatus();int w,h;gfx_backbuffer_size(&w,&h);
-    char text[1024];int n=snprintf(text,sizeof(text),
+    struct crt_output_status crt;crt_bridge_query(&crt);
+    char crt_ver[24];crt_output_format_version(crt.plugin_ver,crt_ver,sizeof(crt_ver));
+    const volatile struct crt_s240_beacon *beacon=crt_bridge_beacon_ptr();
+    char text[1536];int n=snprintf(text,sizeof(text),
         "schema=1\nlink_flags=0x%08x\nactive_mask=0x%08x\nwireless_mask=0x%08x\nconsole_link=%s\nhost_path=unknown\n"
         "physical_mode_known=%d\nphysical_width=%u\nphysical_height=%u\nphysical_reported_hz=%.5f\ninterlaced=%d\n"
-        "app_backbuffer=%dx%d\ncrt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\ncomponent_cable_and_TV_model=unverified\n"
+        "app_backbuffer=%dx%d\ncrt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\n"
+        "t240_detected=%d\nt240_version=%s\nt240_mode=%d\ncrt_240p_available=%d\ncrt_240p_reason=%s\ns240_beacon_magic=0x%08x\n"
+        "component_cable_and_TV_model=unverified\n"
         "refresh_scope=XGetVideoMode_report_not_measured_field_cadence\n",
         (unsigned)link,(unsigned)XNET_ETHERNET_LINK_ACTIVE,(unsigned)XNET_ETHERNET_LINK_WIRELESS,
         console_link_name(console_link_classify(link,XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS)),
         gfx_display_known(),(unsigned)mode.dwDisplayWidth,(unsigned)mode.dwDisplayHeight,mode.RefreshRate,mode.fIsInterlaced!=FALSE,
-        w,h,plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available());
+        w,h,plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available(),
+        crt.plugin_detected,crt_ver,crt.plugin_mode,crt.retro_240p_available,crt_output_reason_text(crt.reason),
+        (unsigned)(beacon?beacon->magic:0u));
     if(n>0 && (size_t)n<sizeof(text))storage_write("console-environment.txt",text,(size_t)n);
 }
 void plat_display_info(char *out,size_t capacity)
@@ -598,6 +616,7 @@ bool plat_power_available(void) {return !video_xdk_is_streaming();}
 bool plat_power_action(bool restart)
 {
     if(video_xdk_is_streaming())return false;
+    crt_bridge_exit_240p();
     plat_diagnostics_flush();
     HalReturnToFirmware(restart?6:5);
     return false; /* reports failure if firmware unexpectedly returns */
@@ -611,6 +630,7 @@ bool plat_restart_available(void)
 bool plat_restart_app(void)
 {
     if(!plat_restart_available())return false;
+    crt_bridge_exit_240p();
     plat_diagnostics_flush();
     XLaunchNewImage("game:\\default.xex",0);
     return false;
@@ -618,6 +638,7 @@ bool plat_restart_app(void)
 void plat_exit_to_dashboard(void)
 {
     plat_log("[APP] Exiting to dashboard\n");
+    crt_bridge_exit_240p();
     plat_diagnostics_flush();
     XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP,0);
 }
@@ -656,6 +677,11 @@ void __cdecl main()
         direct_trace_stage("[MAIN FATAL] gfx_init failed");
         startup_stage("gfx_init failed\n");
         return;   /* nothing to show an error on */
+    }
+    {
+        int bb_w=640,bb_h=480;
+        gfx_backbuffer_size(&bb_w,&bb_h);
+        crt_bridge_init(bb_w,bb_h);
     }
     write_console_environment();
     /* Optional recovery switch affects menus only; video remains untouched. */

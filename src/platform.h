@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "console_link.h"
+#include "crt_output.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,11 @@ uint32_t *plat_decode_art(const unsigned char *data, size_t len, int tw, int th)
 const char *plat_console_ip(void);
 int plat_network_link(void); /* console's local link only, not the complete host path */
 int plat_crt_output_status(void); /* 1 SD interlaced NTSC-class, -1 incompatible, 0 unknown */
+struct crt_output_status;
+void plat_crt_output_query(struct crt_output_status *out);
+bool plat_crt_240p_enter(int width, int height);
+bool plat_crt_240p_exit(void);
+bool plat_crt_240p_active(void);
 
 /* Adjusts loaded settings to what this build supports (e.g. renderer). */
 void plat_fixup_config(struct config *cfg);
