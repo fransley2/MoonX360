@@ -1,14 +1,21 @@
-# Build MoonX360 for the Xbox 360 dashboard
+# Build MoonX360 for Xbox 360
 
-MoonX360 v0.2.2 builds as default.xex for the Xbox 360 dashboard. Building requires Windows, Python 3, a separately obtained Xbox 360 SDK, and the project dependencies described in xdk/README.md. Microsoft SDK files are proprietary and are not included.
+Use Windows, Git, Python 3, and a separately obtained Xbox 360 SDK 21256.3 with the Jul12 compiler. Use an SDK you are authorized to access under Microsoft's applicable developer licensing. Set **XEDK** to its root. The root needs **bin\win32**, **include\xbox**, **lib\xbox**, and **TechPreview\Jul12Compiler**.
 
-Set XEDK to the root of an installed or extracted SDK with bin\win32, include\xbox, lib\xbox, and TechPreview\Jul12Compiler. The build scripts use SDK 21256.3's Jul12 compiler.
+Build from a clean source checkout. The adapted dependencies are under **xdk/deps**. Keep them together with the build scripts. See [dependency provenance](DEPENDENCIES.md) for the included sources and notices.
 
-From the repository root, prepare the dependencies listed in xdk/README.md and run:
+    $env:XEDK = 'C:\Program Files (x86)\Microsoft Xbox 360 SDK'
+    $env:XDK_BUILD_DIR = Join-Path $PWD 'xdk\build'
+    $env:XDK_CONFIGURATION = 'Release'
+    $env:XDK_OPTIMIZATION = 'aggressive'
 
     python xdk\scripts\build_ffmpeg.py
-    python xdk\build.py
+    if ($LASTEXITCODE) { throw 'FFmpeg build failed' }
+    python xdk\build.py mbedtls opus compat moonlight app xex
+    if ($LASTEXITCODE) { throw 'MoonX360 build failed' }
 
-The production dashboard executable is written to xdk\build\default.xex. The build uses the aggressive optimization profile by default; XDK_OPTIMIZATION=compatible selects the compatible compiler profile. These names describe compiler flags, not measured console performance.
+The application is written to **XDK_BUILD_DIR\default.xex**. The builder checks the FFmpeg manifest and library hashes, links the program, embeds the dashboard resource, and verifies the extracted resource. The **shortcut_xex** target builds the separate [Aurora launcher](AURORA_DIRECT_LAUNCH.md).
 
-The build verifies the FFmpeg build manifest and library hashes, creates the dashboard resource, embeds it in the XEX, then extracts and compares the embedded resource. Keep SDK files and build output outside public source archives.
+Choose a fresh output directory to preserve an existing build. Some builders apply idempotent compatibility edits to their vendored inputs. Use the same environment and output directory for both build commands. The **compatible** optimization profile is available for both steps.
+
+The root **Makefile** targets libxenon/XeLL. Microsoft SDK tools, headers, and libraries are external prerequisites.

@@ -1,4 +1,3 @@
-# Publish the application and its reproducible dashboard build inputs only.
 /*
 !/.gitignore
 !/.gitattributes
@@ -6,7 +5,6 @@
 !/THIRD_PARTY_NOTICES.md
 !/CONTRIBUTING.md
 !/README.md
-!/RELEASE_NOTES_v0.2.2.md
 !/Makefile
 !/src/
 !/compat/
@@ -15,53 +13,51 @@
 !/tools/
 !/third_party/
 !/assets/
-!/test-support/
 !/xdk/
 !/docs/
 
-# Preserve the maintained guides; local reports and dated evidence stay local.
 /docs/*
-!/docs/release-candidate/
 !/docs/BUILD.md
 !/docs/DEPENDENCIES.md
-!/docs/LIMITATIONS.md
-!/docs/LATENCY_INSTRUMENTATION.md
-!/docs/LATENCY_PHASE2_RESULTS.md
-!/docs/INPUT_POLLING_AB_XBOX360.md
-!/docs/FPS_CADENCE_INVESTIGATION.md
-!/docs/H264_CORRUPTION_DIAGNOSTIC.md
-!/docs/H264_REFERENCE_DRIFT_AB_20261106.md
-!/docs/H264_REFERENCE_SAFE_PARALLEL_20261106.md
-!/docs/H264_720P_REFERENCE_SAFE_PERFORMANCE_20261106.md
-!/docs/GTA_HOST_XBOX_FPS_CORRELATION.md
-!/docs/AURORA_DIRECT_LAUNCH.md
-!/docs/ARTWORK_CACHE_AURORA_METADATA.md
-!/docs/AURORA_HANDOFF_DIAGNOSTICS.md
-!/docs/PUBLICATION.md
 !/docs/SETUP.md
-!/docs/RELEASE_NOTES_v0.2.4.md
+!/docs/AURORA_DIRECT_LAUNCH.md
+!/docs/images/
+/docs/images/*
+!/docs/images/logo.png
+!/docs/images/icon.png
+!/docs/images/banner.png
+!/docs/images/social-preview.png
+!/docs/images/screenshots/
+/docs/images/screenshots/*
+!/docs/images/screenshots/*.png
+!/docs/images/screenshots/*.webp
 
-# Downloaded dependency trees, SDKs, and generated build output.
+/tools/*
+!/tools/build_brand.py
+/xdk/scripts/*
+!/xdk/scripts/build_ffmpeg.py
+!/xdk/scripts/patch_worker_map.py
+!/xdk/scripts/slice_dispatch.py
+/xdk/tests/
+/xdk/patches/r[0-9]*.patch
+/xdk/*.md
+!/xdk/README.md
+
+# Existing adapted dependency sources are tracked. Review additions explicitly.
 /xdk/deps/
-/xdk/build/
+/xdk/build*/
 /xdk/SDK/
 /xdk/XDK/
 **/dev kits/
-xdk/deps/XBMC-360/libraries/ffmpeg/vcproj/external/pthreads/need_errno.h
-xdk/deps/XBMC-360/libraries/ffmpeg/vcproj/external/zlib/contrib/
-xdk/deps/XBMC-360/libraries/ffmpeg/vcproj/external/zlib/zlib.3.pdf
-xdk/*.md
-!xdk/README.md
 
-# Local exports, test runs, generated artifacts, and private runtime data.
+/artifacts/
 /dist/
-/publication/
 /evidencias/
-/host-tests/
-/host-tests-*/
-/xdk/scripts/audit_threads.py
-/xdk/scripts/collect_session.py
-/xdk/tests/build_*_console_probe.py
+/publication/
+/host-tests*/
+/test-support/
+/xbox_remote_dev/
+*.dmp
 *.log
 *.map
 *.xdb
@@ -101,5 +97,3 @@ xdk/*.md
 *.pch
 __pycache__/
 *.py[cod]
-
-# Keep test and debug sources; ignore only their generated outputs above.

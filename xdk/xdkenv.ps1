@@ -8,7 +8,7 @@
 # installer, the main compiler's CRT headers only exist as CRT-build-internal
 # copies. The SDK's own headers and libraries come from include\xbox / lib\xbox.
 if (-not $env:XEDK) {
-    $env:XEDK = "C:\AI\xbox\dev kits\XBOX360 SDK 21256.3\extracted\XDK"
+    $env:XEDK = "C:\Program Files (x86)\Microsoft Xbox 360 SDK"
 }
 $jul12 = "$env:XEDK\TechPreview\Jul12Compiler"
 if (-not (Test-Path "$jul12\bin\win32\cl.exe")) {

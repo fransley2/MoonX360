@@ -3,7 +3,7 @@
 This publication contains curated dependency source snapshots, including local
 Xbox 360 adaptations. The files shipped here, rather than an unverified remote
 revision, are the build inputs. This document records a source inspection on
-2026-10-30; see PUBLICATION.md for the completed clean-build checks. Binary reproducibility was not established.
+2026-10-30; see the build guide for the clean-build procedure. Binary reproducibility was not established.
 
 ## Versions and provenance
 
