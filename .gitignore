@@ -15,6 +15,7 @@
 !/assets/
 !/xdk/
 !/docs/
+!/test-support/
 
 /docs/*
 !/docs/BUILD.md
@@ -39,7 +40,10 @@
 !/xdk/scripts/build_ffmpeg.py
 !/xdk/scripts/patch_worker_map.py
 !/xdk/scripts/slice_dispatch.py
-/xdk/tests/
+/xdk/tests/build_*.py
+/xdk/tests/collect_ab_results.py
+/xdk/tests/package_dashboard.py
+/xdk/tests/verify_moonx360.py
 /xdk/patches/r[0-9]*.patch
 !/xdk/patches/r47c-ordered-deblock.patch
 !/xdk/patches/r47c-row-progress.patch
@@ -66,7 +70,6 @@
 /evidencias/
 /publication/
 /host-tests*/
-/test-support/
 /xbox_remote_dev/
 *.dmp
 *.log

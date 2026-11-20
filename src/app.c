@@ -2221,12 +2221,12 @@ static void advisor_menu(void)
         if(r->rtt_valid)snprintf(latency,sizeof(latency),"%u ms",r->rtt_ms);else snprintf(latency,sizeof(latency),"Not measured");
         ui_draw_performance(performance_grade(r->grade),mode,r->shown_milli/1000.0f,
             r->cause==PERF_CPU?"CPU limited":r->tail_valid?"See analysis":"Tail not measured",latency,
-            performance_cause_name(r->cause),apply?"Recommended: Standard / 720p30 / 12 Mbps. Apply changes only the next connection.":
+            performance_cause_name(r->cause),apply?"Recommended: Standard / 720p30 / 6 Mbps. Apply changes only the next connection.":
             "Analysis uses your last session. No new benchmark or automatic settings change.",apply);
         ui_present();int key=wait_button();if(key&B_FLAG)return;if(key&X_FLAG)session_details(r);
         if(tab_key(key,UI_SETTINGS))return;
         if((key&A_FLAG)&&apply) {config_apply_preset(&cfg,CONFIG_PROFILE_STANDARD);
-            bool saved=config_save(&cfg);message(ICON_CHECK,"Safe profile selected",saved?"Standard / 720p30 / 12 Mbps. Applies on next connection.":"Applies next connection; settings could not be saved.");return;}
+            bool saved=config_save(&cfg);message(ICON_CHECK,"Safe profile selected",saved?"Standard / 720p30 / 6 Mbps. Applies on next connection.":"Applies next connection; settings could not be saved.");return;}
     }
 }
 

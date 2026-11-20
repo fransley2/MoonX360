@@ -596,12 +596,8 @@ bool gfx_upload(D3DTexture *tex, const void *src, int src_pitch, int row_bytes, 
     if (lr.Pitch == src_pitch && src_pitch == row_bytes) {
         memcpy(d, s, (size_t)row_bytes * rows);
     } else {
-        for (y = 0; y < rows; y++) {
-            BYTE *dst_row = d + (size_t)y * lr.Pitch;
-            memcpy(dst_row, s + (size_t)y * src_pitch, row_bytes);
-            if (lr.Pitch > row_bytes)
-                memset(dst_row + row_bytes, 0, (size_t)(lr.Pitch - row_bytes));
-        }
+        for (y = 0; y < rows; y++)
+            memcpy(d + (size_t)y * lr.Pitch, s + (size_t)y * src_pitch, row_bytes);
     }
     tex->UnlockRect(0);
     return true;

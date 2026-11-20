@@ -89,6 +89,23 @@ def run(cmd, cwd=None):
     return r.returncode, r.stdout + r.stderr
 
 
+def sanitize_rsds_pdb(exe_path):
+    """Replace any embedded absolute RSDS CodeView PDB path with its basename."""
+    with open(exe_path, "rb") as f:
+        data = bytearray(f.read())
+    idx = data.find(b"RSDS")
+    if idx != -1:
+        start = idx + 24
+        end = data.find(b"\x00", start)
+        if end > start:
+            raw = bytes(data[start:end])
+            base = os.path.basename(raw.decode("latin1", "replace")).encode("latin1")
+            if len(base) <= len(raw):
+                data[start:end] = base + (b"\x00" * (len(raw) - len(base)))
+                with open(exe_path, "wb") as f:
+                    f.write(data)
+
+
 def compile_one(job):
     src, obj, flags = job
     stamp = obj + ".command.json"
@@ -106,7 +123,8 @@ def compile_one(job):
             previous = f.read()
     if os.path.exists(obj) and previous == signature and os.path.getmtime(obj) >= os.path.getmtime(src):
         return src, 0, ""
-    rc, out = run([TOOLS["cl"]] + flags + [src, "/Fo" + obj])
+    rel_src = os.path.relpath(src, ROOT)
+    rc, out = run([TOOLS["cl"]] + flags + [rel_src, "/Fo" + obj], cwd=ROOT)
     with open(obj + '.log', 'w', encoding='utf-8') as f:
         f.write(out)
     if rc == 0:
@@ -339,14 +357,15 @@ def target_xex():
     # /STACK also sets the default for threads created with stack size 0,
     # which is what moonlight-common-c does.
     # The XDK linker otherwise auto-converts to XEX before our SPA/config exists.
-    rc, out = run([TOOLS["link"], "/nologo", "/XEX:NO", "/OUT:" + exe, "/OPT:REF", "/OPT:ICF", "/STACK:524288",
-                   "/MAP:" + os.path.join(OUT, "MoonX360.map"),
-                   "@" + rsp] + (["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    rc, out = run([TOOLS["link"], "/nologo", "/XEX:NO", "/OUT:MoonX360.exe", "/OPT:REF", "/OPT:ICF", "/STACK:524288",
+                   "/MAP:MoonX360.map",
+                   "@" + rsp] + (["/DEBUG"] if CONFIGURATION=="Debug" else []), cwd=OUT)
     with open(exe + '.link.log', 'w', encoding='utf-8') as f:
         f.write('exit=' + str(rc) + '\n' + out)
     if rc != 0:
         print(out)
         return None
+    sanitize_rsds_pdb(exe)
     # Compile the dashboard name/icon with the installed SDK, and embed its SPA.
     # Keep paths in the generated config absolute so builds work from any cwd.
     spa = os.path.join(OUT, "MoonX360.spa")
@@ -412,10 +431,11 @@ def target_shortcut_xex(variant="normal"):
     objects=compile_all("shortcut"+("" if variant=="normal" else "-"+variant),[(source,[])],flags,base=ROOT)
     if objects is None:return None
     exe=os.path.join(folder,"MoonX360Shortcut.exe")
-    rc,out=run([TOOLS["link"],"/nologo","/XEX:NO","/OUT:"+exe,"/OPT:REF","/OPT:ICF"]+objects+
-               ["xapilib.lib","xboxkrnl.lib"]+(["/DEBUG"] if CONFIGURATION=="Debug" else []))
+    rc,out=run([TOOLS["link"],"/nologo","/XEX:NO","/OUT:MoonX360Shortcut.exe","/OPT:REF","/OPT:ICF"]+objects+
+               ["xapilib.lib","xboxkrnl.lib"]+(["/DEBUG"] if CONFIGURATION=="Debug" else []),cwd=folder)
     with open(exe+'.link.log','w',encoding='utf-8') as f:f.write('exit='+str(rc)+'\n'+out)
     if rc!=0:print(out);return None
+    sanitize_rsds_pdb(exe)
     tree=ET.parse(os.path.join(XDK_DIR,"MoonX360.xlast"))
     root=tree.getroot()
     game=next(e for e in root.iter() if e.tag.endswith("GameConfigProject"))

@@ -115,8 +115,10 @@ def compile_one(args):
     src, obj, flags = args
     if os.path.exists(obj) and os.path.getmtime(obj) >= os.path.getmtime(src):
         return src, 0, ""
-    r = subprocess.run([CL] + flags + [src, "/Fo" + obj], env=ENV, capture_output=True, text=True,
-                       errors="replace", cwd=os.path.dirname(obj))
+    base_cwd = FFMPEG if os.path.abspath(src).startswith(os.path.abspath(FFMPEG)) else ROOT
+    rel_src = os.path.relpath(src, base_cwd)
+    r = subprocess.run([CL] + flags + [rel_src, "/Fo" + obj], env=ENV, capture_output=True, text=True,
+                       errors="replace", cwd=base_cwd)
     with open(obj + '.log', 'w', encoding='utf-8') as f:
         f.write(r.stdout + r.stderr)
     if r.returncode and os.path.exists(obj):
@@ -218,7 +220,7 @@ if __name__ == "__main__":
     ok = all([build(n) for n in names])
     if ok and 'avcodec' in names:
         with open(os.path.join(FFMPEG,'libavcodec','xb_thread.c'),encoding='utf-8') as f:worker_text=f.read()
-        manifest = {'profile': PROFILE,'worker_map':WORKER_MAP,'source_root':FFMPEG,
+        manifest = {'profile': PROFILE,'worker_map':WORKER_MAP,'source_root':os.path.relpath(FFMPEG, ROOT),
                     'vmx_ab_experiment':int(VMX_AB_EXPERIMENT),
                     'vmx_ab_inputs':{p:hashlib.sha256(open(os.path.join(XBOX_DSP,p),'rb').read()).hexdigest() for p in VMX_AB_INPUTS} if VMX_AB_EXPERIMENT=='1' else {},
                     'h264_stage_profile': int(STAGE_PROFILE),
