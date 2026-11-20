@@ -1,0 +1,18 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -3357,3 +3357,15 @@
+             return ret;
+         }
++        /* decode_nal_units entered with one context. The initial
++         * progressive IDR can use the slice contexts now initialized
++         * above. The deblocking and format checks below still apply. */
++        if (first_slice && first_mb_in_slice == 0 &&
++            !h->is_avc && h->nal_unit_type == NAL_IDR_SLICE &&
++            h->sps.frame_mbs_only_flag && h->sps.bit_depth_luma == 8 &&
++            h->sps.chroma_format_idc == 1 && !h->pps.cabac &&
++            h->avctx->active_thread_type == FF_THREAD_SLICE &&
++            !(h->avctx->flags2 & CODEC_FLAG2_CHUNKS) &&
++            !h->avctx->hwaccel && !h->avctx->draw_horiz_band &&
++            h->slice_context_count == 8)
++            h->max_contexts = h->slice_context_count;
+     }

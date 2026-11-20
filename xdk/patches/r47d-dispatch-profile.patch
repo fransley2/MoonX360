@@ -1,0 +1,92 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -47,7 +47,7 @@
+ #include "vdpau_internal.h"
+ #include "libavutil/avassert.h"
+ #include <xtl.h>
+-#ifdef XDK_H264_STAGE_PROFILE
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+ static uint64_t xbox_h264_profile_ticks(void)
+ {
+     LARGE_INTEGER ticks;
+@@ -4552,7 +4552,16 @@
+ 
+ static int decode_slice(struct AVCodecContext *avctx, void *arg)
+ {
+-#ifdef XDK_H264_STAGE_PROFILE
++#if XDK_R47D_DISPATCH_PROFILE
++    H264Context *h = *(H264Context **)arg;
++    FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
++    int result;
++    trace->slice_cpu[0] = GetCurrentProcessorNumber();
++    trace->slice_begin[0] = xbox_h264_profile_ticks();
++    result = decode_slice_body(avctx, arg);
++    trace->slice_end[0] = xbox_h264_profile_ticks();
++    return result;
++#elif defined(XDK_H264_STAGE_PROFILE)
+     H264Context *h = *(void **)arg;
+     uint64_t started = xbox_h264_profile_ticks();
+     int result = decode_slice_body(avctx, arg);
+@@ -4627,9 +4636,15 @@
+             for (i = 0; i < context_count; i++)
+                 results[i] = decode_slice(avctx, &h->thread_context[i]);
+         } else {
++#if XDK_R47D_DISPATCH_PROFILE
++            uint64_t dispatch_started;
++#endif
+             if (postpone)
+                 for (i = 0; i < context_count; i++)
+                     h->thread_context[i]->deblocking_filter = 0;
++#if XDK_R47D_DISPATCH_PROFILE
++            dispatch_started = xbox_h264_profile_ticks();
++#endif
+             if (postpone && context_count > avctx->thread_count) {
+                 H264Context *jobs[MAX_THREADS];
+                 int indices[MAX_THREADS], job_results[MAX_THREADS];
+@@ -4653,7 +4668,26 @@
+                 avctx->execute(avctx, decode_slice, h->thread_context,
+                                results, context_count, sizeof(void *));
+             }
++#if XDK_R47D_DISPATCH_PROFILE
++            {
++                FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
++                trace->reconstruct_wall += xbox_h264_profile_ticks() - dispatch_started;
++                if (context_count == 8) {
++                    trace->dispatches_profiled++;
++                    for (i = 0; i < context_count; ++i) {
++                        const FFH264ParallelDiagnostic *worker =
++                            &h->thread_context[i]->xbox_parallel_diagnostic;
++                        trace->slice_begin[i] = worker->slice_begin[0] - dispatch_started;
++                        trace->slice_end[i] = worker->slice_end[0] - dispatch_started;
++                        trace->slice_cpu[i] = worker->slice_cpu[0];
++                    }
++                }
++            }
++#endif
+             if (postpone) {
++#if XDK_R47D_DISPATCH_PROFILE
++                uint64_t filter_started;
++#endif
+                 for (i = 0; i < context_count; i++) {
+                     hx = h->thread_context[i];
+                     hx->deblocking_filter = saved_filter[i];
+@@ -4662,6 +4696,9 @@
+                 }
+                 if (failed)
+                     return -1;
++#if XDK_R47D_DISPATCH_PROFILE
++                filter_started = xbox_h264_profile_ticks();
++#endif
+                 if (!filter_complete_rows(h, context_count))
+                 for (i = 0; i < context_count; i++) {
+                     int y, end_x, end_y;
+@@ -4677,6 +4714,9 @@
+                         loop_filter(hx, 0, end_x);
+                     hx->mb_x = end_x;
+                 }
++#if XDK_R47D_DISPATCH_PROFILE
++                h->xbox_parallel_diagnostic.filter_wall += xbox_h264_profile_ticks() - filter_started;
++#endif
+             }
+         }
+         ff_xbox_slice_last_dispatch(avctx, &participants, &concurrent);

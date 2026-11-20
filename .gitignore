@@ -35,11 +35,22 @@
 /tools/*
 !/tools/build_brand.py
 /xdk/scripts/*
+!/xdk/scripts/build_best_performance.py
 !/xdk/scripts/build_ffmpeg.py
 !/xdk/scripts/patch_worker_map.py
 !/xdk/scripts/slice_dispatch.py
 /xdk/tests/
 /xdk/patches/r[0-9]*.patch
+!/xdk/patches/r47c-ordered-deblock.patch
+!/xdk/patches/r47c-row-progress.patch
+!/xdk/patches/r47c-wavefront-deblock.patch
+!/xdk/patches/r47d-batch8.patch
+!/xdk/patches/r47d-dispatch-profile.patch
+!/xdk/patches/r47d-edge-transpose.patch
+!/xdk/patches/r47d-edge16.patch
+!/xdk/patches/r47d-first-idr.patch
+!/xdk/patches/r47d-long-slices.patch
+!/xdk/patches/r48-batch16.patch
 /xdk/*.md
 !/xdk/README.md
 

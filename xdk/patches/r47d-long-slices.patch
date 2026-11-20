@@ -1,0 +1,34 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -4630,8 +4630,29 @@
+             if (postpone)
+                 for (i = 0; i < context_count; i++)
+                     h->thread_context[i]->deblocking_filter = 0;
+-            avctx->execute(avctx, decode_slice, h->thread_context,
+-                           results, context_count, sizeof(void *));
++            if (postpone && context_count > avctx->thread_count) {
++                H264Context *jobs[MAX_THREADS];
++                int indices[MAX_THREADS], job_results[MAX_THREADS];
++                /* Long compressed slices first. Preserve the original array
++                 * for raster filtering and restore return codes by index. */
++                for (i = 0; i < context_count; ++i) {
++                    int j = i;
++                    H264Context *slice = h->thread_context[i];
++                    while (j && jobs[j-1]->gb.size_in_bits < slice->gb.size_in_bits) {
++                        jobs[j] = jobs[j-1];
++                        indices[j] = indices[j-1];
++                        --j;
++                    }
++                    jobs[j] = slice;
++                    indices[j] = i;
++                }
++                avctx->execute(avctx, decode_slice, jobs, job_results, context_count, sizeof(void *));
++                for (i = 0; i < context_count; ++i)
++                    results[indices[i]] = job_results[i];
++            } else {
++                avctx->execute(avctx, decode_slice, h->thread_context,
++                               results, context_count, sizeof(void *));
++            }
+             if (postpone) {
+                 for (i = 0; i < context_count; i++) {
+                     hx = h->thread_context[i];

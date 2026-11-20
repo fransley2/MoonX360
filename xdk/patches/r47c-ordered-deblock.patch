@@ -1,0 +1,95 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -3787,7 +3787,9 @@
+             /* Cheat slightly for speed:
+              * Do not bother to deblock across slices. */
+             h->deblocking_filter = 2;
+-        } else {
++        } else if (h->picture_structure != PICT_FRAME || FRAME_MBAFF ||
++                   h->avctx->draw_horiz_band ||
++                   h->avctx->active_thread_type != FF_THREAD_SLICE) {
+             h0->max_contexts = 1;
+             h0->xbox_parallel_diagnostic.forced_serial = 1;
+             if (!h0->single_decode_warning) {
+@@ -3860,6 +3862,13 @@
+         for (i = 16; i < 48; i++)
+             ref2frm[i + 4] = 4 * id_list[(i - 16) >> 1] +
+                              (h->ref_list[j][i].f.reference & 3);
++    }
++
++    /* Boundary strength can use the slice above, even if another worker
++     * parsed it. Publish its reference-index mapping on the header thread. */
++    if (h != h0) {
++        int slot = h->slice_num & (MAX_SLICES - 1);
++        memcpy(h0->ref2frm[slot], h->ref2frm[slot], sizeof(h->ref2frm[slot]));
+     }
+ 
+     if (h->ref_count[0]) h->er.last_pic = &h->ref_list[0][0];
+@@ -4482,6 +4491,9 @@
+     H264Context *hx;
+     int i, failed = 0;
+     int results[MAX_THREADS];
++    int saved_filter[MAX_THREADS];
++    int postpone = 0;
++    int ordered_rows = 1;
+ 
+     if (h->avctx->hwaccel ||
+         h->avctx->codec->capabilities & CODEC_CAP_HWACCEL_VDPAU)
+@@ -4511,8 +4523,55 @@
+             hx->x264_build        = h->x264_build;
+         }
+ 
+-        avctx->execute(avctx, decode_slice, h->thread_context,
+-                       results, context_count, sizeof(void *));
++        /* For progressive row slices, reconstruct on separate workers first.
++         * The unfiltered pixels are exactly what intra prediction needs.
++         * Run the original normative filter in raster order after the join,
++         * before any following batch/picture can sample these references. */
++        for (i = 0; i < context_count; i++) {
++            hx = h->thread_context[i];
++            saved_filter[i] = hx->deblocking_filter;
++            postpone |= saved_filter[i] == 1;
++            if (hx->resync_mb_x || (i && hx->resync_mb_y <=
++                                        h->thread_context[i - 1]->resync_mb_y))
++                ordered_rows = 0;
++        }
++        if (postpone)
++            for (i = 1; i < context_count; i++)
++                memcpy(h->thread_context[i]->ref2frm, h->ref2frm, sizeof(h->ref2frm));
++        if (postpone && !ordered_rows) {
++            for (i = 0; i < context_count; i++)
++                results[i] = decode_slice(avctx, &h->thread_context[i]);
++        } else {
++            if (postpone)
++                for (i = 0; i < context_count; i++)
++                    h->thread_context[i]->deblocking_filter = 0;
++            avctx->execute(avctx, decode_slice, h->thread_context,
++                           results, context_count, sizeof(void *));
++            if (postpone) {
++                for (i = 0; i < context_count; i++) {
++                    hx = h->thread_context[i];
++                    hx->deblocking_filter = saved_filter[i];
++                    if (results[i] < 0)
++                        failed = 1;
++                }
++                if (failed)
++                    return -1;
++                for (i = 0; i < context_count; i++) {
++                    int y, end_x, end_y;
++                    hx = h->thread_context[i];
++                    end_x = hx->mb_x;
++                    end_y = hx->mb_y;
++                    for (y = hx->resync_mb_y; y < end_y; y++) {
++                        hx->mb_y = y;
++                        loop_filter(hx, 0, hx->mb_width);
++                    }
++                    hx->mb_y = end_y;
++                    if (end_x && end_y < hx->mb_height)
++                        loop_filter(hx, 0, end_x);
++                    hx->mb_x = end_x;
++                }
++            }
++        }
+         ff_xbox_slice_last_dispatch(avctx, &participants, &concurrent);
+ #ifdef XDK_H264_STAGE_PROFILE
+         for (i = 1; i < context_count; i++) {

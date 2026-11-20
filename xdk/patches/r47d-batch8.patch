@@ -1,0 +1,32 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -1161,10 +1161,19 @@
+     }
+ }
+ 
++/* Eight slice contexts share four persistent workers. Reserve the per-context
++ * scratch rows with the same capacity used to allocate the contexts. */
++static int slice_capacity(const H264Context *h)
++{
++    if (h->avctx->active_thread_type == FF_THREAD_SLICE && h->avctx->thread_count == 4)
++        return 8;
++    return FFMAX(1, h->avctx->thread_count);
++}
++
+ int ff_h264_alloc_tables(H264Context *h)
+ {
+     const int big_mb_num    = h->mb_stride * (h->mb_height + 1);
+-    const int row_mb_num    = 2*h->mb_stride*FFMAX(h->avctx->thread_count, 1);
++    const int row_mb_num    = 2*h->mb_stride*slice_capacity(h);
+     int x, y, i;
+ 
+     FF_ALLOCZ_OR_GOTO(h->avctx, h->intra4x4_pred_mode,
+@@ -3021,7 +3030,7 @@
+ {
+     int nb_slices = (HAVE_THREADS &&
+                      h->avctx->active_thread_type & FF_THREAD_SLICE) ?
+-                    h->avctx->thread_count : 1;
++                    slice_capacity(h) : 1;
+     int i;
+ 
+     if(    FFALIGN(h->avctx->width , 16                                 ) == h->width

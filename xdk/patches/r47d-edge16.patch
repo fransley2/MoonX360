@@ -1,0 +1,65 @@
+--- a/libavcodec/h264dsp_template.c
++++ b/libavcodec/h264dsp_template.c
+@@ -149,8 +149,62 @@
+         }
+     }
+ }
++#if BIT_DEPTH == 8 && defined(_XBOX)
++#include <xtl.h>
++
++/* The vertical DSP entry filters sixteen contiguous columns. Load the six
++ * rows once and pack the two halfword groups into a single store per row. */
++static __forceinline __vector4 edge_absdiff(__vector4 a, __vector4 b)
++{
++    return __vsubuhm(__vmaxsh(a,b), __vminsh(a,b));
++}
++static __forceinline __vector4 edge_clip(__vector4 a, __vector4 t)
++{
++    return __vminsh(__vmaxsh(a,__vsubuhm(__vzero(),t)),t);
++}
++static __forceinline void edge_half(__vector4 p2, __vector4 p1, __vector4 p0,
++    __vector4 q0, __vector4 q1, __vector4 q2, __vector4 tc, __vector4 a,
++    __vector4 b, __vector4 *out)
++{
++    __vector4 one=__vspltish(1), z=__vzero();
++    __vector4 valid=__vand(__vcmpgtsh(tc,__vspltish(-1)),__vcmpgtsh(a,edge_absdiff(p0,q0)));
++    __vector4 ap=__vcmpgtsh(b,edge_absdiff(p2,p0)), aq=__vcmpgtsh(b,edge_absdiff(q2,q0));
++    __vector4 avg=__vavguh(p0,q0), d, lim;
++    valid=__vand(valid,__vand(__vcmpgtsh(b,edge_absdiff(p1,p0)),__vcmpgtsh(b,edge_absdiff(q1,q0))));
++    tc=__vmaxsh(tc,z);
++    lim=__vadduhm(tc,__vadduhm(__vand(ap,one),__vand(aq,one)));
++    d=__vslh(__vsubuhm(q0,p0),__vspltish(2));
++    d=edge_clip(__vsrah(__vadduhm(__vadduhm(d,__vsubuhm(p1,q1)),__vspltish(4)),__vspltish(3)),lim);
++    out[1]=__vadduhm(p0,__vand(valid,d));
++    out[2]=__vsubuhm(q0,__vand(valid,d));
++    out[0]=__vadduhm(p1,__vand(__vand(valid,ap),edge_clip(__vsubuhm(__vsrh(__vadduhm(p2,avg),one),p1),tc)));
++    out[3]=__vadduhm(q1,__vand(__vand(valid,aq),edge_clip(__vsubuhm(__vsrh(__vadduhm(q2,avg),one),q1),tc)));
++}
++static void edge16(uint8_t *pix,int stride,int alpha,int beta,const int8_t *tc)
++{
++    __declspec(align(16)) short levels[16];
++    __declspec(align(16)) short limits[8];
++    __vector4 rows[6], hi[4], lo[4], a,b,z=__vzero();
++    int i;
++    for(i=0;i<16;i++) levels[i]=tc[i/4];
++    limits[0]=(short)alpha; limits[1]=(short)beta;
++    a=__vsplth(__lvx(limits,0),0); b=__vsplth(__lvx(limits,0),1);
++    for(i=0;i<6;i++) rows[i]=__lvx(pix+(i-3)*stride,0);
++#define EDGE_GROUP(merge,offset,out) edge_half(merge(z,rows[0]),merge(z,rows[1]),merge(z,rows[2]),merge(z,rows[3]),merge(z,rows[4]),merge(z,rows[5]),__lvx(levels,offset),a,b,out)
++    EDGE_GROUP(__vmrghb,0,hi);
++    EDGE_GROUP(__vmrglb,16,lo);
++#undef EDGE_GROUP
++    for(i=0;i<4;i++) __stvx(__vpkshus(hi[i],lo[i]),pix+(i-2)*stride,0);
++}
++#endif
+ static void FUNCC(h264_v_loop_filter_luma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {
++#if BIT_DEPTH == 8 && defined(_XBOX)
++    if ((((UINT_PTR)pix | stride) & 15) == 0) {
++        edge16(pix,stride,alpha,beta,tc0);
++        return;
++    }
++#endif
+     FUNCC(h264_loop_filter_luma)(pix, stride, sizeof(pixel), 4, alpha, beta, tc0);
+ }
+ static void FUNCC(h264_h_loop_filter_luma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)

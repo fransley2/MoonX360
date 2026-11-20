@@ -1,0 +1,49 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -1161,12 +1161,12 @@
+     }
+ }
+ 
+-/* Eight slice contexts share four persistent workers. Reserve the per-context
+- * scratch rows with the same capacity used to allocate the contexts. */
++/* Sixteen slice contexts share four persistent workers (no extra worker
++ * threads) so 16-slice AUs run in a single reconstruct + filter batch. */
+ static int slice_capacity(const H264Context *h)
+ {
+     if (h->avctx->active_thread_type == FF_THREAD_SLICE && h->avctx->thread_count == 4)
+-        return 8;
++        return 16;
+     return FFMAX(1, h->avctx->thread_count);
+ }
+ 
+@@ -3366,7 +3366,7 @@
+             h->avctx->active_thread_type == FF_THREAD_SLICE &&
+             !(h->avctx->flags2 & CODEC_FLAG2_CHUNKS) &&
+             !h->avctx->hwaccel && !h->avctx->draw_horiz_band &&
+-            h->slice_context_count == 8)
++            h->slice_context_count == slice_capacity(h))
+             h->max_contexts = h->slice_context_count;
+     }
+ 
+@@ -4253,7 +4253,7 @@
+  * even a single scheduled worker can always finish the oldest row. An edge
+  * can touch its left and upper neighbours, so wait for the upper row to
+  * finish one MB beyond each chunk before writing any pixels. */
+-enum { ROW_LIMIT = 128, FILTER_CHUNK = 4, ROW_SLOTS = 16 };
++enum { ROW_LIMIT = 128, FILTER_CHUNK = 4, ROW_SLOTS = 32 };
+ typedef struct RowFilterBatch {
+     H264Context **contexts;
+     int first, end;
+@@ -4684,9 +4684,10 @@
+             {
+                 FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
+                 trace->reconstruct_wall += xbox_h264_profile_ticks() - dispatch_started;
+-                if (context_count == 8) {
++                if (context_count == 8 || context_count == 16) {
++                    const int prof_n = FFMIN(context_count, 8);
+                     trace->dispatches_profiled++;
+-                    for (i = 0; i < context_count; ++i) {
++                    for (i = 0; i < prof_n; ++i) {
+                         const FFH264ParallelDiagnostic *worker =
+                             &h->thread_context[i]->xbox_parallel_diagnostic;
+                         trace->slice_begin[i] = worker->slice_begin[0] - dispatch_started;

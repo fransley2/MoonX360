@@ -19,3 +19,11 @@ The application is written to **XDK_BUILD_DIR\default.xex**. The builder checks 
 Choose a fresh output directory to preserve an existing build. Some builders apply idempotent compatibility edits to their vendored inputs. Use the same environment and output directory for both build commands. The **compatible** optimization profile is available for both steps.
 
 The root **Makefile** targets libxenon/XeLL. Microsoft SDK tools, headers, and libraries are external prerequisites.
+
+## Build the Best Performance profile
+
+This profile builds a separate FFmpeg copy with the included batch16 patches and enables low-latency input. Set **XEDK** as above and choose a new output directory.
+
+    python xdk\scripts\build_best_performance.py --out xdk\build-best-performance
+
+The executable is **xdk\build-best-performance\default.xex**. The output directory contains the patched FFmpeg source, build manifest, and compiled libraries. Use the same SDK revision when comparing against an existing executable.

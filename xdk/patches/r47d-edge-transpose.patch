@@ -1,0 +1,52 @@
+--- a/libavcodec/h264dsp_template.c
++++ b/libavcodec/h264dsp_template.c
+@@ -207,9 +207,49 @@
+ #endif
+     FUNCC(h264_loop_filter_luma)(pix, stride, sizeof(pixel), 4, alpha, beta, tc0);
+ }
++#if BIT_DEPTH == 8 && defined(_XBOX)
++/* Transpose eight rows of eight bytes. For a 16-line edge this avoids
++ * walking the same sixteen cache lines separately for each input column. */
++static void edge_stride16(uint8_t *pix,int stride,int alpha,int beta,const int8_t *tc)
++{
++    static const __declspec(align(16)) unsigned char first[16]={0,8,16,24,1,9,17,25,2,10,18,26,3,11,19,27};
++    static const __declspec(align(16)) unsigned char last[16]={4,12,20,28,5,13,21,29,6,14,22,30,7,15,23,31};
++    __declspec(align(16)) short limits[8]={0};
++    __vector4 z=__vzero(),a,b;
++    int group;
++    limits[0]=(short)alpha; limits[1]=(short)beta;
++    a=__vsplth(__lvx(limits,0),0); b=__vsplth(__lvx(limits,0),1);
++    for(group=0;group<2;group++,pix+=8*stride) {
++        __declspec(align(16)) unsigned char tile[64], result[32];
++        __vector4 ab,cd,pair[4],out[4],pq0,pq1;
++        int i;
++        if(tc[2*group]<0 && tc[2*group+1]<0) continue;
++        for(i=0;i<8;i++){
++            memcpy(tile+8*i,pix+i*stride-4,8);
++            limits[i]=tc[2*group+i/4];
++        }
++#define COLUMNS(mask,index) ab=__vperm(__lvx(tile,0),__lvx(tile,16),__lvx(mask,0));     cd=__vperm(__lvx(tile,32),__lvx(tile,48),__lvx(mask,0));     pair[index]=__vmrghw(ab,cd); pair[index+1]=__vmrglw(ab,cd)
++        COLUMNS(first,0);
++        COLUMNS(last,2);
++#undef COLUMNS
++        edge_half(__vmrglb(z,pair[0]),__vmrghb(z,pair[1]),__vmrglb(z,pair[1]),
++                  __vmrghb(z,pair[2]),__vmrglb(z,pair[2]),__vmrghb(z,pair[3]),
++                  __lvx(limits,0),a,b,out);
++        pq0=__vmrghb(__vpkshus(out[0],z),__vpkshus(out[1],z));
++        pq1=__vmrghb(__vpkshus(out[2],z),__vpkshus(out[3],z));
++        __stvx(__vmrghh(pq0,pq1),result,0);
++        __stvx(__vmrglh(pq0,pq1),result,16);
++        for(i=0;i<8;i++) memcpy(pix+i*stride-2,result+4*i,4);
++    }
++}
++#endif
+ static void FUNCC(h264_h_loop_filter_luma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {
++#if BIT_DEPTH == 8 && defined(_XBOX)
++    edge_stride16(pix,stride,alpha,beta,tc0);
++#else
+     FUNCC(h264_loop_filter_luma)(pix, sizeof(pixel), stride, 4, alpha, beta, tc0);
++#endif
+ }
+ static void FUNCC(h264_h_loop_filter_luma_mbaff)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {

@@ -1,0 +1,45 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -4232,12 +4232,12 @@
+  * even a single scheduled worker can always finish the oldest row. An edge
+  * can touch its left and upper neighbours, so wait for the upper row to
+  * finish one MB beyond each chunk before writing any pixels. */
+-enum { ROW_LIMIT = 128, FILTER_CHUNK = 8 };
++enum { ROW_LIMIT = 128, FILTER_CHUNK = 4, ROW_SLOTS = 16 };
+ typedef struct RowFilterBatch {
+     H264Context **contexts;
+     int first, end;
+     volatile LONG next_row;
+-    volatile LONG progress[ROW_LIMIT];
++    __declspec(align(128)) volatile LONG progress[ROW_SLOTS][32];
+ } RowFilterBatch;
+ 
+ static int filter_rows_job(AVCodecContext *avctx, void *arg, int job, int thread)
+@@ -4253,11 +4253,16 @@
+             int end = FFMIN(x + FILTER_CHUNK, h->mb_width);
+             int need = FFMIN(end + 1, h->mb_width);
+             if (row > batch->first) {
+-                while (InterlockedCompareExchange(&batch->progress[row - 1], 0, 0) < need)
++                const int target = (row - 1) * h->mb_width + need;
++                while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
+                     YieldProcessor();
++                /* Acquire the upper row's pixels after observing its progress. */
++                MemoryBarrier();
+             }
+             loop_filter_range(h, x, end, 0);
+-            InterlockedExchange(&batch->progress[row], end);
++            /* Release the written pixels before advancing the row. */
++            MemoryBarrier();
++            batch->progress[row % ROW_SLOTS][0] = row * h->mb_width + end;
+         }
+     }
+     h->mb_x = saved_x;
+@@ -4271,7 +4276,7 @@
+ {
+     RowFilterBatch batch;
+     int i, next = master->resync_mb_y;
+-    if (master->mb_height > ROW_LIMIT || master->sps.chroma_format_idc != 1 ||
++    if (count >= ROW_SLOTS || master->mb_height > ROW_LIMIT || master->sps.chroma_format_idc != 1 ||
+         master->sps.bit_depth_luma != 8)
+         return 0;
+     for (i = 0; i < count; i++) {
