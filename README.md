@@ -4,13 +4,15 @@
 
 # MoonX360
 
-MoonX360 is a native Xbox 360 client for streaming PC games and desktop apps from [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), or a compatible GameStream host.
+**MoonX360 streams PC games and desktop apps to a modified Xbox 360.** Your PC runs the games. The console displays the video, plays the audio, and sends controller input back to the PC. You need [Sunshine](https://github.com/LizardByte/Sunshine), [Apollo](https://github.com/ClassicOldSong/Apollo), or another compatible GameStream host on your PC.
 
 [![Release](https://img.shields.io/github/v/release/fransley2/MoonX360)](https://github.com/fransley2/MoonX360/releases/latest)
 [![License](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Xbox%20360-107c10)](#requirements)
 
 [Download](#download) · [Installation](#installation) · [Recommended Settings](#recommended-settings) · [Build from Source](#building-from-source)
+
+Need help with installation, controllers, or streaming? [FAQ in English](docs/FAQ.md) · [Preguntas frecuentes en español](docs/FAQ_ES.md) · [Report an issue](https://github.com/fransley2/MoonX360/issues)
 
 ---
 
