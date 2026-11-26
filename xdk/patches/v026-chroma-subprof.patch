@@ -1,0 +1,219 @@
+diff --git a/libavcodec/h264.c b/libavcodec/h264.c
+index 2e27123..88ca1b8 100644
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -47,6 +47,9 @@
+ #include "vdpau_internal.h"
+ #include "libavutil/avassert.h"
+ #include <xtl.h>
++#ifdef XDK_H264_STAGE_PROFILE
++#include <stdio.h>
++#endif
+ #ifdef _XBOX
+ #include <PPCIntrinsics.h>
+ #endif
+@@ -781,6 +784,10 @@ static av_always_inline void mc_dir_part(H264Context *h, Picture *pic,
+     const int pic_width  = 16 * h->mb_width;
+     const int pic_height = 16 * h->mb_height >> MB_FIELD;
+     int ysh;
++#ifdef XDK_H264_STAGE_PROFILE
++    uint64_t mc_t0 = 0;
++    int sp_cx = 0, sp_cy = 0;
++#endif
+ 
+     if (mx & 7)
+         extra_width -= 3;
+@@ -800,9 +807,15 @@ static av_always_inline void mc_dir_part(H264Context *h, Picture *pic,
+         emu   = 1;
+     }
+ 
++#ifdef XDK_H264_STAGE_PROFILE
++    mc_t0 = xbox_h264_profile_ticks();
++#endif
+     qpix_op[luma_xy](dest_y, src_y, h->mb_linesize); // FIXME try variable height perhaps?
+     if (!square)
+         qpix_op[luma_xy](dest_y + delta, src_y + delta, h->mb_linesize);
++#ifdef XDK_H264_STAGE_PROFILE
++    h->mc_subprof.luma_ticks += xbox_h264_profile_delta(mc_t0);
++#endif
+ 
+     if (CONFIG_GRAY && h->flags & CODEC_FLAG_GRAY)
+         return;
+@@ -856,9 +869,49 @@ static av_always_inline void mc_dir_part(H264Context *h, Picture *pic,
+                                  pic_width >> 1, pic_height >> (chroma_idc == 1 /* yuv420 */));
+         src_cb = h->edge_emu_buffer;
+     }
++#ifdef XDK_H264_STAGE_PROFILE
++    sp_cx = mx & 7;
++    sp_cy = (my << (chroma_idc == 2 /* yuv422 */)) & 7;
++    if (chroma_op == h->h264chroma.put_h264_chroma_pixels_tab[0]) {
++        h->mc_subprof.chroma_mc8_calls++;
++        h->mc_subprof.chroma_put_calls++;
++    } else if (chroma_op == h->h264chroma.avg_h264_chroma_pixels_tab[0]) {
++        h->mc_subprof.chroma_mc8_calls++;
++        h->mc_subprof.chroma_avg_calls++;
++    } else if (chroma_op == h->h264chroma.put_h264_chroma_pixels_tab[1]) {
++        h->mc_subprof.chroma_mc4_calls++;
++        h->mc_subprof.chroma_put_calls++;
++    } else if (chroma_op == h->h264chroma.avg_h264_chroma_pixels_tab[1]) {
++        h->mc_subprof.chroma_mc4_calls++;
++        h->mc_subprof.chroma_avg_calls++;
++    } else {
++        h->mc_subprof.chroma_mc2_calls++;
++        if (chroma_op == h->h264chroma.put_h264_chroma_pixels_tab[2])
++            h->mc_subprof.chroma_put_calls++;
++        else
++            h->mc_subprof.chroma_avg_calls++;
++    }
++    if (sp_cx == 0 && sp_cy == 0) {
++        h->mc_subprof.pos_00++;
++    } else if (sp_cy == 0) {
++        h->mc_subprof.pos_1dh++;
++        if (sp_cx == 4)
++            h->mc_subprof.pos_1dh_mid4++;
++    } else if (sp_cx == 0) {
++        h->mc_subprof.pos_1dv++;
++        if (sp_cy == 4)
++            h->mc_subprof.pos_1dv_mid4++;
++    } else {
++        h->mc_subprof.pos_2d++;
++    }
++    mc_t0 = xbox_h264_profile_ticks();
++#endif
+     chroma_op(dest_cb, src_cb, h->mb_uvlinesize,
+               height >> (chroma_idc == 1 /* yuv420 */),
+               mx & 7, (my << (chroma_idc == 2 /* yuv422 */)) & 7);
++#ifdef XDK_H264_STAGE_PROFILE
++    h->mc_subprof.chroma_ticks += xbox_h264_profile_delta(mc_t0);
++#endif
+ 
+     if (emu) {
+         h->vdsp.emulated_edge_mc(h->edge_emu_buffer, src_cr, h->mb_uvlinesize,
+@@ -866,8 +919,14 @@ static av_always_inline void mc_dir_part(H264Context *h, Picture *pic,
+                                  pic_width >> 1, pic_height >> (chroma_idc == 1 /* yuv420 */));
+         src_cr = h->edge_emu_buffer;
+     }
++#ifdef XDK_H264_STAGE_PROFILE
++    mc_t0 = xbox_h264_profile_ticks();
++#endif
+     chroma_op(dest_cr, src_cr, h->mb_uvlinesize, height >> (chroma_idc == 1 /* yuv420 */),
+               mx & 7, (my << (chroma_idc == 2 /* yuv422 */)) & 7);
++#ifdef XDK_H264_STAGE_PROFILE
++    h->mc_subprof.chroma_ticks += xbox_h264_profile_delta(mc_t0);
++#endif
+ }
+ 
+ static av_always_inline void mc_part_std(H264Context *h, int n, int square,
+@@ -4655,6 +4714,9 @@ static int execute_decode_slices(H264Context *h, int context_count)
+             trace->slice_end[0] = xbox_h264_profile_diff(dispatch_started, trace->slice_end[0]);
+             trace->slices_profiled = 1;
+             trace->dispatches_profiled++;
++#ifdef XDK_H264_STAGE_PROFILE
++            h->mc_subprof.frames_seen++;
++#endif
+             return ret;
+         }
+ #else
+@@ -4685,6 +4747,7 @@ static int execute_decode_slices(H264Context *h, int context_count)
+             hx->xbox_parallel_diagnostic.loopfilter_calls = 0;
+             hx->xbox_parallel_diagnostic.entropy_samples = 0;
+             memset(hx->xbox_parallel_diagnostic.deep, 0, sizeof(hx->xbox_parallel_diagnostic.deep));
++            memset(&hx->mc_subprof, 0, sizeof(hx->mc_subprof));
+ #endif
+             if (CONFIG_ERROR_RESILIENCE) {
+                 hx->er.error_count = 0;
+@@ -4833,7 +4896,22 @@ static int execute_decode_slices(H264Context *h, int context_count)
+             }
+             worker->slice_ticks = worker->loopfilter_ticks = worker->entropy_sample_ticks = 0;
+             worker->slice_calls = worker->loopfilter_calls = worker->entropy_samples = 0;
++            h->mc_subprof.luma_ticks += h->thread_context[i]->mc_subprof.luma_ticks;
++            h->mc_subprof.chroma_ticks += h->thread_context[i]->mc_subprof.chroma_ticks;
++            h->mc_subprof.chroma_mc8_calls += h->thread_context[i]->mc_subprof.chroma_mc8_calls;
++            h->mc_subprof.chroma_mc4_calls += h->thread_context[i]->mc_subprof.chroma_mc4_calls;
++            h->mc_subprof.chroma_mc2_calls += h->thread_context[i]->mc_subprof.chroma_mc2_calls;
++            h->mc_subprof.chroma_put_calls += h->thread_context[i]->mc_subprof.chroma_put_calls;
++            h->mc_subprof.chroma_avg_calls += h->thread_context[i]->mc_subprof.chroma_avg_calls;
++            h->mc_subprof.pos_00 += h->thread_context[i]->mc_subprof.pos_00;
++            h->mc_subprof.pos_1dh += h->thread_context[i]->mc_subprof.pos_1dh;
++            h->mc_subprof.pos_1dh_mid4 += h->thread_context[i]->mc_subprof.pos_1dh_mid4;
++            h->mc_subprof.pos_1dv += h->thread_context[i]->mc_subprof.pos_1dv;
++            h->mc_subprof.pos_1dv_mid4 += h->thread_context[i]->mc_subprof.pos_1dv_mid4;
++            h->mc_subprof.pos_2d += h->thread_context[i]->mc_subprof.pos_2d;
++            memset(&h->thread_context[i]->mc_subprof, 0, sizeof(h->thread_context[i]->mc_subprof));
+         }
++        h->mc_subprof.frames_seen++;
+ #endif
+         if (participants > h->xbox_parallel_diagnostic.max_worker_participants)
+             h->xbox_parallel_diagnostic.max_worker_participants = participants;
+@@ -5363,10 +5441,42 @@ av_cold void ff_h264_free_context(H264Context *h)
+         av_freep(h->pps_buffers + i);
+ }
+ 
++#ifdef XDK_H264_STAGE_PROFILE
++static LONG xbox_mc_subprof_run_id = 0;
++#endif
++
+ static av_cold int h264_decode_end(AVCodecContext *avctx)
+ {
+     H264Context *h    = avctx->priv_data;
+     int i;
++#ifdef XDK_H264_STAGE_PROFILE
++    if (!h->avctx->internal->is_copy && (h->mc_subprof.luma_ticks || h->mc_subprof.chroma_ticks)) {
++        LONG run_id = InterlockedIncrement(&xbox_mc_subprof_run_id);
++        FILE *fp = fopen("game:\\moonlight\\h264-mc-subprof.txt", "a");
++        if (fp) {
++            fprintf(fp,
++                "run=%ld w=%d h=%d threads=%d flags2=0x%x frames=%I64u luma_ticks=%I64u chroma_ticks=%I64u "
++                "mc8=%I64u mc4=%I64u mc2=%I64u put=%I64u avg=%I64u "
++                "p00=%I64u p1dh=%I64u p1dh4=%I64u p1dv=%I64u p1dv4=%I64u p2d=%I64u\n",
++                (long)run_id, avctx->width, avctx->height, avctx->thread_count, avctx->flags2,
++                (unsigned long long)h->mc_subprof.frames_seen,
++                (unsigned long long)h->mc_subprof.luma_ticks,
++                (unsigned long long)h->mc_subprof.chroma_ticks,
++                (unsigned long long)h->mc_subprof.chroma_mc8_calls,
++                (unsigned long long)h->mc_subprof.chroma_mc4_calls,
++                (unsigned long long)h->mc_subprof.chroma_mc2_calls,
++                (unsigned long long)h->mc_subprof.chroma_put_calls,
++                (unsigned long long)h->mc_subprof.chroma_avg_calls,
++                (unsigned long long)h->mc_subprof.pos_00,
++                (unsigned long long)h->mc_subprof.pos_1dh,
++                (unsigned long long)h->mc_subprof.pos_1dh_mid4,
++                (unsigned long long)h->mc_subprof.pos_1dv,
++                (unsigned long long)h->mc_subprof.pos_1dv_mid4,
++                (unsigned long long)h->mc_subprof.pos_2d);
++            fclose(fp);
++        }
++    }
++#endif
+ 
+     ff_h264_remove_all_refs(h);
+     ff_h264_free_context(h);
+diff --git a/libavcodec/h264.h b/libavcodec/h264.h
+index 2c8ceda..be6cafe 100644
+--- a/libavcodec/h264.h
++++ b/libavcodec/h264.h
+@@ -565,6 +565,24 @@ typedef struct H264Context {
+ 
+     int slice_context_count;
+     FFH264ParallelDiagnostic xbox_parallel_diagnostic;
++#ifdef XDK_H264_STAGE_PROFILE
++    struct {
++        uint64_t luma_ticks;
++        uint64_t chroma_ticks;
++        uint64_t chroma_mc8_calls;
++        uint64_t chroma_mc4_calls;
++        uint64_t chroma_mc2_calls;
++        uint64_t chroma_put_calls;
++        uint64_t chroma_avg_calls;
++        uint64_t pos_00;
++        uint64_t pos_1dh;
++        uint64_t pos_1dh_mid4;
++        uint64_t pos_1dv;
++        uint64_t pos_1dv_mid4;
++        uint64_t pos_2d;
++        uint64_t frames_seen;
++    } mc_subprof;
++#endif
+ 
+     /**
+      *  1 if the single thread fallback warning has already been

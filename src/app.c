@@ -22,14 +22,19 @@
 #include <Limelight.h>
 
 #include "crt_output.h"
+#include "console_link.h"
+#include "crt_resolutions.h"
+#include "frame_pacing.h"
 #include "platform.h"
 #include "audio.h"
 #include "config.h"
+#include "ui_layout_geometry.h"
 #include "aurora_launch.h"
 #ifdef _XBOX
 #include "aurora_shortcuts.h"
 #include "aurora_paths.h"
 #include "app_catalog.h"
+#include "file_explorer_app.h"
 #endif
 #include "app_list_cache.h"
 #include "app_identity.h"
@@ -83,6 +88,9 @@ static struct app_list_cache app_cache;
 static struct session_history session_history;
 static struct library_favorites favorites;
 static bool history_save_failed;
+#ifdef _XBOX
+static uint32_t auto_live_duration_ms = 0;
+#endif
 static void history_menu(void);
 static void advisor_menu(void);
 static int settings_initial_group=-1;
@@ -127,13 +135,25 @@ static bool tab_key(int key,int page)
 
 /* ------------------------------------------------------------ input */
 
+#ifdef _XBOX
+#ifdef __cplusplus
+extern "C"
+#endif
+bool gfx_ui_present_pending(void);
+#endif
+
 static int wait_button(void)
 {
     int b;
     if(settings_navigation_page>=0 && navigation_pending>=0)return B_FLAG;
 
-    while ((b = input_menu_pressed()) == 0)
-        plat_sleep_ms(10);
+    while ((b = input_menu_pressed()) == 0) {
+#ifdef _XBOX
+        if (gfx_ui_present_pending() || ui_focus_tick(plat_now_ms()) || ui_transition_active())
+            ui_present();
+#endif
+        plat_sleep_ms(8);
+    }
     if(settings_navigation_page>=0 && tab_key(b,settings_navigation_page))return B_FLAG;
     return b;
 }
@@ -197,7 +217,7 @@ static void *run_task(void *(*fn)(void *), void *arg, void (*draw)(void *ctx, ui
 {
     struct task t;
     plat_thread *th;
-    uint32_t begun=plat_now_ms(),next_draw=begun+40;
+    uint32_t begun=plat_now_ms(),next_draw=begun+16;
 
     unsigned operation=++task_generation;
     unsigned limit=task_limit_ms;task_limit_ms=30000;
@@ -242,7 +262,7 @@ static void *run_task(void *(*fn)(void *), void *arg, void (*draw)(void *ctx, ui
 #endif
             ui_present();
 #ifdef _XBOX
-            next_draw=now+(launch_active()?16:40);
+            next_draw=now+16;
 #else
             next_draw=now+40;
 #endif
@@ -438,9 +458,10 @@ static void refresh_server(void)
         server.info.address=server.address;server.info.serverInfoAppVersion=server.app_version;
         server.info.serverInfoGfeVersion=server.gfe_version;server.info.rtspSessionUrl=server.rtsp_session_url;
         /* Selected identity is authoritative even when an old cache entry is missing. */
+        bool cfg_changed=strcmp(cfg.host,server.address)!=0 || (server.uuid[0] && strcmp(cfg.host_uuid,server.uuid)!=0);
         snprintf(cfg.host,sizeof(cfg.host),"%s",server.address);
         if(server.uuid[0])snprintf(cfg.host_uuid,sizeof(cfg.host_uuid),"%s",server.uuid);
-        server_ok=true;remember_server(&server);if(!aurora_direct_active)config_save(&cfg);
+        server_ok=true;remember_server(&server);if(!aurora_direct_active && cfg_changed)config_save(&cfg);
         if(aurora_direct_active){plat_log("[Aurora] host resolved\n");
 #ifdef _XBOX
             plat_direct_launch_stage("host network resolved");
@@ -563,6 +584,15 @@ static void remember_server(const struct gs_server *srv)
     snprintf(h.ip,sizeof(h.ip),"%s",srv->address);h.port=srv->http_port;h.online=true;h.paired=srv->paired;
     time_t seen=time(NULL);h.last_seen=seen>0?(uint32_t)seen:0;h.pairing_saved=srv->paired;
     snprintf(h.mac,sizeof(h.mac),"%s",srv->mac);
+    for(int i=0;i<hosts.count;i++) {
+        struct cached_host *e=hosts.hosts+i;
+        bool match=h.uuid[0]?(e->uuid[0] && wake_identity(e->uuid,h.uuid)):(!e->uuid[0] && !strcmp(e->ip,h.ip));
+        if(match && e->port==h.port && e->paired==h.paired && e->pairing_saved==h.pairing_saved &&
+           !strcmp(e->ip,h.ip) && !strcmp(e->name,h.name) && (!h.mac[0] || !strcmp(e->mac,h.mac))) {
+            e->online=true;e->last_seen=h.last_seen;
+            return;
+        }
+    }
     char previous[64]="";
     for(int i=0;i<hosts.count;i++)if(h.uuid[0] && hosts.hosts[i].uuid[0] && wake_identity(hosts.hosts[i].uuid,h.uuid))snprintf(previous,sizeof(previous),"%s",hosts.hosts[i].ip);
     int index=host_cache_upsert(&hosts,&h);
@@ -710,8 +740,6 @@ static bool edit_ip(char *ip, size_t len)
 }
 
 /* ------------------------------------------------------------ settings */
-
-static const int resolutions[][2] = { { 640, 480 }, { 854, 480 }, { 960, 540 }, { 1280, 720 }, { 1920, 1080 } };
 
 static void log_viewer(void)
 {
@@ -1026,6 +1054,9 @@ static void cycle_stream_profile(int direction)
     if(config_save(&next)){cfg=next;return;}
     message(ICON_ERROR,"Profile not applied","Could not save settings. Current selection was preserved.");
 }
+#ifdef _XBOX
+static void file_explorer_hub_menu(void);
+#endif
 static void settings_menu(void);
 static bool profile_editor_active,profile_editor_save;
 static bool confirm_action(const char *title,const char *text,const char *action)
@@ -1089,12 +1120,12 @@ static void stream_profile_menu(void)
             else {config_profiles_apply(&profiles,i-factories,&preview);rows[i].label=profiles.items[i-factories].name;}
             snprintf(summaries[i],sizeof(summaries[i]),"%dx%d | %d FPS | %.1f Mbps",preview.width,preview.height,preview.fps,preview.bitrate_kbps/1000.0);
             rows[i].value=summaries[i];
-            rows[i].help=pid==CONFIG_PROFILE_SMOOTH?"720p60 balanced default (6 Mbps, full deblocking). Best quality with Apollo/Sunshine.":
-                         pid==CONFIG_PROFILE_PERFORMANCE?"Low-latency 540p60 (3 Mbps) with automatic Catmull-Rom GPU upscale.":
-                         pid==CONFIG_PROFILE_QUALITY?"720p60 high bitrate (10 Mbps). Ideal with host deblocking off + automatic GPU post-deblock.":
+            rows[i].help=pid==CONFIG_PROFILE_SMOOTH?"720p60 compatible default (6 Mbps, VSync On, Fast Decode Off, Post-Deblock Off). Works with all hosts.":
+                         pid==CONFIG_PROFILE_PERFORMANCE?"Low-latency 540p60 (5 Mbps) with automatic Catmull-Rom GPU upscale.":
+                         pid==CONFIG_PROFILE_QUALITY?"Experimental 720p60 (12 Mbps, Fast Decode Off). Needs strong network and decode headroom; 60 FPS not guaranteed on all hosts.":
                          pid==CONFIG_PROFILE_STANDARD?"720p30 stable preset (6 Mbps) with maximum decode headroom.":
-                         pid==CONFIG_PROFILE_1080_SMOOTH?"1080p30 (8 Mbps). Recommended with host deblocking off (idc=1) and 1080p display mode.":
-                         pid==CONFIG_PROFILE_WIRELESS?"480p60 low-delay Wi-Fi preset (2 Mbps, 768 B packets, VSync Off, full deblocking).":
+                         pid==CONFIG_PROFILE_1080_SMOOTH?"Experimental 1080p30 (10 Mbps, Fast Decode Off). For low-motion content or desktop viewing.":
+                         pid==CONFIG_PROFILE_WIRELESS?"480p60 low-delay Wi-Fi preset (4 Mbps, 768 B packets, VSync Off, full deblocking).":
                          pid==CONFIG_PROFILE_CRT_DISPLAY?"4:3 SD CRT preset: 640x480, 3 Mbps, Fast Decode Off, preserves console output.":
                          pid==CONFIG_PROFILE_CRT_RETRO_240P?"240p retro preset: 640x240, Fast Decode Off, Point/Nearest, requires verified t240.xex on 480i.":
                          "Applies on the next connection.";
@@ -1254,20 +1285,27 @@ static void crt_screen_adjustment_menu(void)
 {
     int selected=0,location=ui_location_enter("Screen Adjustment");
     for(;;) {
-        char val_x[32],val_y[32],val_safe[32];
+        char val_x[32],val_y[32],val_sx[32],val_sy[32],val_over[32],val_safe[32];
         snprintf(val_x,sizeof(val_x),"%+d px",cfg.crt_pos_x);
         snprintf(val_y,sizeof(val_y),"%+d px",cfg.crt_pos_y);
+        snprintf(val_sx,sizeof(val_sx),"%d%%",cfg.crt_size_x);
+        snprintf(val_sy,sizeof(val_sy),"%d%%",cfg.crt_size_y);
+        snprintf(val_over,sizeof(val_over),"%d%% / edge",cfg.crt_overscan);
         snprintf(val_safe,sizeof(val_safe),"%d%% / edge",cfg.ui_safe_area);
-        struct ui_setting rows[6];
-        int kinds[6],map_action[6],n=0;
+        struct ui_setting rows[10];
+        int kinds[10],map_action[10],n=0;
         rows[n].label="Horizontal position";rows[n].value=val_x;rows[n].help="Center picture horizontally (-20 to +20 px) without zooming or cropping.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=0;
         rows[n].label="Vertical position";rows[n].value=val_y;rows[n].help="Center picture vertically (-20 to +20 px) without zooming or cropping.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=1;
-        rows[n].label="UI safe area";rows[n].value=val_safe;rows[n].help="0-10% safety margin per edge for overscan. Menus update after restart.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=2;
+        rows[n].label="Horizontal size";rows[n].value=val_sx;rows[n].help="Adjust game picture horizontal width (80-110%). Ignored when Integer Scaling is On.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=6;
+        rows[n].label="Vertical size";rows[n].value=val_sy;rows[n].help="Adjust game picture vertical height (80-110%). Ignored when Integer Scaling is On.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=7;
+        rows[n].label="Game overscan";rows[n].value=val_over;rows[n].help="0-10% margin per edge for the streamed game image only. Independent from UI safe area.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=8;
+        rows[n].label="UI safe area";rows[n].value=val_safe;rows[n].help="0-10% margin per edge for menus and HUDs only. Gameplay is not cropped. App restart required.";kinds[n]=UI_OPTION_CYCLE;map_action[n++]=2;
+        rows[n].label="Center image";rows[n].value="Center";rows[n].help="Reset horizontal and vertical image position offsets to 0 px.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=9;
         rows[n].label="CRT TV app layout";rows[n].value="Confirm...";rows[n].help="Offer 4:3 UI, 640x480 app target and 5% UI margin. Saves previous app display settings. Requires app restart; never changes console video timing.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=3;
         if(cfg.crt_display_backup) {
             rows[n].label="Restore previous app display";rows[n].value="Confirm...";rows[n].help="Restore only the app target, layout and UI margin saved before CRT setup. Other preferences remain unchanged. App restart required.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=4;
         }
-        rows[n].label="Reset geometry";rows[n].value="Reset";rows[n].help="Reset CRT position offset and safety margin to defaults.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=5;
+        rows[n].label="Reset to default";rows[n].value="Reset";rows[n].help="Restore CRT position, size, overscan and integer scaling to defaults.";kinds[n]=UI_OPTION_ACTION;map_action[n++]=5;
         if(selected>=n)selected=n-1;
         ui_draw_settings_options("Screen Adjustment",rows,kinds,n,selected);ui_present();
         int key=wait_button();
@@ -1279,7 +1317,11 @@ static void crt_screen_adjustment_menu(void)
             int act=map_action[selected];
             if(act==0){config_customize_stream(&cfg);cfg.crt_pos_x=cfg.crt_pos_x+d<-20?-20:cfg.crt_pos_x+d>20?20:cfg.crt_pos_x+d;}
             else if(act==1){config_customize_stream(&cfg);cfg.crt_pos_y=cfg.crt_pos_y+d<-20?-20:cfg.crt_pos_y+d>20?20:cfg.crt_pos_y+d;}
+            else if(act==6){config_customize_stream(&cfg);cfg.crt_size_x=cfg.crt_size_x+d<80?80:cfg.crt_size_x+d>110?110:cfg.crt_size_x+d;}
+            else if(act==7){config_customize_stream(&cfg);cfg.crt_size_y=cfg.crt_size_y+d<80?80:cfg.crt_size_y+d>110?110:cfg.crt_size_y+d;}
+            else if(act==8){config_customize_stream(&cfg);cfg.crt_overscan=(cfg.crt_overscan+d+11)%11;}
             else if(act==2){cfg.ui_safe_area=(cfg.ui_safe_area+d+11)%11;}
+            else if(act==9 && (key&A_FLAG)){config_customize_stream(&cfg);cfg.crt_pos_x=0;cfg.crt_pos_y=0;}
             else if(act==3 && (key&A_FLAG)) {
                 if(confirm_action("CRT TV app layout?","This changes only the app render target, interface layout and UI margin. App restart required. Physical component output must be 480i, TV 16:9 mode Off.","Use CRT layout")) {
                     if(!config_crt_display_commit(&cfg,true))message(ICON_ERROR,"Display settings not saved","Current app display settings were preserved.");
@@ -1289,7 +1331,7 @@ static void crt_screen_adjustment_menu(void)
                     if(!config_crt_display_commit(&cfg,false))message(ICON_ERROR,"Display settings not saved","Current app display settings were preserved.");
                 }
             } else if(act==5 && (key&A_FLAG)) {
-                config_customize_stream(&cfg);cfg.crt_pos_x=0;cfg.crt_pos_y=0;cfg.ui_safe_area=0;
+                config_customize_stream(&cfg);cfg.crt_pos_x=0;cfg.crt_pos_y=0;cfg.crt_size_x=100;cfg.crt_size_y=100;cfg.crt_overscan=0;cfg.crt_integer_scale=0;cfg.ui_safe_area=0;
             }
         }
     }
@@ -1327,18 +1369,43 @@ static void crt_output_status_menu(void)
     ui_location_restore(location);
 }
 
+static void edit_custom_stream_resolution(void)
+{
+    char value[12];
+    int width, height;
+    snprintf(value,sizeof(value),"%dx%d",cfg.width,cfg.height);
+    if(!run_smart_keyboard(SK_MODE_RESOLUTION,value,sizeof(value),"Custom stream resolution",
+                           "Enter even width x height. 2560-wide is for streams up to 256 lines."))return;
+    if(!crt_parse_stream_resolution(value,&width,&height)) {
+        char logbuf[160];
+        snprintf(logbuf,sizeof(logbuf),"[RESOLUTION] stage=resolution_editor rejected=%s\n",value);
+        plat_log(logbuf);
+        message(ICON_ERROR,"Unsupported stream resolution",
+                "Use even width and height, e.g. 800x600 or 1024x768. 2560-wide is limited to 256 lines.");
+        return;
+    }
+    if(width==cfg.width && height==cfg.height)return;
+
+    config_customize_stream(&cfg);
+    cfg.width=width;
+    cfg.height=height;
+    if((width==2560 && height==240) || (!crt_resolution_is_240p_class(height) && !(width==640 && height==480)) ||
+       (cfg.crt_origin_preset==CONFIG_PROFILE_CRT_RETRO_240P && !(width==640 && height==240)))
+        cfg.crt_origin_preset=0;
+}
+
 static bool settings_child_hidden(int child)
 {
-    if(child==MENU_CRT_PICTURE)return !config_crt_profile(&cfg);
+    if(child==MENU_CRT_PICTURE)return false;
     return child==MENU_DECODER_BACKEND || child==MENU_DECODER || child==MENU_VIDEO_REFRESH;
 }
 static bool settings_item_hidden(int id)
 {
     if(id==SET_TEST_BITRATE || id==SET_ADAPTIVE || id==SET_RECOVERY_INFO ||
-       id==SET_ADVISOR || id==SET_LAUNCH_COVER)return true;
+       id==SET_ADVISOR || id==SET_LAUNCH_COVER || id==SET_GPU_POST_DEBLOCK)return true;
     if(id==SET_CRT_CLARITY) {
         if(config_is_crt_retro(&cfg))return true;
-        return !(plat_crt_output_status()==1 || cfg.ui_layout==1 || cfg.display_mode==4 || cfg.crt_clarity || config_crt_profile(&cfg));
+        return !(plat_crt_output_status()==1 || plat_resolve_ui_layout(cfg.ui_layout)==UI_LAYOUT_4_3 || cfg.display_mode==4 || cfg.crt_clarity || config_crt_profile(&cfg));
     }
     if(id==SET_CRT_RESTORE && !cfg.crt_display_backup)return true;
     return false;
@@ -1361,6 +1428,9 @@ static void settings_menu(void)
         if(navigation_pending>=0)break;
         ui_set_settings_context(settings_navigation_page,settings_pages[page].category);
         if(profile_editor_active && profile_editor_save)break;
+#ifdef _XBOX
+        if(!profile_editor_active)ui_configure_layout(cfg.ui_layout,cfg.width,cfg.height);
+#endif
         int sel=focus[page];
         static const char *labels[SET_COUNT] = {
             "Video resolution", "Frames per second (FPS)", "Video bitrate (Mbps)", "Fast decode", "Renderer", "V-Sync",
@@ -1371,10 +1441,11 @@ static void settings_menu(void)
             "Image quality", "Record session history", "Recent sessions", "Performance analysis",
             "Find PCs automatically (mDNS)", "UI resources", "Recovery information", "Network diagnostics",
             "Streaming recommendations", "Detected video output", "App resolution", "Interface layout", "Language", "CPU layout", "Decode workers", "Restart Xbox", "Shut down Xbox", "Profile management", "Xbox audio output", "Desktop Mode", "Save profile", "Launch coverage", "Latency diagnostics", "Periodic picture refresh", "UI safe area", "CRT Interlace Clarity (Experimental)", "CRT TV app layout", "Restore previous app display", "Refresh smoothing", "Smoothing strength", "Video decoder",
-            "Scaling Filter", "Aspect Ratio", "Screen Adjustment", "Output Status", "Reset CRT Settings",
+            "Scaling Filter", "Aspect Ratio", "Screen Adjustment", "Output Status", "Reset CRT Settings", "GPU post-deblock", "PC Guide Button",
+            "CRT Preset", "Integer Scaling", "Frame Pacing (Experimental)",
         };
         static const char *helps[SET_COUNT] = {
-            "Requested host resolution. Compare measured decode and queue time on hardware; lower resolution alone does not guarantee better performance.",
+            "A: enter a custom stream size. Left/Right: use a known size. The Xbox display mode is set separately.",
             "24, 30, 40, 50 or 60 FPS requested from the host, without interpolation. Smooth defaults to 60 FPS. "
             "Higher rates cost more decode time; rates that do not divide the 60 Hz display may look uneven.",
             "Requested bitrate: 1-70 Mbps. Changing it keeps the current decoder and image settings, then selects Custom. Applies next connection.",
@@ -1416,7 +1487,7 @@ static void settings_menu(void)
             "Recommendations separate RTP/FEC reconstruction pressure, decoder overload and frequent-refresh risk. No automatic reconnect or mid-game parameter changes. Applies after sustained evidence.",
             "Physical output detected from the console. HDMI/VGA/component output mode is configured in the Xbox dashboard.",
             "Rendering resolution: Auto, widescreen 480p, 720p, 1080p or 640x480 (4:3). Applies after restarting the app; the console scales it to the physical output. It does not change the cable mode.",
-            "Interface and stream HUD layout: 16:9 or 4:3. Choose 4:3 with 640x480 to use the whole VGA screen. Applies after restarting the app; video keeps its own aspect ratio.",
+            "Auto follows the Xbox display configuration. Choose a fixed aspect for the menus and stream HUD. Changes apply immediately.",
             "Menu language: English, Spanish or Brazilian Portuguese. Host/game names and diagnostic logs are kept as received.",
             "Balanced moves audio and input to HW0; Legacy keeps them on HW5 with presentation. Both keep the patched workers on HW1,2,4[,3]; Legacy does not restore the old worker map. Next connection; compare on hardware.",
             "Four workers is the default. Three workers use one per physical core after rebuilding FFmpeg. More workers are not automatically faster. Next connection.",
@@ -1437,10 +1508,15 @@ static void settings_menu(void)
             "Low uses at most 10% then 4% previous picture; Medium at most 15% then 7%. Motion/difference gates may bypass. This heuristic cannot guarantee clean history. Does not change refresh frequency. Next session.",
             "FFmpeg is the stable default. System GPU is unavailable in this build and blocks connection. Auto uses FFmpeg. Applies next session; independent of renderer and saved stream profiles.",
             "GPU scaling filter: Auto, Point / Nearest, Bilinear or Sharp-Bilinear.",
-            "CRT aspect framing: 4:3 (default) or Original. Widescreen keeps letterboxing and never stretches.",
+            "Video presentation: Fit to screen (default), Pixel-to-pixel (1:1), Crop to 4:3, 16:9, Stretch or Custom.",
             "Adjust CRT position offset, UI safe area margin and optional 4:3 CRT app layout.",
             "Inspect console video mode, t240.xex detection and active 240p/480i output status.",
             "Restore CRT Picture scaling filter, clarity, aspect ratio and position defaults.",
+            "Off by default (lowest GPU cost). On enables the Xenos post-deblock shader only when the host sends H.264 IDC=1. Never modifies H.264 reference frames. Next session.",
+            "Hold Start + LB for 350 ms to press the Xbox/Guide button on your PC. The console Guide button remains unchanged.",
+            "Choose a CRT Picture preset (CRT Standard 480, CRT Retro 4:3, CRT Integer Sharp or CRT Low Latency).",
+            "Scale by integer multiples to preserve crisp pixels with letterboxing and pillarboxing.",
+            "Experimental queue and refresh cadence mode for frame pacing research. Baseline is the default.",
         };
         char val[SET_COUNT][128];
         snprintf(val[SET_DECODER_BACKEND],128,"%s",cfg.decoder_backend==VIDEO_DECODER_AUTO?"Auto (FFmpeg)":video_decoder_name(cfg.decoder_backend));
@@ -1459,6 +1535,11 @@ static void settings_menu(void)
                      (ost.console_output_kind==CRT_OUTPUT_480I?(ost.plugin_detected?"480i (t240 OK)":"480i"):crt_output_mode_short(&ost)));
         }
         snprintf(val[SET_CRT_RESET],128,"%s","Reset");
+        snprintf(val[SET_GPU_POST_DEBLOCK],128,"%s",cfg.gpu_post_deblock?"On":"Off");
+        snprintf(val[SET_PC_GUIDE],128,"%s",cfg.pc_guide_enabled?"On (Start + LB, 350 ms)":"Off");
+        snprintf(val[SET_CRT_PRESET],128,"%s",config_crt_preset_name(config_match_crt_preset(&cfg)));
+        snprintf(val[SET_CRT_INTEGER_SCALE],128,"%s",cfg.crt_integer_scale?"On":"Off");
+        snprintf(val[SET_FRAME_PACING],128,"%s",frame_pacing_mode_name(cfg.frame_pacing_mode));
         snprintf(val[SET_CRT_SETUP],128,"Confirm...");
         snprintf(val[SET_CRT_RESTORE],128,"%s",cfg.crt_display_backup?"Confirm...":"No backup");
         snprintf(val[SET_REMOTE_INPUT],48,"%s","Back + R3");
@@ -1472,19 +1553,15 @@ static void settings_menu(void)
         else snprintf(val[SET_REFRESH_INTERVAL],48,"Off");
         struct ui_setting rows[SET_COUNT];
         int map[SET_COUNT],children[SET_COUNT],kinds[SET_COUNT];   /* row -> setting id and interaction */
-        int b, i, n = 0, res = 0;
+        int b, i, n = 0;
 
-        int res_count = (int)(sizeof(resolutions) / sizeof(resolutions[0]));
-        for (i = 0; i < res_count; i++)
-            if (resolutions[i][0] == cfg.width && resolutions[i][1] == cfg.height)
-                res = i;
         snprintf(val[SET_RES], 48, "%dx%d", cfg.width, cfg.height);
         snprintf(val[SET_FPS], 48, "%d FPS", cfg.fps);
         snprintf(val[SET_BITRATE], 48, "%d Mbps", cfg.bitrate_kbps / 1000);
         struct stream_options effective;
         config_profile_capture(&effective,&cfg);
         char profile_summary[192];
-        bool experimental=config_video_preset(&cfg)==CONFIG_PROFILE_1080_SMOOTH;
+        bool experimental=config_video_preset(&cfg)==CONFIG_PROFILE_1080_SMOOTH || config_video_preset(&cfg)==CONFIG_PROFILE_QUALITY;
         snprintf(profile_summary,sizeof(profile_summary),"%dx%d | %d FPS | %.1f Mbps%s%s",cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps/1000.0,
             experimental?". ":"",experimental?ui_translate("Experimental: performance may drop on Xbox 360."):"");
 #ifndef XDK_H264_REFERENCE_MODE
@@ -1507,7 +1584,10 @@ static void settings_menu(void)
         snprintf(val[SET_DISPLAY_INFO],48,"%s",display_info);
         static const char *display_modes[]={"Auto","480p","720p","1080p","640x480 (4:3)"};
         snprintf(val[SET_DISPLAY_MODE],48,"%s",display_modes[cfg.display_mode]);
-        snprintf(val[SET_UI_LAYOUT],48,"%s",cfg.ui_layout?"4:3":"16:9");
+        if(cfg.ui_layout==UI_LAYOUT_AUTO)
+            snprintf(val[SET_UI_LAYOUT],48,"%s (%s)",ui_translate("Auto"),
+                     ui_layout_name(plat_resolve_ui_layout(cfg.ui_layout)));
+        else snprintf(val[SET_UI_LAYOUT],48,"%s",ui_layout_name(cfg.ui_layout));
         static const char *language_names[]={"English","Spanish","Portuguese (Brazil)"};
         snprintf(val[SET_LANGUAGE],48,"%s",language_names[cfg.language]);
         snprintf(val[SET_CPU_LAYOUT],48,"%s",cfg.thread_layout?"Balanced":"Legacy");
@@ -1541,7 +1621,7 @@ static void settings_menu(void)
             if(id<0) {
                 int child=entry->child;
 #ifndef _XBOX
-                if(child==MENU_AURORA || child==MENU_ARTWORK_CACHE)continue;
+                if(child==MENU_AURORA || child==MENU_ARTWORK_CACHE || child==MENU_FILE_EXPLORER)continue;
 #endif
                 if(settings_child_hidden(child))continue;
                 rows[n].label=settings_pages[child].title;rows[n].value="Open";rows[n].help=settings_pages[child].help;
@@ -1595,7 +1675,7 @@ static void settings_menu(void)
             case MENU_HOSTS:hosts_menu(UI_SETTINGS);break;
             case MENU_HOST_DETAILS:host_details();break;
             case MENU_CONNECTION_TEST:refresh_server();if(!server_ok)recover_host_ui();break;
-            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v0.2.4","MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
+            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v0.2.6","MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
             case MENU_APPEARANCE:appearance_menu();break;
             case MENU_STREAM_UI:overlay_options_menu();break;
             case MENU_RESTART_APP:maintenance_menu(1);break;
@@ -1603,6 +1683,7 @@ static void settings_menu(void)
 #ifdef _XBOX
             case MENU_AURORA:aurora_integration_menu();break;
             case MENU_ARTWORK_CACHE:artwork_cache_menu();break;
+            case MENU_FILE_EXPLORER:file_explorer_hub_menu();break;
 #endif
             default:tokens[child]=branch;page=child;continue;
             }
@@ -1612,9 +1693,9 @@ static void settings_menu(void)
             int d = (b & LEFT_FLAG) ? -1 : 1;
             int branch=ui_location_enter(NULL);
             switch(map[sel]) {
-            case SET_RES:case SET_FPS:case SET_BITRATE:case SET_FAST:case SET_RENDERER:case SET_VSYNC:case SET_SOPS:case SET_AUDIO:case SET_AUDIO_MODE:
+            case SET_FPS:case SET_BITRATE:case SET_FAST:case SET_RENDERER:case SET_VSYNC:case SET_SOPS:case SET_AUDIO:case SET_AUDIO_MODE:
             case SET_PACKET:case SET_SLICES:case SET_IMAGE_QUALITY:case SET_ADAPTIVE:case SET_CPU_LAYOUT:case SET_WORKERS:case SET_TEST_BITRATE:
-            case SET_CRT_SCALING:case SET_CRT_ASPECT:
+            case SET_CRT_SCALING:case SET_CRT_ASPECT:case SET_CRT_PRESET:case SET_CRT_INTEGER_SCALE:case SET_FRAME_PACING:case SET_GPU_POST_DEBLOCK:
                 config_customize_stream(&cfg);break;
             }
             switch (map[sel]) {
@@ -1656,10 +1737,12 @@ static void settings_menu(void)
                 }
                 break;
             case SET_EXIT: cfg.quit_combo = !cfg.quit_combo; break;
+            case SET_PC_GUIDE: cfg.pc_guide_enabled = !cfg.pc_guide_enabled; break;
             case SET_DEADZONE:if(b&A_FLAG)calibrate_sticks();break;
             case SET_ADAPTIVE:cfg.adaptive_quality=!cfg.adaptive_quality;break;
             case SET_REFRESH_SMOOTHING:config_customize_stream(&cfg);cfg.refresh_smoothing=!cfg.refresh_smoothing;break;
             case SET_SMOOTHING_STRENGTH:cfg.smoothing_strength=!cfg.smoothing_strength;break;
+            case SET_GPU_POST_DEBLOCK:cfg.gpu_post_deblock=!cfg.gpu_post_deblock;break;
             case SET_REFRESH_INTERVAL:{
                 cfg.refresh_interval_ms=config_cycle_refresh_interval(cfg.refresh_interval_ms,d);break;
             }
@@ -1670,6 +1753,9 @@ static void settings_menu(void)
                 break;
             case SET_CRT_SCALING:cfg.crt_scaling=config_cycle_crt_scaling(cfg.crt_scaling,d);break;
             case SET_CRT_ASPECT:cfg.crt_aspect=config_cycle_crt_aspect(cfg.crt_aspect,d);break;
+            case SET_CRT_PRESET:config_apply_crt_preset(&cfg,config_cycle_crt_preset(config_match_crt_preset(&cfg),d));break;
+            case SET_CRT_INTEGER_SCALE:cfg.crt_integer_scale=!cfg.crt_integer_scale;break;
+            case SET_FRAME_PACING:cfg.frame_pacing_mode=frame_pacing_cycle_mode(cfg.frame_pacing_mode,d);break;
             case SET_CRT_SCREEN_ADJ:if(b&A_FLAG)crt_screen_adjustment_menu();break;
             case SET_CRT_OUTPUT_STATUS:if(b&A_FLAG)crt_output_status_menu();break;
             case SET_CRT_RESET:
@@ -1686,18 +1772,37 @@ static void settings_menu(void)
             }
             case SET_DISPLAY_INFO:break;
             case SET_DISPLAY_MODE:cfg.display_mode=(cfg.display_mode+d+5)%5;break;
-            case SET_UI_LAYOUT:cfg.ui_layout=!cfg.ui_layout;break;
+            case SET_UI_LAYOUT:cfg.ui_layout=(cfg.ui_layout+d+UI_LAYOUT_COUNT)%UI_LAYOUT_COUNT;break;
             case SET_LANGUAGE:cfg.language=(cfg.language+d+CONFIG_LANGUAGE_COUNT)%CONFIG_LANGUAGE_COUNT;ui_set_language(cfg.language);break;
             case SET_CPU_LAYOUT:cfg.thread_layout=!cfg.thread_layout;break;
             case SET_WORKERS:cfg.decode_workers=cfg.decode_workers==3?4:3;break;
             case SET_RESTART:case SET_SHUTDOWN:if((b&A_FLAG) && plat_power_available())power_menu(map[sel]==SET_RESTART);break;
             case SET_REPORT: cfg.session_report = !cfg.session_report; break;
-            case SET_RES:
-                res = (res + d + res_count) % res_count;
+            case SET_RES: {
+                if(b&A_FLAG) {
+                    edit_custom_stream_resolution();
+                    break;
+                }
+                static const int all_res[][2] = {
+                    { 256, 240 }, { 320, 240 }, { 400, 240 }, { 432, 240 },
+                    { 640, 240 }, { 640, 480 }, { 854, 480 }, { 960, 540 },
+                    { 1280, 720 }, { 1920, 1080 }, { 1280, 240 }, { 1920, 240 },
+                    { 800, 600 }, { 1024, 768 }, { 2560, 240 }
+                };
+                int count = (int)(sizeof(all_res) / sizeof(all_res[0]));
+                int cur = 8; /* default near 1280x720 if unrecognized */
+                for (int k = 0; k < count; k++)
+                    if (all_res[k][0] == cfg.width && all_res[k][1] == cfg.height) { cur = k; break; }
+                cur = (cur + d + count) % count;
                 config_customize_stream(&cfg);
-                cfg.width = resolutions[res][0];
-                cfg.height = resolutions[res][1];
+                cfg.width = all_res[cur][0];
+                cfg.height = all_res[cur][1];
+                if ((cfg.width == 2560 && cfg.height == 240) ||
+                    (cfg.height > 240 && !(cfg.width == 640 && cfg.height == 480)) ||
+                    (cfg.crt_origin_preset == CONFIG_PROFILE_CRT_RETRO_240P && !(cfg.width == 640 && cfg.height == 240)))
+                    cfg.crt_origin_preset = 0;
                 break;
+            }
             case SET_FPS: config_customize_stream(&cfg);cfg.fps = config_cycle_fps(cfg.fps, d); break;
             case SET_BITRATE:
                 config_customize_stream(&cfg);
@@ -1948,6 +2053,10 @@ static bool show_stream_stats(uint32_t elapsed)
     st[n].label = "Render time per frame";
     snprintf(st[n++].value, 64, "%.1f ms (%s%s)", vs.avg_render_us / 1000.0, video_renderer_name(vs.renderer),
              vs.renderer == RENDERER_GPU && cfg.vsync ? ", incl. v-sync" : "");
+    if (vs.actual_w > 0 && vs.actual_h > 0 && (vs.actual_w != cfg.width || vs.actual_h != cfg.height)) {
+        st[n].label = "Requested / decoded";
+        snprintf(st[n++].value, 64, "%dx%d -> %dx%d", cfg.width, cfg.height, vs.actual_w, vs.actual_h);
+    }
     st[n].label="Requested / negotiated FPS";snprintf(st[n++].value,64,"%d / not exposed by host",cfg.fps);
     st[n].label="Received callback FPS";snprintf(st[n++].value,64,"%.2f",measured.callback_fps);
     st[n].label="Decoded FPS";snprintf(st[n++].value,64,"%.2f",measured.decoded_fps);
@@ -1970,15 +2079,27 @@ static void save_session_report(uint32_t elapsed)
     config_profile_capture(&effective,&cfg);
     video_get_stats(&vs);
     n = snprintf(text, sizeof(text),
-        "Moonlight session report\nvideo=%dx%d@%d\nbitrate_kbps=%d\nfast_decode=%d\nfast_decode_saved=%d\nimage_quality=%d\n"
+        "Moonlight session report\nrequested_video=%dx%d@%d\ndecoded_video=%dx%d\nresolution_mismatch=%d\n"
+        "video=%dx%d@%d\nbitrate_kbps=%d\nfast_decode=%d\nfast_decode_saved=%d\nimage_quality=%d\n"
         "duration_ms=%u\nreceived=%u\ndecoded=%u\nrendered=%u\ndropped=%u\ndecode_errors=%u\n"
         "shown_fps=%.2f\ndecode_ms_smoothed=%.2f\nrender_ms_smoothed=%.2f\ndecode_threads=%d\n"
         "connection_terminated=%d\ntermination_error=%d\n",
+        cfg.width, cfg.height, cfg.fps,
+        vs.actual_w, vs.actual_h,
+        (vs.actual_w > 0 && vs.actual_h > 0 && (vs.actual_w != cfg.width || vs.actual_h != cfg.height)) ? 1 : 0,
         cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps, 0, cfg.fast_decode, effective.image_quality, elapsed,
         vs.received, vs.decoded, vs.rendered, vs.dropped, vs.decode_errors,
         elapsed ? vs.rendered * 1000.0 / elapsed : 0.0, vs.avg_decode_us / 1000.0,
         vs.avg_render_us / 1000.0, vs.decode_threads, connection_terminated,
         connection_terminated ? termination_error : 0);
+    if(n>0 && (size_t)n<sizeof(text)) {
+        char dinfo[96]="";plat_display_info(dinfo,sizeof(dinfo));
+        n+=snprintf(text+n,sizeof(text)-(size_t)n,
+            "ui_layout=%s\ndisplay_info=%s\nsrc_rect=%d,%d,%d,%d\ndst_rect=%d,%d,%d,%d\n",
+            ui_layout_name(plat_resolve_ui_layout(cfg.ui_layout)),dinfo,
+            vs.src_left,vs.src_top,vs.src_right,vs.src_bottom,
+            vs.dst_left,vs.dst_top,vs.dst_right,vs.dst_bottom);
+    }
     if(n>0 && (size_t)n<sizeof(text)) {
         struct performance_sample sample;video_get_session_performance(&sample);
         char tail[96],payload[40];
@@ -2361,6 +2482,14 @@ static bool stream_once(int app_id, const char *app_title)
     int video_error=VIDEO_STREAM_OK;
 
     stream_return_home = false;
+    if (!crt_stream_resolution_supported(cfg.width, cfg.height)) {
+        const char *reason = crt_stream_resolution_rejection_reason(cfg.width, cfg.height);
+        cl_log("[RESOLUTION] stage=session_startup rejected=%dx%d reason=%s\n",
+               cfg.width, cfg.height, reason ? reason : "unsupported");
+        message(ICON_ERROR, "Unsupported stream resolution",
+                reason ? reason : "Saved stream resolution is unsupported and was preserved.");
+        return false;
+    }
     ui_home_cancel_prepare();
     ui_drop_main_cache();
 
@@ -2371,7 +2500,13 @@ static bool stream_once(int app_id, const char *app_title)
     lj.sc.height = cfg.height;
     lj.sc.fps = cfg.fps;
     lj.sc.bitrate = cfg.bitrate_kbps;
-    lj.sc.packetSize = cfg.packet_size;
+    int effective_packet_size = cfg.packet_size;
+#ifdef _XBOX
+    effective_packet_size = console_link_effective_packet_size(cfg.packet_size, cfg.bitrate_kbps, plat_network_link());
+    if (effective_packet_size != cfg.packet_size)
+        cl_log("[NET] Wired >=12 Mbps: using %d B LAN packets (saved %d B)\n", effective_packet_size, cfg.packet_size);
+#endif
+    lj.sc.packetSize = effective_packet_size;
     lj.sc.streamingRemotely = STREAM_CFG_AUTO;
     lj.sc.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
 #ifdef _XBOX
@@ -2408,6 +2543,8 @@ static bool stream_once(int app_id, const char *app_title)
         perf_flush();
         perf_begin(cfg.diagnostic_log || cfg.stats_overlay);
         plat_log(gs_error());
+        cl_log("[RESOLUTION] stage=host_launch requested=%dx%d@%d error=%s\n",
+               cfg.width, cfg.height, cfg.fps, gs_error());
         plat_diagnostics_flush();
         message(ICON_ERROR, gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":gs_error_kind()==GS_ERROR_APP_MISSING?"Game no longer available":"Couldn't start the app",!server_ok && server_error[0]?server_error:gs_error());
         return false;
@@ -2443,12 +2580,18 @@ static bool stream_once(int app_id, const char *app_title)
     vo.slice_count = cfg.slice_count;
     vo.refresh_interval_ms = cfg.refresh_interval_ms;
     vo.refresh_smoothing=effective.refresh_smoothing;vo.smoothing_strength=effective.smoothing_strength;
-    vo.crt_clarity = effective.crt_clarity!=0 && !config_is_crt_retro(&cfg);vo.packet_size=cfg.packet_size;
+    vo.gpu_post_deblock=cfg.gpu_post_deblock;
+    vo.crt_clarity = effective.crt_clarity!=0 && !config_is_crt_retro(&cfg);vo.packet_size=effective_packet_size;
     vo.crt_scaling = effective.crt_scaling;
     vo.crt_aspect = effective.crt_aspect;
+    vo.crt_integer_scale = effective.crt_integer_scale != 0;
+    vo.crt_size_x = effective.crt_size_x;
+    vo.crt_size_y = effective.crt_size_y;
+    vo.crt_overscan = effective.crt_overscan;
     vo.crt_pos_x = effective.crt_pos_x;
     vo.crt_pos_y = effective.crt_pos_y;
     vo.ui_safe_area = cfg.ui_safe_area;
+    vo.frame_pacing_mode = effective.frame_pacing_mode;
     vo.crt_retro_240p = false;
     vo.crt_picture_context = config_crt_profile(&cfg);
     snprintf(vo.host_name,sizeof(vo.host_name),"%s",host_display_name());
@@ -2461,7 +2604,8 @@ static bool stream_once(int app_id, const char *app_title)
     bool retro_240p_session = config_is_crt_retro(&cfg);
     bool retro_240p_entered = false;
     if (retro_240p_session) {
-        if (plat_crt_240p_enter(cfg.width, cfg.height)) {
+        /* Physical analog 240p output uses validated 640x240 backbuffer while stream width may be 256..1920. */
+        if (plat_crt_240p_enter(640, 240)) {
             retro_240p_entered = true;
             vo.crt_retro_240p = true;
             video_set_options(&vo);
@@ -2500,8 +2644,13 @@ static bool stream_once(int app_id, const char *app_title)
             vo.vsync = cfg.vsync;
             vo.crt_scaling = cfg.crt_scaling;
             vo.crt_aspect = cfg.crt_aspect;
+            vo.crt_integer_scale = cfg.crt_integer_scale;
+            vo.crt_size_x = cfg.crt_size_x;
+            vo.crt_size_y = cfg.crt_size_y;
+            vo.crt_overscan = cfg.crt_overscan;
             vo.crt_pos_x = cfg.crt_pos_x;
             vo.crt_pos_y = cfg.crt_pos_y;
+            vo.frame_pacing_mode = cfg.frame_pacing_mode;
             vo.crt_clarity = false;
             vo.crt_retro_240p = false;
             vo.crt_picture_context = true;
@@ -2571,6 +2720,8 @@ static bool stream_once(int app_id, const char *app_title)
         perf_begin(cfg.diagnostic_log || cfg.stats_overlay);
         plat_connection_trace_flush();
         ui_suspended = false;
+        cl_log("[RESOLUTION] stage=stream_connect requested=%dx%d@%d stage_text=%s\n",
+               cfg.width, cfg.height, cfg.fps, stage_text);
         plat_diagnostics_flush();
         snprintf(msg, sizeof(msg), ui_translate("%s\n\nCheck that UDP ports 47998-48010 aren't blocked by the PC's firewall."),
                  stage_text);
@@ -2585,6 +2736,7 @@ static bool stream_once(int app_id, const char *app_title)
     input_configure(cfg.quit_combo, cfg.stick_deadzone);
     input_calibrate(cfg.left_min,cfg.left_max,cfg.right_min,cfg.right_max);
 #ifdef _XBOX
+    input_configure_guide(cfg.pc_guide_enabled, 350u);
     input_configure_low_latency(config_overlay_mode(&cfg)==3 && cfg.stream_profile==0 && !cfg.user_profile[0]);
     ui_set_stream_hud(cfg.stream_menu_style,cfg.mouse_hud);
     input_configure_pointer(cfg.mouse_speed,cfg.mouse_acceleration,cfg.mouse_scroll_ms,cfg.stats_overlay);
@@ -2680,7 +2832,7 @@ static bool stream_once(int app_id, const char *app_title)
             cfg.stats_overlay = live_overlay != 0;
             overlay_dirty = true;
         }
-        if (overlay_dirty && (input_quick_snapshot() & 1u) == 0) {
+        if (overlay_dirty && auto_live_duration_ms == 0 && (input_quick_snapshot() & 1u) == 0) {
             config_save(&cfg);
             overlay_dirty = false;
         }
@@ -2709,7 +2861,11 @@ static bool stream_once(int app_id, const char *app_title)
                 if(reason) {adapt_reason=reason;plat_log(adaptive_stream_advice(reason));}
             }
         }
-        plat_sleep_ms(50);
+#ifdef _XBOX
+        if (auto_live_duration_ms > 0 && now - started >= auto_live_duration_ms)
+            break;
+#endif
+        plat_sleep_ms(8);
     }
     video_error=video_get_stream_error();
     bool remote_terminated=connection_terminated;
@@ -2720,7 +2876,7 @@ static bool stream_once(int app_id, const char *app_title)
 #endif
     local_exit = input_quit_requested() && !connection_terminated && video_error==VIDEO_STREAM_OK;
 #ifdef _XBOX
-    if(launch_cancelled())local_exit=true;
+    if(launch_cancelled() || (auto_live_duration_ms > 0 && !connection_terminated && video_error==VIDEO_STREAM_OK))local_exit=true;
 #endif
     uint32_t teardown_started=plat_now_ms(),teardown_input_ms;
     plat_log("[STREAM] Disconnect requested\n");
@@ -2731,7 +2887,7 @@ static bool stream_once(int app_id, const char *app_title)
 #endif
     input_stream_stop();
 #ifdef _XBOX
-    if (overlay_dirty) {
+    if (overlay_dirty && auto_live_duration_ms == 0) {
         config_save(&cfg);
         overlay_dirty = false;
     }
@@ -2740,7 +2896,6 @@ static bool stream_once(int app_id, const char *app_title)
     plat_log("[STREAM] Input forwarding stopped\n");
     elapsed = plat_now_ms() - started;
     plat_shutdown_stage("Stopping Moonlight transport\n");
-    plat_diagnostics_flush();
     uint32_t transport_stop_started=plat_now_ms();
     LiStopConnection();
     if(retro_240p_entered)plat_crt_240p_exit();
@@ -2761,7 +2916,7 @@ static bool stream_once(int app_id, const char *app_title)
     plat_shutdown_stage("Transport stopped; returning to Moonlight\n");
     ui_suspended = false;
     plat_diagnostics_checkpoint(local_exit ? "Clean local return to Moonlight\n" : "Stream ended; see termination error in log\n");
-    plat_diagnostics_flush();
+    if(cfg.diagnostic_log)plat_diagnostics_flush();
 
 #ifdef _XBOX
     if(audio_fallback_reason())plat_log(audio_fallback_reason());
@@ -2779,8 +2934,11 @@ static bool stream_once(int app_id, const char *app_title)
     if(launch_timed_out){message(ICON_ERROR,"No usable video","The opening timed out without usable video. Check the PC and reconnect.");stream_return_home=true;return false;}
 #endif
     if(video_error!=VIDEO_STREAM_OK) {
+        struct video_stats evs;video_get_stats(&evs);
+        cl_log("[RESOLUTION] stage=video_decode error=%d requested=%dx%d received=%dx%d\n",
+               video_error,cfg.width,cfg.height,evs.actual_w,evs.actual_h);
         message(ICON_ERROR,"Video stream stopped",video_error==VIDEO_STREAM_UNSUPPORTED_SIZE?
-            "The game changed to a resolution above 1920x1080 or an invalid size. Set the PC game to 1080p or lower, then reconnect.":
+            "The host sent an unsupported stream size. Choose even dimensions up to 1920x1080, or up to 2560 wide for streams up to 256 lines.":
             "Not enough resources to display the video. The connection was closed safely; reconnect with a lower resolution.");
         stream_return_home=true;
         return false;
@@ -2902,7 +3060,7 @@ static void offer_stream_environment(void)
     if(link==CONSOLE_LINK_WIRELESS && config_video_preset(&cfg)!=CONFIG_PROFILE_WIRELESS) {
         struct ui_setting rows[]={
             {"Keep current profile","Selected","No saved settings will change."},
-            {"Wireless Stable","720p30 / 6 Mbps","Use for this session: fast H.264, 1024-byte packets, VSync and 5-second refresh."}};
+            {"Wireless Stable","480p60 / 4 Mbps","Use for this session: 480p60 at 4 Mbps, 768-byte packets and full H.264 deblocking."}};
         int choice=0;
         for(;;) {
             const int kinds[]={UI_OPTION_ACTION,UI_OPTION_ACTION};
@@ -3003,7 +3161,7 @@ static void stream(int app_id, const char *app_title)
         if(server.current_game) {
             bool ok=false;
             run_busy("Stopping app",stable_title,quit_task,&ok);
-            if(ok){server.current_game=0;refresh_server();}
+            if(ok)server.current_game=0;
             else message(ICON_ERROR,"Couldn't stop app",gs_error());
         }
         stream_return_home=true;
@@ -3458,8 +3616,94 @@ static void artwork_cache_menu(void)
         }
     }
 }
+#ifdef _XBOX
+static bool fe_bridge_edit_name(const char *title,const char *subtitle,char *buf,int cap)
+{
+    return run_smart_keyboard(SK_MODE_TEXT,buf,cap,title,subtitle);
+}
+static void fe_bridge_save_settings(const struct fe_settings *s)
+{
+    cfg.explorer=*s;
+    config_save(&cfg);
+}
+static int fe_bridge_poll_raw_buttons(void)
+{
+    struct pad pads[MAX_PADS];
+    int mask=input_poll(pads),now=0;
+    for(int i=0;i<MAX_PADS;i++)if(mask&(1<<i))now|=pads[i].buttons;
+    return now;
+}
+static int fe_bridge_wait_button(void)
+{
+    static uint32_t lt_last,rt_last;
+    for(;;) {
+        int b=input_menu_pressed();
+        if(b)return b;
+        struct pad pads[MAX_PADS];
+        int mask=input_poll(pads);
+        bool lt=false,rt=false;
+        for(int i=0;i<MAX_PADS;i++)if(mask&(1<<i)) {
+            if(pads[i].lt>=140)lt=true;
+            if(pads[i].rt>=140)rt=true;
+        }
+        uint32_t now=plat_now_ms();
+        int trig=0;
+        if(!lt)lt_last=0;
+        else if(!lt_last || (uint32_t)(now-lt_last)>=180u){trig|=FE_KEY_LT;lt_last=now?now:1;}
+        if(!rt)rt_last=0;
+        else if(!rt_last || (uint32_t)(now-rt_last)>=180u){trig|=FE_KEY_RT;rt_last=now?now:1;}
+        if(trig)return trig;
+#ifdef _XBOX
+        if(gfx_ui_present_pending() || ui_focus_tick(now) || ui_transition_active())ui_present();
+#endif
+        plat_sleep_ms(10);
+    }
+}
+static const struct fe_ui_ops *fe_bridge_ops(void)
+{
+    static const struct fe_ui_ops ops={
+        fe_bridge_wait_button,plat_now_ms,plat_sleep_ms,ui_present,message,confirm_action,
+        fe_bridge_edit_name,fe_bridge_save_settings,fe_bridge_poll_raw_buttons,
+        aurora_shortcut_valid_xex,aurora_shortcut_is_current_xex,aurora_shortcut_valid_aurora
+    };
+    return &ops;
+}
+static bool file_explorer_browse_path(const char *title,char out[160],int mode)
+{
+    int fe_mode=FE_MODE_PICK_FOLDER;
+    if(mode==AURORA_BROWSER_XEX)fe_mode=FE_MODE_PICK_XEX;
+    else if(mode==AURORA_BROWSER_AURORA_XEX)fe_mode=FE_MODE_PICK_AURORA_XEX;
+    else if(mode==AURORA_BROWSER_IMAGE)fe_mode=FE_MODE_PICK_IMAGE;
+    return fe_app_run(fe_bridge_ops(),&cfg.explorer,title,out,160,fe_mode);
+}
+static void file_explorer_hub_menu(void)
+{
+    int selected=0;
+    int location=ui_location_enter("File Explorer");
+    for(;;) {
+        struct ui_setting rows[]={
+            {"Open File Explorer","Open","Browse console drives, preview files and manage folders."},
+            {"File Explorer Settings","Open","Configure default view, sorting, extensions, hidden files, preview pane and safety prompts."}
+        };
+        int kinds[]={UI_OPTION_OPEN,UI_OPTION_OPEN};
+        ui_draw_settings_options("File Explorer",rows,kinds,2,selected);
+        ui_present();
+        int key=wait_button();
+        if(key&B_FLAG)break;
+        if(key&(UP_FLAG|DOWN_FLAG))selected=!selected;
+        if(key&A_FLAG) {
+            if(selected==0){char dummy[160]="";fe_app_run(fe_bridge_ops(),&cfg.explorer,"File Explorer",dummy,sizeof(dummy),FE_MODE_MANAGER);}
+            else fe_app_settings_menu(fe_bridge_ops(),&cfg.explorer);
+        }
+    }
+    ui_location_restore(location);
+}
+#endif
 static bool aurora_browse_path(const char *title,char out[160],int mode)
 {
+#ifdef _XBOX
+    return file_explorer_browse_path(title,out,mode);
+#endif
     char folder[160]="";
     if(out[0]) {
         char initial[160];
@@ -3899,14 +4143,14 @@ static int library_map(int filter,int map[MAX_APPS])
     if(library_query[0]){int kept=0;for(int j=0;j<n;j++)if(feature_search(apps[map[j]].name,library_query))map[kept++]=map[j];n=kept;}
     return n;
 }
-static void draw_apps(int sel,int filter,const int *map,int count)
+static void draw_apps(int sel,int filter,const int *map,const bool *favs,int count)
 {
     static const char *filters[]={"Recent","Favorites","All Apps","Desktop"};
     struct ui_app views[MAX_APPS];struct ui_host h=host_view();
     for(int i=0;i<count;i++) {int index=map[i];views[i].name=apps[index].name;views[i].art=app_art[index];
         views[i].generation=art_generation[index];
         views[i].running=server.current_game==apps[index].id;
-        views[i].favorite=library_favorite_has(&favorites,host_key(),apps[index].id);}
+        views[i].favorite=favs?favs[i]:library_favorite_has(&favorites,host_key(),apps[index].id);}
     char title[100];snprintf(title,sizeof(title),"%s%s%s",ui_translate(filters[filter]),library_query[0]?" / ":"",library_query);ui_draw_library(&h,views,count,sel,title);ui_focus_tick(plat_now_ms());ui_present();
 }
 
@@ -3963,22 +4207,48 @@ static void launch_settings_menu(int id)
 }
 static bool app_details_for(int id,const char *name,int index) {
     int selected=0,location=ui_location_enter_raw(name);
+    struct launch_settings prefs;launch_settings_load(&prefs);
+    int pref=launch_setting_find(&prefs,host_key(),id);
+    int seconds=pref>=0?prefs.items[pref].seconds:-1;
+    char coverage[40];snprintf(coverage,sizeof(coverage),"%d s%s%s%s",seconds>=0?seconds:cfg.launch_cover_ms/1000,seconds<0?" (":"",seconds<0?ui_translate("Inherit"):"",seconds<0?")":"");
+    bool aurora_exists=false;
+#ifdef _XBOX
+    aurora_exists=aurora_shortcut_find(host_saved_identity(),id)>=0;
+#endif
+    ui_app_details_aurora(cfg.aurora_enabled,aurora_exists);
+    {
+        char res_info[48],last_info[48];
+        snprintf(res_info,sizeof(res_info),"%dx%d \xC2\xB7 %d FPS",cfg.width,cfg.height,cfg.fps);
+        const struct session_record *last_rec=NULL;
+        for(int i=0;i<session_history.count;i++)if(session_history.records[i].app_id==id &&
+            !strcmp(session_history.records[i].host,host_key())){last_rec=session_history.records+i;break;}
+        if(last_rec && last_rec->fps>0)
+            snprintf(last_info,sizeof(last_info),"%dp \xC2\xB7 %.1f FPS",last_rec->height,last_rec->shown_milli/1000.0f);
+        else
+            snprintf(last_info,sizeof(last_info),"%s",ui_translate("Never played"));
+        ui_app_details_meta(res_info,last_info);
+    }
+    struct ui_app init_a;init_a.name=name;init_a.art=index>=0?app_art[index]:NULL;
+    init_a.generation=index>=0?art_generation[index]:0;
+    if(init_a.art)ui_home_prepare_cover(host_key(),&init_a,plat_now_ms());
+    ui_app_details_enter(name,plat_now_ms());
     for(;;) {
         struct ui_host h=host_view();struct ui_app a;
         a.name=name;a.art=index>=0?app_art[index]:NULL;a.running=server.current_game==id;
         a.favorite=library_favorite_has(&favorites,host_key(),id);a.generation=index>=0?art_generation[index]:0;
-        struct launch_settings prefs;launch_settings_load(&prefs);int pref=launch_setting_find(&prefs,host_key(),id);
-        int seconds=pref>=0?prefs.items[pref].seconds:-1;
-        char coverage[40];snprintf(coverage,sizeof(coverage),"%d s%s%s%s",seconds>=0?seconds:cfg.launch_cover_ms/1000,seconds<0?" (":"",seconds<0?ui_translate("Inherit"):"",seconds<0?")":"");
-        ui_app_details_aurora(cfg.aurora_enabled,
-#ifdef _XBOX
-            aurora_shortcut_find(host_saved_identity(),id)>=0
-#else
-            false
-#endif
-        );
-        ui_draw_app_details(&h,&a,game_profile_label(id),coverage,selected);ui_present();
-        int key=wait_button();if(key&B_FLAG)return (ui_location_restore(location),false);
+        int key=0;
+        while(ui_app_details_tick(plat_now_ms())) {
+            ui_home_tick(plat_now_ms());
+            ui_draw_app_details(&h,&a,game_profile_label(id),coverage,selected);ui_present();
+            key=input_menu_pressed();
+            if(key){ui_app_details_finish();break;}
+            plat_sleep_ms(8);
+        }
+        if(!key) {
+            ui_draw_app_details(&h,&a,game_profile_label(id),coverage,selected);ui_present();
+            key=wait_button();
+        }
+        if(key&B_FLAG)return (ui_location_restore(location),false);
         if(tab_key(key,UI_LIBRARY))return (ui_location_restore(location),false);
         int detail_count=cfg.aurora_enabled?7:6;
         if(key&UP_FLAG)selected=(selected+detail_count-1)%detail_count;if(key&DOWN_FLAG)selected=(selected+1)%detail_count;
@@ -3989,14 +4259,24 @@ static bool app_details_for(int id,const char *name,int index) {
                 seconds=(seconds+d+13)%12-1;
                 if(!launch_settings_save(&prefs,host_key(),id,seconds,pref>=0?prefs.items[pref].desktop:0))
                     message(ICON_ERROR,"Settings not saved",launch_settings_problem(&prefs));
+                else {
+                    pref=launch_setting_find(&prefs,host_key(),id);
+                    snprintf(coverage,sizeof(coverage),"%d s%s%s%s",seconds>=0?seconds:cfg.launch_cover_ms/1000,seconds<0?" (":"",seconds<0?ui_translate("Inherit"):"",seconds<0?")":"");
+                }
             }
         }
         if(key&A_FLAG) {
 #ifdef _XBOX
-            if(selected==6){aurora_game_menu(id,name,NULL);continue;}
+            if(selected==6){aurora_game_menu(id,name,NULL);aurora_exists=aurora_shortcut_find(host_saved_identity(),id)>=0;ui_app_details_aurora(cfg.aurora_enabled,aurora_exists);continue;}
 #endif
             if(!selected)return (ui_location_restore(location),true);
-            if(selected==5){launch_settings_menu(id);continue;}
+            if(selected==5){
+                launch_settings_menu(id);
+                launch_settings_load(&prefs);pref=launch_setting_find(&prefs,host_key(),id);
+                seconds=pref>=0?prefs.items[pref].seconds:-1;
+                snprintf(coverage,sizeof(coverage),"%d s%s%s%s",seconds>=0?seconds:cfg.launch_cover_ms/1000,seconds<0?" (":"",seconds<0?ui_translate("Inherit"):"",seconds<0?")":"");
+                continue;
+            }
             if(selected==1){game_profile_menu(id);if(navigation_pending>=0)return (ui_location_restore(location),false);}
             if(selected==2) {
                 if(library_favorite_toggle(&favorites,host_key(),id)) {
@@ -4043,6 +4323,7 @@ static void library_context(int *filter)
 static void app_menu(void)
 {
     int count=-1,sel=0,seen_version=-1,cols=ui_apps_columns(),filter=2,map[MAX_APPS],restore_id=0;
+    bool fav_cache[MAX_APPS];
     int wall_focus=-1;uint32_t wall_focus_ms=plat_now_ms(),library_started=wall_focus_ms;bool first_art_logged=false;
     char title[96];snprintf(title,sizeof(title),ui_translate("Loading apps from %s"),host_display_name());
     art_host_online=server_ok && server.paired;
@@ -4057,14 +4338,22 @@ static void app_menu(void)
     app_count=count;for(int i=0;i<app_count;i++)if(apps[i].id==server.current_game)sel=i;
     cl_log("[UX] library list_ms=%u count=%d ram_clock=%u disk_hits=%u\n",plat_now_ms()-library_started,count,art_cache.clock,art_disk_hits);
     art_pause(false);art_loader_start();
+    bool map_dirty=true,view_dirty=true;
+    int art_last_sel=-1,art_last_count=-1,art_last_ver=-1;uint32_t art_last_ms=0;
     for(;;) {
-        if(seen_version<0){
+        art_drain();
+        if(map_dirty){
             count=library_map(filter,map);
             if(restore_id){for(int i=0;i<count;i++)if(apps[map[i]].id==restore_id){sel=i;break;}restore_id=0;}
             if(sel>=count)sel=count?count-1:0;
+            for(int i=0;i<count;i++)fav_cache[i]=library_favorite_has(&favorites,host_key(),apps[map[i]].id);
+            map_dirty=false;view_dirty=true;
         }
-        if(art_worker)art_update(map,count,sel,cols);
         uint32_t now=plat_now_ms();bool backdrop_changed=false;
+        if(art_worker && (sel!=art_last_sel || count!=art_last_count || art_last_ver!=art_version || (uint32_t)(now-art_last_ms)>=100u)) {
+            art_update(map,count,sel,cols);
+            art_last_sel=sel;art_last_count=count;art_last_ver=art_version;art_last_ms=now;
+        }
         if(!first_art_logged && count>0){
             int first=0,end=count;ui_library_art_window(count,sel,&first,&end);
             for(int i=first;i<end;i++)if(app_art[map[i]]){first_art_logged=true;cl_log("[UX] library first_cover_ms=%u\n",now-library_started);break;}
@@ -4072,34 +4361,48 @@ static void app_menu(void)
         if(cfg.ui_background==4 && count>0) {
             int index=map[sel];
             if(wall_focus!=apps[index].id){wall_focus=apps[index].id;wall_focus_ms=now;ui_home_cancel_prepare();}
-            if(now-wall_focus_ms>=220) {
+            if(now-wall_focus_ms>=120) {
                 struct ui_app focused;memset(&focused,0,sizeof(focused));
                 focused.name=apps[index].name;focused.art=app_art[index];focused.generation=art_generation[index];
                 backdrop_changed=ui_home_prepare_cover(home_key(),&focused,now);
             }
             if(ui_home_tick(now))backdrop_changed=true;
         }
-        bool rail_moving=ui_library_tick(now);
-        if(seen_version!=art_version || rail_moving || backdrop_changed) {seen_version=art_version;draw_apps(sel,filter,map,count);}
-        int key=input_menu_pressed();if(!key) {if(ui_focus_tick(plat_now_ms())){ui_present();plat_sleep_ms(4);}else plat_sleep_ms(12);continue;}
+        bool rail_moving=ui_library_tick(now),drew=false;
+        if(view_dirty || seen_version!=art_version || rail_moving || backdrop_changed) {
+            seen_version=art_version;view_dirty=false;drew=true;
+            draw_apps(sel,filter,map,fav_cache,count);
+        }
+        int key=input_menu_pressed();if(!key) {
+            bool idle_anim=!drew && (ui_focus_tick(now) || ui_transition_active()
+#ifdef _XBOX
+                || gfx_ui_present_pending()
+#endif
+            );
+            if(idle_anim)ui_present();
+            plat_sleep_ms((idle_anim || rail_moving || backdrop_changed)?8:12);
+            continue;
+        }
         if(key&B_FLAG)break;
         if(tab_key(key,UI_LIBRARY))break;
         if(key&PLAY_FLAG) {if(count)restore_id=apps[map[sel]].id;library_context(&filter);
             if(navigation_pending>=0)break;
-            art_pause(false);art_loader_start();seen_version=-1;continue;}
+            art_pause(false);art_loader_start();map_dirty=true;view_dirty=true;continue;}
         if(key&Y_FLAG) {
             if(count)restore_id=apps[map[sel]].id;
             if(!server_ok)refresh_server();
-            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");seen_version=-1;continue;}
+            if(!server_ok || !server.paired){message(ICON_ERROR,"PC unavailable","Cached games and covers remain available offline.");map_dirty=true;view_dirty=true;continue;}
             art_host_online=true;int refreshed=-1;artwork_refresh_apps(title,&refreshed);
-            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());seen_version=-1;continue;}
+            if(refreshed<0){if(!task_was_cancelled)message(ICON_ERROR,gs_error_kind()==GS_ERROR_PERMISSION?"Permission required":"Couldn't refresh apps",gs_error());map_dirty=true;view_dirty=true;continue;}
             count=refreshed;
-            app_count=count;art_pause(false);art_loader_start();seen_version=-1;continue;
+            app_count=count;art_pause(false);art_loader_start();map_dirty=true;view_dirty=true;continue;
         }
         if(count) {
+            int prev_sel=sel;
             if((key&LEFT_FLAG) && sel>0)sel--;if((key&RIGHT_FLAG) && sel<count-1)sel++;
             if(key&UP_FLAG){sel-=5;if(sel<0)sel=0;}
             if(key&DOWN_FLAG){sel+=5;if(sel>=count)sel=count-1;}
+            if(sel!=prev_sel)view_dirty=true;
             int index=map[sel];
             bool play=(key&A_FLAG)!=0;
             if(key&X_FLAG) {
@@ -4107,6 +4410,7 @@ static void app_menu(void)
                 if(!play && navigation_pending<0) {
                     art_pause(false);art_loader_start();
                 }
+                map_dirty=true;view_dirty=true;
             }
             if(navigation_pending>=0)break;
             if(play) {
@@ -4115,9 +4419,9 @@ static void app_menu(void)
                 /* Teardown has joined. Draw the warm gallery immediately; the
                  * next Play still validates authoritative host/app state. */
                 art_host_online=server_ok && server.paired;art_pause(false);art_loader_start();
+                map_dirty=true;view_dirty=true;
             }
         }
-        seen_version=-1;
     }
     if(cfg.diagnostic_log){struct ui_memory_info memory;ui_draw_memory(&memory);
         cl_log("[ART] stage=gallery-exit ram_hits=%u disk_hits=%u downloads=%u failures=%u stale_used=%u fade_starts=%u fade_reuses=%u\n",art_memory_hits,art_disk_hits,art_downloads,art_failures,art_stale_used,memory.cover_fade_starts,memory.cover_fade_reuses);}
@@ -4628,7 +4932,12 @@ static void hosts_menu(int page)
             ui_draw_hosts(rows,hosts.count+2,sel,page,cfg.mdns_discovery);ui_present();dirty=false;
         }
         int key=input_menu_pressed();
-        if(!key){plat_sleep_ms(16);continue;}
+        if(!key){
+#ifdef _XBOX
+            if(gfx_ui_present_pending() || ui_focus_tick(plat_now_ms()) || ui_transition_active())ui_present();
+#endif
+            plat_sleep_ms(12);continue;
+        }
         if((key&B_FLAG)||tab_key(key,UI_PAGE_COUNT)){ui_location_restore(location);return;}
         if(key&UP_FLAG)sel=sel>0?sel-1:0;
         if(key&DOWN_FLAG)sel=sel<hosts.count+1?sel+1:sel;
@@ -4700,37 +5009,45 @@ static void main_menu(void)
     int resume_id=0,resume_index=-1,featured_id=0,featured_index=-1;
     char library_host[64]="";bool had_server=false;
     struct ui_menu_item items[MAX_ITEMS];
-    bool dirty=true,focus_seeded=false;int seen_art=-1;uint32_t focus_changed_ms=plat_now_ms();
+    bool data_dirty=true,anim_dirty=false,focus_seeded=false;int seen_art=-1;uint32_t focus_changed_ms=plat_now_ms();
+    int art_last_sel=-2,art_last_recent=-1,art_last_feat=-1,art_last_ver=-1;uint32_t art_last_ms=0;
+    struct ui_host h=host_view();char mode[100]="";struct ui_dashboard dashboard;memset(&dashboard,0,sizeof(dashboard));
 #ifdef _XBOX
     int last_pads=-1;time_t last_minute=-1;uint32_t status_checked=0;
 #endif
     for(;;) {
         if(app_exit_pending)return;
         art_drain();
-        if(!strcmp(library_host,cfg.host))art_home_update(sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?recent_ids[sel-DASH_RECENT]:featured_id,resume_id,recent_ids,recent_count);
-        if(seen_art!=art_version)dirty=true;
+        uint32_t now=plat_now_ms();
+        if(!strcmp(library_host,cfg.host) && (sel!=art_last_sel || recent_count!=art_last_recent || featured_id!=art_last_feat || art_last_ver!=art_version || (uint32_t)(now-art_last_ms)>=100u)) {
+            art_home_update(sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?recent_ids[sel-DASH_RECENT]:featured_id,resume_id,recent_ids,recent_count);
+            art_last_sel=sel;art_last_recent=recent_count;art_last_feat=featured_id;art_last_ver=art_version;art_last_ms=now;
+        }
+        if(seen_art!=art_version)data_dirty=true;
         if(navigation_pending>=0) {
             int page=navigation_pending;navigation_pending=-1;discovery_pause();
             if(page==UI_LIBRARY)home_connect(true);
             else if(page==UI_STREAM) {settings_initial_group=SETTINGS_STREAM;settings_menu();}
             else if(page==UI_SETTINGS)settings_menu();
             else if(page==UI_PAGE_COUNT)hosts_menu(UI_HOME);
-            dirty=true;next_discovery=0;
+            data_dirty=true;next_discovery=0;
             if(navigation_pending>=0)continue;
         }
-        if(discovery_tick())dirty=true;
+        if(discovery_tick())data_dirty=true;
 #ifdef _XBOX
-        if(plat_now_ms()-status_checked>=1000){status_checked=plat_now_ms();
+        if(now-status_checked>=1000){status_checked=now;
             int pads=input_connected_count();time_t minute=time(NULL)/60;
-            if(pads!=last_pads || minute!=last_minute){last_pads=pads;last_minute=minute;dirty=true;}}
+            if(pads!=last_pads || minute!=last_minute){last_pads=pads;last_minute=minute;data_dirty=true;}}
 #endif
-        if(ui_home_tick(plat_now_ms()))dirty=true;
-        if(dirty) {
+        if(ui_home_tick(now))anim_dirty=true;
+        if(data_dirty) {
             int selected_shortcut=sel>=shortcuts?sel-shortcuts:-1;
             int selected_recent=sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?recent_ids[sel-DASH_RECENT]:0;
-            if(cfg.host[0] && (strcmp(library_host,cfg.host) || stream_return_home || (server_ok && !had_server))) {
+            bool need_sync=strcmp(library_host,cfg.host)!=0 || (server_ok && !had_server) ||
+                (stream_return_home && (!server_ok || app_count==0));
+            if(cfg.host[0] && need_sync) {
                 home_sync_apps();snprintf(library_host,sizeof(library_host),"%s",cfg.host);
-            }
+            } else if(cfg.host[0])snprintf(library_host,sizeof(library_host),"%s",cfg.host);
             had_server=server_ok;
             recent_count=0;
             int art_w,art_h;ui_art_size(&art_w,&art_h);
@@ -4783,10 +5100,10 @@ static void main_menu(void)
                 featured_id?featured.name:NULL,ICON_PLAY,true);
             for(int i=0;i<recent_count;i++)set_item(items+DASH_RECENT+i,recent[i].name,"Recent app",ICON_PLAY,true);
             shortcuts=DASH_RECENT+recent_count;
-            if(!focus_seeded && featured_id){sel=DASH_NAV;focus_seeded=true;focus_changed_ms=plat_now_ms();}
+            if(!focus_seeded && featured_id){sel=DASH_NAV;focus_seeded=true;focus_changed_ms=now;}
             if(selected_shortcut>=0)sel=shortcuts+selected_shortcut;
             else if(selected_recent) {sel=DASH_RECENT;for(int i=0;i<recent_count;i++)if(recent_ids[i]==selected_recent)sel=DASH_RECENT+i;}
-            struct ui_host h=host_view();
+            h=host_view();
             set_item(items+shortcuts,"My Library",NULL,ICON_PLAY,true);
             set_item(items+shortcuts+1,"Stream Settings",NULL,ICON_MONITOR,true);
             if(session_history.count)set_item(items+shortcuts+2,"Recent Sessions",NULL,ICON_INFO,true);
@@ -4801,34 +5118,55 @@ static void main_menu(void)
             n=shortcuts+4;
             if(sel>=n)sel=n-1;
             int selected_host=selected_host_index();if(selected_host>=0 && (hosts.hosts[selected_host].alias[0] || !h.name || !h.name[0]))h.name=hosts.hosts[selected_host].alias[0]?hosts.hosts[selected_host].alias:hosts.hosts[selected_host].name;
-            char mode[100];snprintf(mode,sizeof(mode),"%dp%d  \xE2\x80\xA2  %d Mbps",cfg.height,cfg.fps,cfg.bitrate_kbps/1000);
-            struct ui_dashboard dashboard={featured_id?game_profile_label(featured_id):selected_profile_name(),mode,
-                recent,recent_count,resume_id?&resume:NULL,resume_id};
+            bool std_16_9=(cfg.width==1920 && cfg.height==1080) || (cfg.width==1280 && cfg.height==720) ||
+                (cfg.width==960 && cfg.height==540) || (cfg.width==854 && cfg.height==480);
+            if(std_16_9)snprintf(mode,sizeof(mode),"%dp%d  \xE2\x80\xA2  %d Mbps",cfg.height,cfg.fps,cfg.bitrate_kbps/1000);
+            else snprintf(mode,sizeof(mode),"%dx%d@%d  \xE2\x80\xA2  %d Mbps",cfg.width,cfg.height,cfg.fps,cfg.bitrate_kbps/1000);
+            dashboard.profile=featured_id?game_profile_label(featured_id):selected_profile_name();
+            dashboard.connection=mode;dashboard.recent=recent;dashboard.recent_count=recent_count;
+            dashboard.resume=resume_id?&resume:NULL;dashboard.resume_id=resume_id;
             dashboard.featured=featured_id?&featured:NULL;dashboard.featured_id=featured_id;
-            ui_draw_dashboard(&h,items,n,sel,plat_console_ip(),&dashboard);ui_focus_tick(plat_now_ms());ui_present();dirty=false;seen_art=art_version;
+#ifdef _XBOX
+            ui_configure_layout(cfg.ui_layout,cfg.width,cfg.height);
+#endif
+        }
+        bool drew=false;
+        if(data_dirty || anim_dirty) {
+            ui_draw_dashboard(&h,items,n,sel,plat_console_ip(),&dashboard);ui_focus_tick(now);ui_present();
+            data_dirty=false;anim_dirty=false;seen_art=art_version;drew=true;
             if(stream_return_home) {plat_shutdown_stage("Returned to Moonlight home screen\n");stream_return_home=false;}
         }
-        if(cfg.ui_background==4 && plat_now_ms()-focus_changed_ms>=220) {
+        if(cfg.ui_background==4 && (uint32_t)(now-focus_changed_ms)>=120u) {
             const struct ui_app *wall_app=sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?
                 recent+sel-DASH_RECENT:sel==DASH_NAV && featured_id?&featured:NULL;
-            if(wall_app && ui_home_prepare_cover(home_key(),wall_app,plat_now_ms()))dirty=true;
+            if(wall_app && ui_home_prepare_cover(home_key(),wall_app,now))anim_dirty=true;
             if(!wall_app)ui_home_cancel_prepare();
         }
         int key=input_menu_pressed();
-        if(!key) {if(ui_focus_tick(plat_now_ms())){ui_present();plat_sleep_ms(4);}else plat_sleep_ms(12);continue;}
+        if(!key) {
+            bool idle_anim=!drew && (ui_focus_tick(now) || ui_transition_active()
+#ifdef _XBOX
+                || gfx_ui_present_pending()
+#endif
+            );
+            if(idle_anim)ui_present();
+            bool wall_settling=(cfg.ui_background==4 && (uint32_t)(now-focus_changed_ms)<200u);
+            plat_sleep_ms((idle_anim || anim_dirty || wall_settling)?8:12);
+            continue;
+        }
         focus_seeded=true;
-        dirty=true;
-        if(tab_key(key,UI_HOME))continue;
+        if(tab_key(key,UI_HOME)){data_dirty=true;continue;}
         int previous_sel=sel;
         if(key&UP_FLAG)sel=ui_dashboard_move_tiles(sel,0,-1,n,recent_count);
         if(key&DOWN_FLAG)sel=ui_dashboard_move_tiles(sel,0,1,n,recent_count);
         if(key&LEFT_FLAG)sel=ui_dashboard_move_tiles(sel,-1,0,n,recent_count);
         if(key&RIGHT_FLAG)sel=ui_dashboard_move_tiles(sel,1,0,n,recent_count);
-        if(sel!=previous_sel){focus_changed_ms=plat_now_ms();ui_home_cancel_prepare();}
-        if(key&B_FLAG){sel=0;continue;}
-        if(key&Y_FLAG) {home_search();continue;}
+        if(sel!=previous_sel){focus_changed_ms=now;ui_home_cancel_prepare();anim_dirty=true;}
+        if(key&B_FLAG){if(sel!=0){sel=0;anim_dirty=true;}continue;}
+        if(key&Y_FLAG) {home_search();data_dirty=true;continue;}
         if(!(key&(A_FLAG|X_FLAG|PLAY_FLAG)))continue;
         /* stream_once owns discovery drain and all launch preflight. */
+        data_dirty=true;
         if(key&PLAY_FLAG){host_options_menu();continue;}
         bool play=(key&A_FLAG)!=0;
         if(sel<DASH_NAV) {
@@ -4900,6 +5238,11 @@ void app_main(void)
     if(aurora_direct_active)plat_direct_launch_stage("launch data delivered to app_main");
 #endif
     config_load(&cfg);
+    {
+        int rej_w=0,rej_h=0;const char *rej_reason=NULL;
+        if(config_last_resolution_rejected(&rej_w,&rej_h,&rej_reason))
+            cl_log("[RESOLUTION] stage=config_load rejected=%dx%d reason=%s\n",rej_w,rej_h,rej_reason?rej_reason:"unsupported");
+    }
     art_persistent_enabled=cfg.artwork_cache_enabled;art_budget_mb=cfg.artwork_cache_mb;
 #ifdef _XBOX
     if(!cfg.aurora_enabled || !cfg.aurora_direct_enabled)aurora_direct_active=false;
@@ -4953,8 +5296,117 @@ void app_main(void)
         else message(ICON_ERROR, "No client certificate", "The certificate couldn't be created, so pairing isn't possible.");
     }
 
+#if defined(_XBOX) && defined(XDK_ENABLE_AUTO_LIVE_TEST) && XDK_ENABLE_AUTO_LIVE_TEST
+    {
+        char *bench_cfg = storage_read("auto-benchmark.once", NULL);
+        if (bench_cfg != NULL) {
+            free(bench_cfg);
+            remove("game:\\moonlight\\auto-benchmark.once");
+            plat_run_benchmark();
+            plat_exit_to_dashboard();
+            return;
+        }
+    }
+    {
+        char *auto_cfg = storage_read("auto-live-test.once", NULL);
+        if (auto_cfg != NULL) {
+            int duration_sec = 132;
+            bool capture_arm = false;
+            char *save = NULL, *line;
+            remove("game:\\moonlight\\auto-live-test.once");
+            cfg.diagnostic_log = true;
+            cfg.session_report = true;
+            cfg.stats_overlay = true;
+            cfg.overlay_mode = 3;
+            cfg.stream_profile = 0;
+            cfg.user_profile[0] = 0;
+            for (line = strtok_r(auto_cfg, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+                char *eq = strchr(line, '=');
+                if (!eq) continue;
+                *eq = '\0';
+                {
+                    char *k = line, *v = eq + 1;
+                    size_t vl = strlen(v);
+                    while (vl > 0 && (v[vl - 1] == '\r' || v[vl - 1] == ' ')) v[--vl] = '\0';
+                    if (!strcmp(k, "duration_sec")) duration_sec = atoi(v);
+                    else if (!strcmp(k, "width")) cfg.width = atoi(v);
+                    else if (!strcmp(k, "height")) cfg.height = atoi(v);
+                    else if (!strcmp(k, "fps")) cfg.fps = atoi(v);
+                    else if (!strcmp(k, "bitrate_kbps")) cfg.bitrate_kbps = atoi(v);
+                    else if (!strcmp(k, "vsync")) cfg.vsync = (atoi(v) != 0);
+                    else if (!strcmp(k, "fast_decode")) cfg.fast_decode = (atoi(v) != 0);
+                    else if (!strcmp(k, "gpu_post_deblock")) cfg.gpu_post_deblock = (atoi(v) != 0) ? 1 : 0;
+                    else if (!strcmp(k, "diagnostic_log")) cfg.diagnostic_log = (atoi(v) != 0);
+                    else if (!strcmp(k, "session_report")) cfg.session_report = (atoi(v) != 0);
+                    else if (!strcmp(k, "stats_overlay")) cfg.stats_overlay = (atoi(v) != 0);
+                    else if (!strcmp(k, "overlay_mode")) cfg.overlay_mode = atoi(v);
+                    else if (!strcmp(k, "slice_count")) cfg.slice_count = atoi(v);
+                    else if (!strcmp(k, "packet_size")) cfg.packet_size = atoi(v);
+                    else if (!strcmp(k, "frame_pacing_mode")) cfg.frame_pacing_mode = atoi(v);
+                    else if (!strcmp(k, "capture_arm")) capture_arm = (atoi(v) != 0);
+                }
+            }
+            free(auto_cfg);
+            if (capture_arm)
+                storage_write("auto-capture.flag", "1\n", 2);
+            plat_diagnostics_configure(cfg.diagnostic_log);
+            perf_begin(cfg.diagnostic_log || cfg.stats_overlay);
+            auto_live_duration_ms = (uint32_t)(duration_sec > 0 ? duration_sec : 132) * 1000u;
+            memset(&server, 0, sizeof(server));
+            if (cfg.host[0] && gs_server_info(&server, cfg.host) && server.paired) {
+                int count = gs_applist(&server, apps, MAX_APPS);
+                int app_id = count > 0 ? apps[0].id : 0;
+                const char *app_title = count > 0 ? apps[0].name : "Desktop";
+                int i;
+                for (i = 0; i < count; i++) {
+                    if (_stricmp(apps[i].name, "Desktop") == 0) {
+                        app_id = apps[i].id;
+                        app_title = apps[i].name;
+                        break;
+                    }
+                }
+                if (app_id != 0) {
+                    cl_log("[AUTO-LIVE] Starting Desktop stream (%dx%d@%d %dkbps fast=%d post=%d dur=%us)\n",
+                           cfg.width, cfg.height, cfg.fps, cfg.bitrate_kbps,
+                           cfg.fast_decode ? 1 : 0, cfg.gpu_post_deblock,
+                           (unsigned)(auto_live_duration_ms / 1000u));
+                    stream_session(app_id, app_title);
+                    if (server.current_game != 0)
+                        gs_quit(&server);
+                    gs_server_free(&server);
+                } else {
+                    plat_log("[AUTO-LIVE] No apps returned by host\n");
+                }
+            } else {
+                cl_log("[AUTO-LIVE] Host info/pairing failed (host=%s paired=%d)\n",
+                       cfg.host, server.paired ? 1 : 0);
+            }
+            plat_exit_to_dashboard();
+            return;
+        }
+    }
+#endif
+
 #ifdef _XBOX
     audio_menu_configure(cfg.menu_sounds,cfg.menu_volume);
+    if (ui_motion_enabled()) {
+        while (ui_splash_elapsed(plat_now_ms()) < 1460u) {
+            ui_draw_splash("Starting MoonX360...", plat_now_ms());
+            ui_present();
+            if (input_menu_pressed() != 0) break;
+            plat_sleep_ms(16);
+        }
+        uint32_t exit_start = plat_now_ms();
+        for (;;) {
+            uint32_t elapsed = (uint32_t)(plat_now_ms() - exit_start);
+            float p = elapsed >= 400u ? 1.0f : (float)elapsed / 400.0f;
+            ui_draw_splash_exit(p);
+            ui_present();
+            if (p >= 1.0f || input_menu_pressed() != 0) break;
+            plat_sleep_ms(16);
+        }
+        ui_transition_begin();
+    }
 #endif
     main_menu();
     stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);

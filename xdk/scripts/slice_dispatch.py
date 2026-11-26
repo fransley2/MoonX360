@@ -4,7 +4,12 @@ The dependency stays unchanged. Only slice jobs are affected; frame threading,
 affinity, decoder arithmetic, references and filters remain the original code.
 """
 from pathlib import Path
+import hashlib
+import re
 from patch_worker_map import validate
+
+DIAG_INCLUDE_RE = re.compile(r'^#include\s+"[^"]*h264_parallel_diagnostic\.h"', re.M)
+DIAG_SOURCE_SHA256 = "aa62e4c4ba44e82e38aa392011e93823ea6719c6d3ddbc10146c159f08c64a4e"
 
 MODES=('legacy','batched')
 
@@ -25,6 +30,101 @@ typedef struct ThreadContext {
     int job_count, job_size, worker_count;
     volatile LONG next_job, workers_running, done;
 } ThreadContext;'''
+
+DIAG_CONTEXT=r'''typedef struct SliceWorker {
+    AVCodecContext *avctx;
+    int self_id;
+} SliceWorker;
+
+typedef struct ThreadContext {
+    pthread_t *workers;
+    SliceWorker *worker_args;
+    HANDLE *worker_start;
+    HANDLE batch_done;
+    action_func *func;
+    action_func2 *func2;
+    void *args;
+    int *rets;
+    int job_count, job_size, worker_count;
+    volatile LONG next_job, workers_running, done;
+    volatile LONG active_jobs, peak_active_jobs;
+    volatile LONG worker_used[16];
+} ThreadContext;'''
+
+DIAG_WORKER=r'''static void* attribute_align_arg worker(void *v)
+{
+    SliceWorker *w = v;
+    AVCodecContext *avctx = w->avctx;
+    ThreadContext *c = avctx->thread_opaque;
+    int self_id = w->self_id;
+    int our_job, result;
+
+    for (;;) {
+        WaitForSingleObject(c->worker_start[self_id], INFINITE);
+        if (InterlockedCompareExchange(&c->done, 0, 0))
+            return NULL;
+        our_job = self_id;
+
+        while (our_job < c->job_count) {
+            LONG cur, prev;
+            if (self_id >= 0 && self_id < 16) c->worker_used[self_id] = 1;
+            cur = InterlockedIncrement(&c->active_jobs);
+            prev = InterlockedCompareExchange(&c->peak_active_jobs, 0, 0);
+            while (cur > prev && InterlockedCompareExchange(&c->peak_active_jobs, cur, prev) != prev)
+                prev = InterlockedCompareExchange(&c->peak_active_jobs, 0, 0);
+            result = c->func ? c->func(avctx, (char*)c->args + our_job*c->job_size) :
+                              c->func2(avctx, c->args, our_job, self_id);
+            InterlockedDecrement(&c->active_jobs);
+            if (c->rets) c->rets[our_job] = result;
+            if (c->job_count <= avctx->thread_count) break;
+            our_job = (int)InterlockedIncrement(&c->next_job) - 1;
+        }
+
+        if (InterlockedDecrement(&c->workers_running) == 0)
+            SetEvent(c->batch_done);
+    }
+}'''
+
+DIAG_EXECUTE=r'''static int avcodec_thread_execute(AVCodecContext *avctx, action_func* func, void *arg, int *ret, int job_count, int job_size)
+{
+    ThreadContext *c = avctx->thread_opaque;
+    int i, active;
+    if (!(avctx->active_thread_type & FF_THREAD_SLICE) || avctx->thread_count <= 1)
+        return avcodec_default_execute(avctx, func, arg, ret, job_count, job_size);
+    if (job_count <= 0) return 0;
+    active = FFMIN(job_count, avctx->thread_count);
+    for (i = 0; i < 16 && i < avctx->thread_count; i++) c->worker_used[i] = 0;
+    InterlockedExchange(&c->active_jobs, 0);
+    InterlockedExchange(&c->peak_active_jobs, 0);
+    c->job_count = job_count;
+    c->job_size = job_size;
+    c->args = arg;
+    c->func = func;
+    c->rets = ret;
+    c->next_job = avctx->thread_count;
+    InterlockedExchange(&c->workers_running, active);
+    for (i = 0; i < active; i++) SetEvent(c->worker_start[i]);
+    avcodec_thread_park_workers(c, active);
+    return 0;
+}'''
+
+DIAG_LAST_DISPATCH=r'''void ff_xbox_slice_last_dispatch(const AVCodecContext *avctx,
+                                 unsigned *participants, unsigned *concurrent)
+{
+    int i;
+    unsigned count = 0;
+    const ThreadContext *c;
+    if (participants) *participants = 0;
+    if (concurrent) *concurrent = 0;
+    if (!avctx || !(avctx->active_thread_type & FF_THREAD_SLICE) ||
+        avctx->thread_count <= 1 || !avctx->thread_opaque)
+        return;
+    c = avctx->thread_opaque;
+    for (i = 0; i < 16 && i < avctx->thread_count; i++)
+        if (c->worker_used[i]) count++;
+    if (participants) *participants = count;
+    if (concurrent) *concurrent = (unsigned)c->peak_active_jobs;
+}'''
 
 WORKER=r'''static void* attribute_align_arg worker(void *v)
 {
@@ -153,6 +253,21 @@ def function(text,signature):
     return text[start:end]
 
 def generate(text):
+    if 'ff_xbox_slice_last_dispatch(' in text and 'ff_xbox_slice_dispatch_version(' not in text:
+        normalized = DIAG_INCLUDE_RE.sub('#include "H264_DIAG_HDR"', text, count=1)
+        if hashlib.sha256(normalized.encode('utf-8')).hexdigest() != DIAG_SOURCE_SHA256:
+            raise RuntimeError("Unrecognized instrumented xb_thread.c; refusing unverified slice dispatch patch")
+        text=DIAG_INCLUDE_RE.sub('#include "h264_parallel_diagnostic.h"', text, count=1)
+        old_context=function(text,'typedef struct ThreadContext')+' ThreadContext;'
+        text=text.replace(old_context,DIAG_CONTEXT,1)
+        text=text.replace(function(text,'static void* attribute_align_arg worker('),DIAG_WORKER,1)
+        text=text.replace(function(text,'static av_always_inline void avcodec_thread_park_workers('),PARK,1)
+        text=text.replace(function(text,'static void thread_free('),FREE,1)
+        text=text.replace(function(text,'static int avcodec_thread_execute('),DIAG_EXECUTE,1)
+        text=text.replace(function(text,'void ff_xbox_slice_last_dispatch('),DIAG_LAST_DISPATCH,1)
+        text=text.replace(function(text,'static int thread_init('),INIT,1)
+        text+='\nint ff_xbox_slice_dispatch_version(void) { return 2; }\n'
+        return text
     validate(text)  # Reject unknown, duplicate or partially patched dependency.
     old_context=function(text,'typedef struct ThreadContext')+' ThreadContext;'
     text=text.replace(old_context,CONTEXT,1)

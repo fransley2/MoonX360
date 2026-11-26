@@ -159,14 +159,57 @@ static void raster(const struct ui_draw_command *c) {
     case UI_GLYPH:cv_mask(target,(int)c->x,(int)c->y,(const uint8_t*)c->pixels,c->iw,c->ih,c->stride,c->color);break;
     case UI_IMAGE: {
         const uint32_t *p=(const uint32_t*)c->pixels;
+        unsigned cmd_a=c->color>>24;
         int x0=(int)c->x,y0=(int)c->y,w=(int)c->w,h=(int)c->h;
-        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
-            int dx=x0+x,dy=y0+y;if(dx<target->cx0||dx>=target->cx1||dy<target->cy0||dy>=target->cy1)continue;
-            int sx=c->sx+x*c->sw/w,sy=c->sy+y*c->sh/h;
-            if(sx<0||sy<0||sx>=c->iw||sy>=c->ih)continue;
-            uint32_t color=p[sy*c->iw+sx];unsigned alpha=(color>>24)*(c->color>>24)/255;
-            target->px[dy*target->w+dx]=cv_mix(target->px[dy*target->w+dx],color,alpha);
-        }break;
+        if(!cmd_a || w<=0 || h<=0 || c->sw<=0 || c->sh<=0)break;
+        int dx0=x0>target->cx0?x0:target->cx0;
+        int dy0=y0>target->cy0?y0:target->cy0;
+        int dx1=(x0+w)<target->cx1?(x0+w):target->cx1;
+        int dy1=(y0+h)<target->cy1?(y0+h):target->cy1;
+        if(dx0>=dx1 || dy0>=dy1)break;
+        int x_cnt=dx1-dx0;
+        if(x_cnt<=1920) {
+            int sx_tab[1920];
+            for(int x=0;x<x_cnt;x++) {
+                int sx=c->sx+(dx0+x-x0)*c->sw/w;
+                sx_tab[x]=(sx<0 || sx>=c->iw)?-1:sx;
+            }
+            for(int dy=dy0;dy<dy1;dy++) {
+                int sy=c->sy+(dy-y0)*c->sh/h;
+                if(sy<0 || sy>=c->ih)continue;
+                const uint32_t *src_row=p+sy*c->iw;
+                uint32_t *dst_row=target->px+dy*target->w+dx0;
+                if(cmd_a==255u) {
+                    for(int x=0;x<x_cnt;x++) {
+                        int sx=sx_tab[x];if(sx<0)continue;
+                        uint32_t color=src_row[sx];
+                        unsigned sa=color>>24;
+                        if(sa==255u)dst_row[x]=color;
+                        else if(sa)dst_row[x]=cv_mix(dst_row[x],color,sa);
+                    }
+                } else {
+                    for(int x=0;x<x_cnt;x++) {
+                        int sx=sx_tab[x];if(sx<0)continue;
+                        uint32_t color=src_row[sx];
+                        unsigned alpha=(color>>24)*cmd_a/255u;
+                        if(alpha)dst_row[x]=cv_mix(dst_row[x],color,alpha);
+                    }
+                }
+            }
+        } else {
+            for(int dy=dy0;dy<dy1;dy++) {
+                int sy=c->sy+(dy-y0)*c->sh/h;
+                if(sy<0 || sy>=c->ih)continue;
+                for(int dx=dx0;dx<dx1;dx++) {
+                    int sx=c->sx+(dx-x0)*c->sw/w;
+                    if(sx<0 || sx>=c->iw)continue;
+                    uint32_t color=p[sy*c->iw+sx];
+                    unsigned alpha=(color>>24)*cmd_a/255u;
+                    target->px[dy*target->w+dx]=cv_mix(target->px[dy*target->w+dx],color,alpha);
+                }
+            }
+        }
+        break;
     }
     }
 }

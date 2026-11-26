@@ -201,12 +201,8 @@ static const struct ui_translation quick_translations[]={
     {"Dev P1","Dev P1","Dev P1"},
     {"Dev P2","Dev P2","Dev P2"},
     {"Virtual Keyboard","Teclado virtual","Teclado virtual"},
-    {"A Mute    Left/Right Volume    B Close","A Silenciar    Izq./Der. Volumen    B Cerrar","A Mudo    Esq./Dir. Volume    B Fechar"},
-    {"A Toggle    X Actions    B Close","A Alternar    X Acciones    B Cerrar","A Alternar    X Acoes    B Fechar"},
-    {"Left/Right Mode    X Page    B Close","Izq./Der. Modo    X Pagina    B Cerrar","Esq./Dir. Modo    X Pagina    B Fechar"},
-    {"A / Left/Right Mode    B Close","A / Izq./Der. Modo    B Cerrar","A / Esq./Dir. Modo    B Fechar"},
-    {"A Select    Y Keyboard    B Close","A Seleccionar    Y Teclado    B Cerrar","A Selecionar    Y Teclado    B Fechar"},
-    {"A Select    B Back","A Seleccionar    B Volver","A Selecionar    B Voltar"},
-    {"A Confirm    B Cancel","A Confirmar    B Cancelar","A Confirmar    B Cancelar"},
+    {"Toggle","Alternar","Alternar"},
+    {"Actions","Acciones","A\303\247\303\265es"},
+    {"Mode","Modo","Modo"},
     {"B Close","B Cerrar","B Fechar"}
 };

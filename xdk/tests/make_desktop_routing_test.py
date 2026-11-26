@@ -6,13 +6,23 @@ fixture=(root/'xdk/tests/controller_hotplug_fixture.cpp').read_text()
 source=(root/'xdk/src/input_xdk.cpp').read_text()
 source=source[source.index('static volatile LONG desktop_snapshot'):]
 fixture=fixture[:fixture.index('int main(){')]
-fixture=fixture.replace('static DWORD tick;', 'static bool legacy_scenario,port_scenario;static DWORD tick;')
+fixture=fixture.replace('static DWORD tick;', 'static bool legacy_scenario,port_scenario,pc_guide_scenario;static DWORD tick;')
 a=fixture.index('static void Sleep(DWORD ms)');b=fixture.index('{',a)+1;depth=1
 while depth:
     depth+=(fixture[b]=='{')-(fixture[b]=='}');b+=1
 fixture=fixture[:a]+r'''
 static void Sleep(DWORD ms){assert(ms==4);tick+=ms;sleep_count++;
     samples[0].Gamepad.wButtons=0;samples[0].Gamepad.sThumbLX=0;
+    if(pc_guide_scenario){
+        for(int i=0;i<MAX_PADS;i++)samples[i].Gamepad.wButtons=0;
+        if(sleep_count>=2 && sleep_count<=94)samples[0].Gamepad.wButtons=XINPUT_GAMEPAD_START|XINPUT_GAMEPAD_LEFT_SHOULDER;
+        if(sleep_count==95)samples[0].Gamepad.wButtons=XINPUT_GAMEPAD_LEFT_SHOULDER;
+        if(sleep_count>=102 && sleep_count<=110)samples[0].Gamepad.wButtons=XINPUT_GAMEPAD_START|XINPUT_GAMEPAD_LEFT_SHOULDER;
+        if(sleep_count==106)guide=true;
+        if(sleep_count==111)guide=false;
+        if(sleep_count>=115)stream_active=0;
+        return;
+    }
     if(port_scenario){
         for(int i=0;i<MAX_PADS;i++)samples[i].Gamepad.wButtons=0;
         if(sleep_count==3 || sleep_count==4)samples[2].Gamepad.wButtons=A_FLAG;
@@ -60,7 +70,7 @@ static void Sleep(DWORD ms){assert(ms==4);tick+=ms;sleep_count++;
 ''' +fixture[b:]
 fixture=fixture.replace('/* ACTUAL_INPUT */',source)
 fixture=fixture.replace('static std::vector<event> events;', 'static std::vector<event> events;static unsigned moves,mouse_down,mouse_up,utf8;')
-fixture=fixture.replace('events.push_back(e);return 0;', r'if((port_scenario || (!legacy_scenario && tick<184)) && (buttons || lt || lx)){printf("LEAK tick=%u poll=%d port_scenario=%d port=%d buttons=%x lt=%u lx=%d\n",tick,sleep_count,port_scenario,port,buttons,lt,lx);fflush(stdout);assert(false);}events.push_back(e);return 0;',1)
+fixture=fixture.replace('events.push_back(e);return 0;', r'if(!pc_guide_scenario && (port_scenario || (!legacy_scenario && tick<184)) && (buttons || lt || lx)){printf("LEAK tick=%u poll=%d port_scenario=%d port=%d buttons=%x lt=%u lx=%d\n",tick,sleep_count,port_scenario,port,buttons,lt,lx);fflush(stdout);assert(false);}events.push_back(e);return 0;',1)
 fixture=fixture.replace('int LiSendMouseMoveEvent(short,short){return 0;}', 'int LiSendMouseMoveEvent(short,short){moves++;return 0;}')
 fixture=fixture.replace('int LiSendMouseButtonEvent(char,int){return 0;}', 'int LiSendMouseButtonEvent(char action,int){if(action==BUTTON_ACTION_PRESS)mouse_down++;else mouse_up++;return 0;}')
 fixture=fixture.replace('int LiSendUtf8TextEvent(const char*,unsigned){return 0;}', 'int LiSendUtf8TextEvent(const char *s,unsigned n){assert(n==1 && *s==\'g\');utf8++;return 0;}')
@@ -80,6 +90,19 @@ int main(){
     memset(connected,0,sizeof(connected));memset(samples,0,sizeof(samples));memset(next_probe_ms,0,sizeof(next_probe_ms));
     connected[2]=true;input_stream_start();input_stream_main(NULL);input_stream_stop();
     assert(mouse_down==2 && mouse_up==2 && !desktop_snapshot);
+    pc_guide_scenario=true;port_scenario=false;legacy_scenario=false;tick=sleep_count=0;events.clear();guide=false;
+    memset(connected,0,sizeof(connected));memset(samples,0,sizeof(samples));memset(next_probe_ms,0,sizeof(next_probe_ms));
+    connected[0]=true;desktop_initial=false;input_configure_guide(true,350u);
+    input_stream_start();input_stream_main(NULL);input_stream_stop();
+    int special_presses=0,special_releases=0,leaked_combo=0;bool was_special=false;
+    for(size_t i=0;i<events.size();i++){
+        if(events[i].buttons&(PLAY_FLAG|LB_FLAG))leaked_combo++;
+        bool now_sp=(events[i].buttons&SPECIAL_FLAG)!=0;
+        if(now_sp && !was_special)special_presses++;
+        if(!now_sp && was_special)special_releases++;
+        was_special=now_sp;
+    }
+    assert(!leaked_combo && special_presses==1 && special_releases==1 && !was_special);
     puts("PASS: real XDK input loop Desktop drag/keyboard/UTF8/overlay/Quick Menu, zero gamepad leakage, Desktop-to-game transition and modifier cleanup (simulated devices).");
 }
 '''

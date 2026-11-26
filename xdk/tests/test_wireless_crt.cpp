@@ -26,7 +26,7 @@ int main(){
     config c;config_defaults(&c);config smooth=c;
     c.language=2;c.ui_layout=0;c.display_mode=2;c.ui_safe_area=2;c.left_min=17;strcpy(c.host,"original-host");
     config_select_factory(&c,CONFIG_PROFILE_WIRELESS);
-    assert(c.width==854 && c.height==480 && c.fps==60 && c.bitrate_kbps==2000 && c.refresh_interval_ms==0);
+    assert(c.width==854 && c.height==480 && c.fps==60 && c.bitrate_kbps==4000 && c.refresh_interval_ms==0);
     assert(!c.fast_decode && !c.vsync && c.packet_size==768 && c.renderer==0);
     assert(c.language==2 && c.ui_layout==0 && c.display_mode==2 && c.ui_safe_area==2 && c.left_min==17 && !strcmp(c.host,"original-host"));
     assert(config_save(&c));config loaded;config_load(&loaded);assert(same_config(c,loaded));
@@ -55,7 +55,14 @@ int main(){
     assert(display_rate_x100(59.94f)==5994 && display_rate_x100(60)==6000);
     assert(console_link_classify(0,1,32)==CONSOLE_LINK_UNKNOWN && console_link_classify(32,1,32)==CONSOLE_LINK_UNKNOWN);
     assert(console_link_classify(1,1,32)==CONSOLE_LINK_WIRED && console_link_classify(33,1,32)==CONSOLE_LINK_WIRELESS);
-    assert(binding_profile_valid("factory:10") && binding_profile_valid("factory:11") && binding_profile_valid("factory:12") && !binding_profile_valid("factory:13") && !binding_profile_valid("factory::") && !binding_profile_valid("factory:01"));
+    assert(console_link_effective_packet_size(1024,12000,CONSOLE_LINK_WIRED)==1392);
+    assert(console_link_effective_packet_size(1024,15000,CONSOLE_LINK_WIRED)==1392);
+    assert(console_link_effective_packet_size(1024,6000,CONSOLE_LINK_WIRED)==1024);
+    assert(console_link_effective_packet_size(1024,10000,CONSOLE_LINK_WIRED)==1024);
+    assert(console_link_effective_packet_size(1200,15000,CONSOLE_LINK_WIRED)==1200);
+    assert(console_link_effective_packet_size(1024,15000,CONSOLE_LINK_WIRELESS)==1024);
+    assert(console_link_effective_packet_size(768,4000,CONSOLE_LINK_WIRELESS)==768);
+    assert(binding_profile_valid("factory:10") && binding_profile_valid("factory:11") && binding_profile_valid("factory:12") && binding_profile_valid("factory:13") && !binding_profile_valid("factory:14") && !binding_profile_valid("factory::") && !binding_profile_valid("factory:01"));
     config crt,retro;config_defaults(&crt);config_select_factory(&crt,CONFIG_PROFILE_CRT_DISPLAY);
     assert(config_crt_profile(&crt) && !config_is_crt_retro(&crt) && crt.width==640 && crt.height==480 && crt.fps==60 && crt.bitrate_kbps==3000 && !crt.fast_decode && !crt.vsync);
     config_defaults(&retro);config_select_factory(&retro,CONFIG_PROFILE_CRT_RETRO_240P);

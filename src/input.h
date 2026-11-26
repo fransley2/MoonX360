@@ -27,6 +27,7 @@ void input_stream_stop(void);
 
 /* Configure before starting a stream; zero deadzone preserves raw input. */
 void input_configure(int quit_combo, int deadzone);
+void input_configure_guide(bool enabled, uint32_t hold_ms);
 void input_calibrate(int left_min,int left_max,int right_min,int right_max);
 #ifdef _XBOX
 /* Developer-only Custom stream experiment; Smooth always retains 4 ms. */

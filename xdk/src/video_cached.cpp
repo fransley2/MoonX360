@@ -4,6 +4,7 @@
 #include "../../src/video_gpu_policy.h"
 #include "../../src/performance.h"
 #include "../../src/video_smoothing.h"
+#include "../../src/frame_pacing.h"
 #include <assert.h>
 #ifndef OPTIMIZED_YUV_COPY
 #define OPTIMIZED_YUV_COPY 0
@@ -20,6 +21,8 @@ static uint64_t cached_ready_us[4];
 static uint32_t cached_ready_ms[4];
 static uint32_t cached_submitted_ms[4];
 static uint64_t cached_picture[4];
+static struct frame_pacing_record cached_fp_meta[4];
+static int cached_last_published_slot = -1;
 static int cached_count=3,cached_history=-1,cached_borrow=-1;
 static uint32_t cached_epoch,cached_frame_epoch[4];
 static bool cached_history_valid,cached_drew_blend;
@@ -59,6 +62,8 @@ void cached_video_cleanup(D3DDevice *d)
     memset(cached_ready_us,0,sizeof(cached_ready_us));
     memset(cached_ready_ms,0,sizeof(cached_ready_ms));
     memset(cached_submitted_ms,0,sizeof(cached_submitted_ms));
+    memset(cached_fp_meta,0,sizeof(cached_fp_meta));
+    cached_last_published_slot=-1;
     memset(&cached_transition,0,sizeof(cached_transition));
     LeaveCriticalSection(&cached_lock);
 }
@@ -76,6 +81,8 @@ bool cached_video_init(int width,int height)
     memset(cached_ready_us,0,sizeof(cached_ready_us));
     memset(cached_ready_ms,0,sizeof(cached_ready_ms));
     memset(cached_submitted_ms,0,sizeof(cached_submitted_ms));
+    memset(cached_fp_meta,0,sizeof(cached_fp_meta));
+    cached_last_published_slot=-1;
     cached_width[0]=width;cached_height[0]=height;
     cached_width[1]=cached_width[2]=(width+1)/2;
     cached_height[1]=cached_height[2]=(height+1)/2;
@@ -172,10 +179,52 @@ int cached_video_publish_picture(const BYTE *const planes[3],const int pitches[3
     cached_picture[slot]=picture;
     cached_ready_us[slot]=perf_enabled()?perf_clock():0;
     cached_ready_ms[slot]=GetTickCount();
+    cached_last_published_slot=slot;
     cached_slots[slot].state=ok?GPU_READY:GPU_FREE;
     if(ok)video_progress_note(VP_UPLOADED);
     LeaveCriticalSection(&cached_lock);
     return ok?1:-1;
+}
+
+void cached_video_set_last_meta(const struct frame_pacing_record *meta)
+{
+    if(!meta || !cached_lock_ready)return;
+    EnterCriticalSection(&cached_lock);
+    int s=cached_last_published_slot;
+    if(s>=0 && s<cached_count)cached_fp_meta[s]=*meta;
+    LeaveCriticalSection(&cached_lock);
+}
+
+bool cached_video_get_slot_meta(int slot, struct frame_pacing_record *out)
+{
+    if(!out || !cached_lock_ready || slot<0 || slot>=cached_count)return false;
+    EnterCriticalSection(&cached_lock);
+    *out=cached_fp_meta[slot];
+    LeaveCriticalSection(&cached_lock);
+    return true;
+}
+
+unsigned cached_video_prune_if_stale(int mode, uint64_t now_us, uint32_t max_age_us)
+{
+    if(!cached_lock_ready || mode==FRAME_PACING_BASELINE)return 0;
+    EnterCriticalSection(&cached_lock);
+    int newest=-1;unsigned ready=0,dropped=0;
+    for(int i=0;i<cached_count;i++)if(cached_slots[i].state==GPU_READY){
+        ready++;
+        if(newest<0 || (int32_t)(cached_slots[i].serial-cached_slots[newest].serial)>0)newest=i;
+    }
+    if(ready>1 || ((mode==FRAME_PACING_BOUNDED_QUEUE || mode==FRAME_PACING_ADAPTIVE_PRESENT) && ready==1 && newest>=0)) {
+        for(int i=0;i<cached_count;i++)if(cached_slots[i].state==GPU_READY && i!=newest){
+            cached_slots[i].state=GPU_FREE;dropped++;
+        }
+        if((mode==FRAME_PACING_BOUNDED_QUEUE || mode==FRAME_PACING_ADAPTIVE_PRESENT) &&
+           newest>=0 && cached_fp_meta[newest].decode_end_us>0 && now_us>cached_fp_meta[newest].decode_end_us &&
+           (now_us-cached_fp_meta[newest].decode_end_us)>max_age_us && ready>1){
+            cached_slots[newest].state=GPU_FREE;dropped++;
+        }
+    }
+    LeaveCriticalSection(&cached_lock);
+    return dropped;
 }
 
 int cached_video_publish(const BYTE *const planes[3],const int pitches[3],struct gfx_copy_cost *cost)

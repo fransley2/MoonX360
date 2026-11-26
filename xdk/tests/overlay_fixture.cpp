@@ -40,6 +40,7 @@ typedef int D3DRENDERSTATETYPE;
 static bool fail_allocation, fail_texture, fail_upload, guide_active;
 static int allocations, releases, uploads, waits, quads, lock_count;
 static int layout_width=1280;
+static int gfx_layout_width(void){return layout_width;}
 static std::set<DWORD> pending_fences;
 static bool pending_any() { return !pending_fences.empty(); }
 struct D3DTexture {
@@ -107,7 +108,7 @@ static void mark_overlay_fence(DWORD f)
 static DWORD tick, overlay_last_ms, overlay_last_video_ms, network_updated_ms;
 static bool overlay_has_text, overlay_rates_valid, overlay_update_pending;
 static int overlay_last_mode, overlay_last_dev_page, overlay_last_alert;
-static uint32_t overlay_last_loss;
+static uint32_t overlay_last_loss, overlay_last_overflows;
 static stream_rates overlay_last_rates;
 static overlay_alert_tracker overlay_alerts;
 static stream_observations observations;
@@ -341,6 +342,29 @@ int main(void) {
     sg.sysgpu.output_wait_us = 22000;
     assert(overlay_alert_update(&sg_tr, &sg) == OVERLAY_ALERT_NONE);
     assert(overlay_alert_update(&sg_tr, &sg) == OVERLAY_ALERT_SYSGPU_WAIT);
+
+    /* Past/cumulative queue_overflows must NOT trigger sticky Packet loss; delta alerts decay cleanly. */
+    struct overlay_alert_tracker net_tr; memset(&net_tr, 0, sizeof(net_tr));
+    struct overlay_telemetry net_t = t;
+    net_t.alert_filtered = false;
+    net_t.sysgpu.valid = false;
+    net_t.queue_overflows = 1;
+    net_t.fec_failed = 1;
+    net_t.recent_loss_delta = 0;
+    net_t.recent_overflow_delta = 0;
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_NONE);
+    assert(overlay_effective_alert_kind(&net_t) == OVERLAY_ALERT_NONE);
+    net_t.recent_overflow_delta = 1;
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_QUEUE_BACKLOG);
+    assert(overlay_effective_alert_kind(&net_t) == OVERLAY_ALERT_QUEUE_BACKLOG);
+    net_t.recent_overflow_delta = 0;
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_QUEUE_BACKLOG);
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_NONE);
+    net_t.recent_loss_delta = 1;
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_PACKET_LOSS);
+    net_t.recent_loss_delta = 0;
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_PACKET_LOSS);
+    assert(overlay_alert_update(&net_tr, &net_t) == OVERLAY_ALERT_NONE);
 
     /* 6. CRT 4:3 adaptation (640x480 / layout_width = 960) with healthy metrics */
     layout_width = 960;

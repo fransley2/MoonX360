@@ -1,0 +1,139 @@
+diff --git a/libavcodec/h264dsp_template.c b/libavcodec/h264dsp_template.c
+index c8ac6e7..6c511b7 100644
+--- a/libavcodec/h264dsp_template.c
++++ b/libavcodec/h264dsp_template.c
+@@ -180,20 +180,36 @@ static __forceinline void edge_half(__vector4 p2, __vector4 p1, __vector4 p0,
+     out[0]=__vadduhm(p1,__vand(__vand(valid,ap),edge_clip(__vsubuhm(__vsrh(__vadduhm(p2,avg),one),p1),tc)));
+     out[3]=__vadduhm(q1,__vand(__vand(valid,aq),edge_clip(__vsubuhm(__vsrh(__vadduhm(q2,avg),one),q1),tc)));
+ }
++#define EDGE_LOADU(p) __vor(__lvlx((p), 0), __lvrx((p), 16))
++static __forceinline void edge_store4_even(__vector4 w, uint8_t *dst)
++{
++    if (((UINT_PTR)dst & 3) == 0) {
++        __stvewx(w, dst, 0);
++    } else {
++        __vector4 wr = __vsldoi(w, w, 2);
++        __stvehx(wr, dst, 0);
++        __stvehx(wr, dst, 2);
++    }
++}
+ static void edge16(uint8_t *pix,int stride,int alpha,int beta,const int8_t *tc)
+ {
+-    __declspec(align(16)) short levels[16];
++    static const __declspec(align(16)) unsigned char rep4[16]={0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3};
+     __declspec(align(16)) short limits[8];
+-    __vector4 rows[6], hi[4], lo[4], a,b,z=__vzero();
++    __vector4 rows[6], hi[4], lo[4], a,b,limv,tcb,z=__vzero();
+     int i;
+-    for(i=0;i<16;i++) levels[i]=tc[i/4];
++    if ((tc[0] & tc[1] & tc[2] & tc[3]) < 0)
++        return;
+     limits[0]=(short)alpha; limits[1]=(short)beta;
+-    a=__vsplth(__lvx(limits,0),0); b=__vsplth(__lvx(limits,0),1);
+     for(i=0;i<6;i++) rows[i]=__lvx(pix+(i-3)*stride,0);
+-#define EDGE_GROUP(merge,offset,out) edge_half(merge(z,rows[0]),merge(z,rows[1]),merge(z,rows[2]),merge(z,rows[3]),merge(z,rows[4]),merge(z,rows[5]),__lvx(levels,offset),a,b,out)
+-    EDGE_GROUP(__vmrghb,0,hi);
+-    EDGE_GROUP(__vmrglb,16,lo);
+-#undef EDGE_GROUP
++    tcb=__vperm(EDGE_LOADU(tc),z,__lvx(rep4,0));
++    limv=__lvx(limits,0);
++    a=__vsplth(limv,0); b=__vsplth(limv,1);
++    edge_half(__vmrghb(z,rows[0]),__vmrghb(z,rows[1]),__vmrghb(z,rows[2]),
++              __vmrghb(z,rows[3]),__vmrghb(z,rows[4]),__vmrghb(z,rows[5]),
++              __vupkhsb(tcb),a,b,hi);
++    edge_half(__vmrglb(z,rows[0]),__vmrglb(z,rows[1]),__vmrglb(z,rows[2]),
++              __vmrglb(z,rows[3]),__vmrglb(z,rows[4]),__vmrglb(z,rows[5]),
++              __vupklsb(tcb),a,b,lo);
+     for(i=0;i<4;i++) __stvx(__vpkshus(hi[i],lo[i]),pix+(i-2)*stride,0);
+ }
+ #endif
+@@ -208,40 +224,65 @@ static void FUNCC(h264_v_loop_filter_luma)(uint8_t *pix, int stride, int alpha,
+     FUNCC(h264_loop_filter_luma)(pix, stride, sizeof(pixel), 4, alpha, beta, tc0);
+ }
+ #if BIT_DEPTH == 8 && defined(_XBOX)
+-/* Transpose eight rows of eight bytes. For a 16-line edge this avoids
+- * walking the same sixteen cache lines separately for each input column. */
++/* Pure register 8x8 byte transpose and aligned subword stores to avoid stack LHS stalls. */
+ static void edge_stride16(uint8_t *pix,int stride,int alpha,int beta,const int8_t *tc)
+ {
+-    static const __declspec(align(16)) unsigned char first[16]={0,8,16,24,1,9,17,25,2,10,18,26,3,11,19,27};
+-    static const __declspec(align(16)) unsigned char last[16]={4,12,20,28,5,13,21,29,6,14,22,30,7,15,23,31};
+-    __declspec(align(16)) short limits[8]={0};
+-    __vector4 z=__vzero(),a,b;
++    static const __declspec(align(16)) unsigned char rep4[16]={0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3};
++    __declspec(align(16)) short limits[8];
++    __vector4 z=__vzero(), repv;
+     int group;
++    if ((tc[0] & tc[1] & tc[2] & tc[3]) < 0)
++        return;
+     limits[0]=(short)alpha; limits[1]=(short)beta;
+-    a=__vsplth(__lvx(limits,0),0); b=__vsplth(__lvx(limits,0),1);
++    repv=__lvx(rep4,0);
+     for(group=0;group<2;group++,pix+=8*stride) {
+-        __declspec(align(16)) unsigned char tile[64], result[32];
+-        __vector4 ab,cd,pair[4],out[4],pq0,pq1;
+-        int i;
++        __vector4 r0,r1,r2,r3,r4,r5,r6,r7;
++        __vector4 a0,a1,a2,a3,b0,b1,b2,b3;
++        __vector4 pair0,pair1,pair2,pair3,out[4],pq0,pq1,res0,res1,limv,a,b,tcv;
+         if(tc[2*group]<0 && tc[2*group+1]<0) continue;
+-        for(i=0;i<8;i++){
+-            memcpy(tile+8*i,pix+i*stride-4,8);
+-            limits[i]=tc[2*group+i/4];
+-        }
+-#define COLUMNS(mask,index) ab=__vperm(__lvx(tile,0),__lvx(tile,16),__lvx(mask,0));     cd=__vperm(__lvx(tile,32),__lvx(tile,48),__lvx(mask,0));     pair[index]=__vmrghw(ab,cd); pair[index+1]=__vmrglw(ab,cd)
+-        COLUMNS(first,0);
+-        COLUMNS(last,2);
+-#undef COLUMNS
+-        edge_half(__vmrglb(z,pair[0]),__vmrghb(z,pair[1]),__vmrglb(z,pair[1]),
+-                  __vmrghb(z,pair[2]),__vmrglb(z,pair[2]),__vmrghb(z,pair[3]),
+-                  __lvx(limits,0),a,b,out);
++        r0=EDGE_LOADU(pix-4);
++        r1=EDGE_LOADU(pix+stride-4);
++        r2=EDGE_LOADU(pix+2*stride-4);
++        r3=EDGE_LOADU(pix+3*stride-4);
++        r4=EDGE_LOADU(pix+4*stride-4);
++        r5=EDGE_LOADU(pix+5*stride-4);
++        r6=EDGE_LOADU(pix+6*stride-4);
++        r7=EDGE_LOADU(pix+7*stride-4);
++        limv=__lvx(limits,0);
++        a=__vsplth(limv,0); b=__vsplth(limv,1);
++        tcv=__vupkhsb(__vperm(EDGE_LOADU(tc+2*group),z,repv));
++        a0=__vmrghb(r0,r1); a1=__vmrghb(r2,r3);
++        a2=__vmrghb(r4,r5); a3=__vmrghb(r6,r7);
++        b0=__vmrghh(a0,a1); b1=__vmrglh(a0,a1);
++        b2=__vmrghh(a2,a3); b3=__vmrglh(a2,a3);
++        pair0=__vmrghw(b0,b2); pair1=__vmrglw(b0,b2);
++        pair2=__vmrghw(b1,b3); pair3=__vmrglw(b1,b3);
++        edge_half(__vmrglb(z,pair0),__vmrghb(z,pair1),__vmrglb(z,pair1),
++                  __vmrghb(z,pair2),__vmrglb(z,pair2),__vmrghb(z,pair3),
++                  tcv,a,b,out);
+         pq0=__vmrghb(__vpkshus(out[0],z),__vpkshus(out[1],z));
+         pq1=__vmrghb(__vpkshus(out[2],z),__vpkshus(out[3],z));
+-        __stvx(__vmrghh(pq0,pq1),result,0);
+-        __stvx(__vmrglh(pq0,pq1),result,16);
+-        for(i=0;i<8;i++) memcpy(pix+i*stride-2,result+4*i,4);
++        res0=__vmrghh(pq0,pq1);
++        res1=__vmrglh(pq0,pq1);
++        if ((((UINT_PTR)pix | stride) & 1) == 0) {
++            edge_store4_even(__vspltw(res0,0),pix-2);
++            edge_store4_even(__vspltw(res0,1),pix+stride-2);
++            edge_store4_even(__vspltw(res0,2),pix+2*stride-2);
++            edge_store4_even(__vspltw(res0,3),pix+3*stride-2);
++            edge_store4_even(__vspltw(res1,0),pix+4*stride-2);
++            edge_store4_even(__vspltw(res1,1),pix+5*stride-2);
++            edge_store4_even(__vspltw(res1,2),pix+6*stride-2);
++            edge_store4_even(__vspltw(res1,3),pix+7*stride-2);
++        } else {
++            __declspec(align(16)) unsigned char result[32];
++            int i;
++            __stvx(res0,result,0);
++            __stvx(res1,result,16);
++            for(i=0;i<8;i++) memcpy(pix+i*stride-2,result+4*i,4);
++        }
+     }
+ }
++#undef EDGE_LOADU
+ #endif
+ static void FUNCC(h264_h_loop_filter_luma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {

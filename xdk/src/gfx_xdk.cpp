@@ -82,10 +82,13 @@ static int backbuffer_width=1280, backbuffer_height=720;
 static int saved_ui_bb_width=1280, saved_ui_bb_height=720;
 static bool crt_240p_bb_active=false;
 static int layout_width=1280;
+static int ui_layout_choice;
+static volatile LONG stream_layout_width;
 static int layout_height=720;
 static int display_width=1280, display_height=720;
 static float display_refresh;
-static bool display_is_interlaced,display_mode_known;
+static bool display_is_interlaced,display_mode_known,display_is_widescreen=true;
+static int active_display_mode=0;
 static LARGE_INTEGER gfx_frequency;
 
 struct vertex {
@@ -339,6 +342,12 @@ void gfx_display_size(int *w,int *h) { *w=display_width;*h=display_height; }
 float gfx_display_hz(void) {return display_refresh;}
 bool gfx_display_interlaced(void) {return display_is_interlaced;}
 bool gfx_display_known(void){return display_mode_known;}
+bool gfx_display_widescreen(void){return display_is_widescreen;}
+int gfx_resolved_ui_layout(int layout)
+{
+    return ui_layout_resolve_display(layout, active_display_mode, display_width, display_height,
+                                     display_is_widescreen, backbuffer_width, backbuffer_height);
+}
 bool gfx_quality_available(void) { return ps[GFX_SHADER_YUV_QUALITY]!=NULL; }
 bool gfx_fence_pending(DWORD fence) { return fence && D3DDevice_IsFencePending(fence)!=FALSE; }
 
@@ -372,14 +381,25 @@ bool gfx_init(void)
         return false;
     QueryPerformanceFrequency(&gfx_frequency);
     ZeroMemory(&mode,sizeof(mode));XGetVideoMode(&mode);
+    display_is_widescreen = true;
     if (mode.dwDisplayWidth && mode.dwDisplayHeight) {
         display_width=(int)mode.dwDisplayWidth;display_height=(int)mode.dwDisplayHeight;
         display_refresh=mode.RefreshRate;display_is_interlaced=mode.fIsInterlaced!=FALSE;display_mode_known=mode.RefreshRate>=20;
+        display_is_widescreen=mode.fIsWideScreen!=FALSE;
+    } else if (mode.dwDisplayWidth==0 && mode.dwDisplayHeight==0) {
+        display_is_widescreen=mode.fIsWideScreen!=FALSE;
     }
     struct config initial;config_load(&initial);
     ui_safe_area=initial.ui_safe_area;
-    ui_layout_canvas_size(initial.ui_layout,&layout_width,&layout_height);
-    display_render_size(initial.display_mode,display_width,display_height,&backbuffer_width,&backbuffer_height);
+    ui_layout_choice=initial.ui_layout;
+    active_display_mode=initial.display_mode;
+    int render_mode=initial.display_mode;
+    if(render_mode==0 && display_output_is_4_3((int)mode.dwDisplayWidth,(int)mode.dwDisplayHeight,
+                                              mode.fIsWideScreen!=FALSE))render_mode=4;
+    display_render_size(render_mode,display_width,display_height,&backbuffer_width,&backbuffer_height);
+    ui_layout_canvas_size(ui_layout_resolve_display(ui_layout_choice,active_display_mode,display_width,display_height,
+                                                    display_is_widescreen,backbuffer_width,backbuffer_height),
+                          &layout_width,&layout_height);
     ZeroMemory(&pp, sizeof(pp));
     pp.BackBufferWidth = backbuffer_width;
     pp.BackBufferHeight = backbuffer_height;
@@ -541,16 +561,17 @@ void gfx_wait_fence(D3DDevice *d,DWORD fence)
     }
 }
 
-void gfx_draw_rect(D3DDevice *d, int shader, float x0, float y0, float x1, float y1)
+void gfx_draw_rect_uv(D3DDevice *d, int shader, float x0, float y0, float x1, float y1,
+                      float u0, float v0, float u1, float v1)
 {
     struct vertex q[4];
     float l = x0 / GFX_WIDTH * 2 - 1, r = x1 / GFX_WIDTH * 2 - 1;
     float t = 1 - y0 / GFX_HEIGHT * 2, b = 1 - y1 / GFX_HEIGHT * 2;
 
-    q[0].x = l; q[0].y = t; q[0].u = 0; q[0].v = 0;
-    q[1].x = r; q[1].y = t; q[1].u = 1; q[1].v = 0;
-    q[2].x = l; q[2].y = b; q[2].u = 0; q[2].v = 1;
-    q[3].x = r; q[3].y = b; q[3].u = 1; q[3].v = 1;
+    q[0].x = l; q[0].y = t; q[0].u = u0; q[0].v = v0;
+    q[1].x = r; q[1].y = t; q[1].u = u1; q[1].v = v0;
+    q[2].x = l; q[2].y = b; q[2].u = u0; q[2].v = v1;
+    q[3].x = r; q[3].y = b; q[3].u = u1; q[3].v = v1;
     d->SetVertexDeclaration(decl);
     d->SetVertexShader(vs);
     {
@@ -560,13 +581,48 @@ void gfx_draw_rect(D3DDevice *d, int shader, float x0, float y0, float x1, float
     }
     d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(q[0]));
 }
-int gfx_layout_width(void){return layout_width;}
+
+void gfx_draw_rect(D3DDevice *d, int shader, float x0, float y0, float x1, float y1)
+{
+    gfx_draw_rect_uv(d, shader, x0, y0, x1, y1, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+void ui_configure_layout(int layout,int source_w,int source_h)
+{
+    int width,height;
+    (void)source_w;(void)source_h;
+    int resolved=ui_layout_resolve_display(layout,active_display_mode,display_width,display_height,
+                                           display_is_widescreen,backbuffer_width,backbuffer_height);
+    ui_layout_canvas_size(resolved,&width,&height);
+    if(width!=layout_width || height!=layout_height) {
+        if(!ui_init_layout(width,height,resolved)) {
+            plat_log("[UI] Canvas resize failed; keeping the previous layout\n");
+            return;
+        }
+        layout_width=width;
+        layout_height=height;
+    }
+    ui_layout_choice=layout;
+}
+
+void gfx_set_stream_layout(int width,int height)
+{
+    /* Stream resolution changes must never override the active display/manual UI layout. */
+    (void)width;(void)height;
+    InterlockedExchange(&stream_layout_width,0);
+}
+
+int gfx_layout_width(void)
+{
+    int stream_width=stream_layout_width;
+    return stream_width?stream_width:layout_width;
+}
 void gfx_draw_layout_rect(D3DDevice *d,int shader,float x0,float y0,float x1,float y1)
 {
     int left,top,right,bottom;
-    gfx_ui_viewport(layout_width,layout_height,backbuffer_width,backbuffer_height,
+    int width=gfx_layout_width();
+    gfx_ui_viewport(width,layout_height,backbuffer_width,backbuffer_height,
                        &left,&top,&right,&bottom);
-    float sx=(right-left)/(float)layout_width,sy=(bottom-top)/(float)layout_height;
+    float sx=(right-left)/(float)width,sy=(bottom-top)/(float)layout_height;
     gfx_draw_rect(d,shader,
                   (left+x0*sx)*GFX_WIDTH/backbuffer_width,
                   (top+y0*sy)*GFX_HEIGHT/backbuffer_height,
@@ -646,9 +702,37 @@ static bool gfx_cached_upload_impl(D3DTexture *texture,const BYTE *src,int src_p
     /* Checked cached destination ONLY. AVFrame is av_malloc cached RAM.
      * XMemCpy has no alignment restrictions (local xbox.h / XMemCpy.htm).
      * Never route Usage=0 write-combined video/UI textures into this helper. */
+#if defined(_XBOX) && defined(XDK_YUV_STREAMING_COPY) && XDK_YUV_STREAMING_COPY
+    if (lr.Pitch==width && src_pitch==width) XMemCpyStreaming_Cached(lr.pBits,src,(size_t)width*height);
+    else for (y=0;y<height;y++)
+        XMemCpyStreaming_Cached((BYTE*)lr.pBits+(size_t)y*lr.Pitch,src+(size_t)y*src_pitch,width);
+#elif defined(_XBOX) && defined(XDK_YUV_CONTIGUOUS_PLANES) && XDK_YUV_CONTIGUOUS_PLANES
+    if (lr.Pitch==width && src_pitch==width) {
+        if (((uintptr_t)lr.pBits & 127u) == 0 && (((size_t)width * height) & 127u) == 0) {
+            size_t total = (size_t)width * height;
+            for (size_t off = 0; off < total; off += 128) __dcbz128((int)off, lr.pBits);
+        }
+        XMemCpy(lr.pBits,src,(size_t)width*height);
+    } else {
+        const bool dcbz_ok = (((uintptr_t)lr.pBits & 127u) == 0) && ((lr.Pitch & 127) == 0) && ((width & 127) == 0);
+        for (y=0;y<height;y++) {
+            BYTE *dst_row = (BYTE*)lr.pBits+(size_t)y*lr.Pitch;
+            const BYTE *src_row = src+(size_t)y*src_pitch;
+            if (y + 2 < height) {
+                const BYTE *pf = src + (size_t)(y + 2) * src_pitch;
+                for (int px = 0; px < width; px += 128) __dcbt(px, pf);
+            }
+            if (dcbz_ok) {
+                for (int dx = 0; dx < width; dx += 128) __dcbz128(dx, dst_row);
+            }
+            XMemCpy(dst_row,src_row,width);
+        }
+    }
+#else
     if (lr.Pitch==width && src_pitch==width) XMemCpy(lr.pBits,src,(size_t)width*height);
     else for (y=0;y<height;y++)
         XMemCpy((BYTE*)lr.pBits+(size_t)y*lr.Pitch,src+(size_t)y*src_pitch,width);
+#endif
     if (cost && cost->verify) for (y=0;y<height;y++)
         if (memcmp((BYTE*)lr.pBits+(size_t)y*lr.Pitch,src+(size_t)y*src_pitch,width))
             cost->mismatch_rows++;
@@ -771,7 +855,7 @@ void gfx_mouse_draw(D3DDevice *d)
         cv_free(&label);
     }
     if(mouse_indicator) {
-        int right=layout_width-16;
+        int right=gfx_layout_width()-16;
         d->SetTexture(0,mouse_indicator);gfx_draw_hud_rect(d,(float)(right-mouse_indicator_width),(float)(704-mouse_indicator_height),(float)right,704);d->SetTexture(0,NULL);
     }
 }
@@ -845,13 +929,13 @@ bool gfx_overlay_update(const struct overlay_telemetry *t)
     overlay_deferred = false;
     if (gfx_system_ui_active()) { overlay_deferred = true; return true; }
     if (!t || t->mode <= OVERLAY_OFF) return true;
-    int width = 0, height = 0;
-    overlay_measure_panel(t, layout_width, &width, &height);
+    int width = 0, height = 0, lw = gfx_layout_width();
+    overlay_measure_panel(t, lw, &width, &height);
     if (width <= 0 || height <= 0) return true;
     int slot = overlay_acquire_slot();
     if (slot < 0) { overlay_deferred = true; return true; }
     if (!overlay_prepare_slot(d, slot, width, height)) return false;
-    overlay_render_panel(&overlay_canvas, t, layout_width);
+    overlay_render_panel(&overlay_canvas, t, lw);
     if (!gfx_upload(overlay_tex[slot], overlay_canvas.px, width * 4, width * 4, height)) {
         overlay_tex[slot]->Release();
         overlay_tex[slot] = NULL;
@@ -887,8 +971,9 @@ bool gfx_overlay_set(const char *text)
     }
     /* Selected interface coordinates fit the backbuffer at either aspect.
      * Tiny fixed margins; no full-screen surface or layout work in draw(). */
+    int lw=gfx_layout_width();
     int width=((widest+24+31)/32)*32,height=16+font_size+(lines-1)*step;
-    if(width<64)width=64;if(width>layout_width-32)width=layout_width-32;if(height>688)height=688;
+    if(width<64)width=64;if(width>lw-32)width=lw-32;if(height>688)height=688;
     int y=8+(int)font_ascent(FONT_REGULAR,(float)font_size);
     int slot = overlay_acquire_slot();
     if (slot < 0) { overlay_deferred = true; return true; }
@@ -939,6 +1024,7 @@ void gfx_overlay_mark_used(DWORD fence)
 /* Two textures, so the CPU fills one while the GPU may still read the other. */
 static D3DTexture *ui_tex[2];
 static DWORD ui_fence[2];
+static int ui_tex_width[2];
 static int ui_next;
 
 void gfx_release_ui_textures(void)
@@ -963,10 +1049,13 @@ void gfx_release_ui_textures(void)
     gfx_end();
 }
 
+static bool ui_present_skipped;
+extern "C" bool gfx_ui_present_pending(void) { return ui_present_skipped; }
+
 void ui_present(void)
 {
     perf_ui_end();
-    if(gfx_system_ui_active() || !gfx_ui_ready())return;
+    if(gfx_system_ui_active() || !gfx_ui_ready()){ui_present_skipped=true;return;}
     ui_transition_tick(GetTickCount());
     canvas_t *c = ui_canvas();
     D3DDevice *d = gfx_begin();
@@ -974,7 +1063,7 @@ void ui_present(void)
     if (ui_draw_commands(&command_count)) {
         if (gfx_ui_draw(d)) {
             gfx_ui_submitted(d->InsertFence());
-            if(!gfx_system_ui_active()){d->Present(NULL, NULL, NULL, NULL);ui_focus_presented();}
+            if(!gfx_system_ui_active()){d->Present(NULL, NULL, NULL, NULL);ui_focus_presented();ui_present_skipped=false;}
             gfx_end();
             return;
         }
@@ -987,14 +1076,23 @@ void ui_present(void)
     int k = ui_next;
 
     ui_next ^= 1;
+    if(ui_tex[k] && ui_tex_width[k]!=c->w) {
+        if(gfx_fence_pending(ui_fence[k])){ui_present_skipped=true;gfx_end();return;}
+        ui_tex[k]->Release();
+        ui_tex[k]=NULL;
+        ui_fence[k]=0;
+    }
     if (ui_tex[k] == NULL &&
         FAILED(d->CreateTexture(c->w, c->h, 1, 0, D3DFMT_LIN_A8R8G8B8, 0, &ui_tex[k], NULL))) {
         ui_tex[k] = NULL;
+        ui_present_skipped=true;
         gfx_end();
         return;
     }
-    if(gfx_fence_pending(ui_fence[k])){gfx_end();return;}
+    ui_tex_width[k]=c->w;
+    if(gfx_fence_pending(ui_fence[k])){ui_present_skipped=true;gfx_end();return;}
     if (!gfx_upload(ui_tex[k], c->px, c->w * 4, c->w * 4, c->h)) {
+        ui_present_skipped=true;
         gfx_end();
         return;
     }
@@ -1004,9 +1102,11 @@ void ui_present(void)
     gfx_ui_viewport(c->w,c->h,backbuffer_width,backbuffer_height,&left,&top,&right,&bottom);
     if(left || top || right!=backbuffer_width || bottom!=backbuffer_height)
         d->Clear(0,NULL,D3DCLEAR_TARGET,0xff000000,1.0f,0);
-    gfx_draw_layout_rect(d,GFX_SHADER_RGB,0,0,(float)layout_width,(float)layout_height);
+    gfx_draw_rect(d,GFX_SHADER_RGB,
+                  left*(float)GFX_WIDTH/backbuffer_width,top*(float)GFX_HEIGHT/backbuffer_height,
+                  right*(float)GFX_WIDTH/backbuffer_width,bottom*(float)GFX_HEIGHT/backbuffer_height);
     d->SetTexture(0, NULL);
     ui_fence[k] = d->InsertFence();
-    if(!gfx_system_ui_active()){d->Present(NULL, NULL, NULL, NULL);ui_focus_presented();}
+    if(!gfx_system_ui_active()){d->Present(NULL, NULL, NULL, NULL);ui_focus_presented();ui_present_skipped=false;}
     gfx_end();
 }

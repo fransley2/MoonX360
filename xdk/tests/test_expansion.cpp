@@ -28,7 +28,7 @@ int main(){
     assert(wake_identity_valid("{ABC-123}") && !wake_identity_valid("pc\nhost_uuid=other") && !wake_identity_valid("pc\tother"));
     assert(feature_search("Grand Theft Auto","THEFT") && feature_search("Desktop","") && !feature_search("Desktop","Xbox"));
     game_bindings b={};assert(binding_set(&b,"uuid:server",42,"factory:2"));assert(binding_set(&b,"uuid:server",43,"user:TV"));
-    assert(!binding_set(&b,"uuid:server",44,"factory:13") && !binding_set(&b,"uuid:server",44,"unknown"));
+    assert(!binding_set(&b,"uuid:server",44,"factory:14") && !binding_set(&b,"uuid:server",44,"unknown"));
     {
         game_bindings crt_b={};
         assert(binding_set(&crt_b,"uuid:server",44,"factory:11") && binding_set(&crt_b,"uuid:server",45,"factory:12"));

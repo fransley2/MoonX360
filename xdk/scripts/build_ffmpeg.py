@@ -46,7 +46,7 @@ COMMON = ["/nologo", "/c"] + OPTIMIZATION + ["/Oi", "/GF", "/Gy", "/MT", "/W3", 
           "/D", "WIN32", "/D", "NDEBUG", "/D", "_WINDOWS", "/D", "_XBOX"]
 
 # Our VMX functions (xdk/ffmpeg_xbox), built into avcodec.lib.
-XBOX_DSP = os.path.join(ROOT, "ffmpeg_xbox")
+XBOX_DSP = os.path.abspath(os.environ.get("XDK_FFMPEG_XBOX_DIR", os.path.join(ROOT, "ffmpeg_xbox")))
 EXTRA_SOURCES = {"avcodec": [os.path.join(XBOX_DSP, "h264_vmx.c")]}
 VMX_AB_EXPERIMENT=os.environ.get('XDK_VMX_AB_EXPERIMENT','0')
 if VMX_AB_EXPERIMENT not in ('0','1'):raise SystemExit('XDK_VMX_AB_EXPERIMENT must be 0 or 1')
@@ -115,7 +115,10 @@ def compile_one(args):
     src, obj, flags = args
     if os.path.exists(obj) and os.path.getmtime(obj) >= os.path.getmtime(src):
         return src, 0, ""
-    base_cwd = FFMPEG if os.path.abspath(src).startswith(os.path.abspath(FFMPEG)) else ROOT
+    src_abs = os.path.abspath(src)
+    ffmpeg_abs = os.path.abspath(FFMPEG)
+    xbox_abs = os.path.abspath(XBOX_DSP)
+    base_cwd = FFMPEG if src_abs.startswith(ffmpeg_abs) else XBOX_DSP if src_abs.startswith(xbox_abs) else ROOT
     rel_src = os.path.relpath(src, base_cwd)
     r = subprocess.run([CL] + flags + [rel_src, "/Fo" + obj], env=ENV, capture_output=True, text=True,
                        errors="replace", cwd=base_cwd)
@@ -163,7 +166,14 @@ def build(name):
     sources = [os.path.normpath(os.path.join(proj_dir, s)) for s in sources_of(proj_path)]
     for src in sources + EXTRA_SOURCES.get(name, []):
         # Object names must be unique across sub-directories (e.g. two dsputil.c).
-        rel = os.path.relpath(src, FFMPEG if src.startswith(FFMPEG) else ROOT).replace("\\", "_").replace("/", "_")
+        src_abs = os.path.abspath(src)
+        if src_abs.startswith(os.path.abspath(FFMPEG)):
+            rel = os.path.relpath(src, FFMPEG)
+        elif src_abs.startswith(os.path.abspath(XBOX_DSP)):
+            rel = os.path.join("ffmpeg_xbox", os.path.relpath(src, XBOX_DSP))
+        else:
+            rel = os.path.relpath(src, ROOT)
+        rel = rel.replace("\\", "_").replace("/", "_")
         obj = os.path.join(obj_dir, os.path.splitext(rel)[0] + ".obj")
         if name=='avcodec' and os.path.basename(src)=='xb_thread.c':
             compiled=str(write_generated(src,os.path.join(OUT,'generated','xb_thread_batched.c'))) if SLICE_DISPATCH=='batched' else src

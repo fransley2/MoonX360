@@ -1,0 +1,127 @@
+diff --git a/libavcodec/h264dsp_template.c b/libavcodec/h264dsp_template.c
+index c8ac6e7..aafc8ef 100644
+--- a/libavcodec/h264dsp_template.c
++++ b/libavcodec/h264dsp_template.c
+@@ -355,13 +355,122 @@ static av_always_inline av_flatten void FUNCC(h264_loop_filter_chroma)(uint8_t *
+         }
+     }
+ }
++#if BIT_DEPTH == 8 && defined(_XBOX)
++#define EDGE_CHROMA_LOADU(p) __vor(__lvlx((p), 0), __lvrx((p), 16))
++static __forceinline void edge_chroma_core(__vector4 p1, __vector4 p0, __vector4 q0, __vector4 q1,
++                                           __vector4 tcv, __vector4 a, __vector4 b,
++                                           __vector4 *out_p0, __vector4 *out_q0)
++{
++    __vector4 z = __vzero();
++    __vector4 valid = __vand(__vcmpgtsh(tcv, z), __vcmpgtsh(a, edge_absdiff(p0, q0)));
++    __vector4 d;
++    valid = __vand(valid, __vand(__vcmpgtsh(b, edge_absdiff(p1, p0)), __vcmpgtsh(b, edge_absdiff(q1, q0))));
++    tcv = __vmaxsh(tcv, z);
++    d = __vslh(__vsubuhm(q0, p0), __vspltish(2));
++    d = edge_clip(__vsrah(__vadduhm(__vadduhm(d, __vsubuhm(p1, q1)), __vspltish(4)), __vspltish(3)), tcv);
++    *out_p0 = __vpkshus(__vadduhm(p0, __vand(valid, d)), z);
++    *out_q0 = __vpkshus(__vsubuhm(q0, __vand(valid, d)), z);
++}
++static __forceinline void edge_store8_aligned4(__vector4 v, uint8_t *dst)
++{
++    v = __vperm(v, v, __lvsr(dst, 0));
++    __stvewx(v, dst, 0);
++    __stvewx(v, dst, 4);
++}
++static __forceinline void edge_store2_chroma(__vector4 h, uint8_t *p)
++{
++    if (((UINT_PTR)p & 1) == 0) {
++        __vector4 hr = __vsldoi(h, h, 1);
++        __stvebx(hr, p - 1, 0);
++        __stvebx(hr, p, 0);
++    } else {
++        __stvebx(h, p - 1, 0);
++        __stvebx(h, p, 0);
++    }
++}
++static void edge_chroma_v8(uint8_t *pix, int stride, int alpha, int beta, const int8_t *tc)
++{
++    static const __declspec(align(16)) unsigned char rep2[16] = {0,0,1,1,2,2,3,3,0,0,1,1,2,2,3,3};
++    __declspec(align(16)) short limits[8];
++    __vector4 z = __vzero(), r_p1, r_p0, r_q0, r_q1, limv, a, b, tcv, np0, nq0;
++    if (tc[0] <= 0 && tc[1] <= 0 && tc[2] <= 0 && tc[3] <= 0)
++        return;
++    limits[0] = (short)alpha;
++    limits[1] = (short)beta;
++    r_p1 = EDGE_CHROMA_LOADU(pix - 2 * stride);
++    r_p0 = EDGE_CHROMA_LOADU(pix - stride);
++    r_q0 = EDGE_CHROMA_LOADU(pix);
++    r_q1 = EDGE_CHROMA_LOADU(pix + stride);
++    tcv = __vupkhsb(__vperm(EDGE_CHROMA_LOADU(tc), z, __lvx(rep2, 0)));
++    limv = __lvx(limits, 0);
++    a = __vsplth(limv, 0);
++    b = __vsplth(limv, 1);
++    edge_chroma_core(__vmrghb(z, r_p1), __vmrghb(z, r_p0), __vmrghb(z, r_q0), __vmrghb(z, r_q1),
++                     tcv, a, b, &np0, &nq0);
++    edge_store8_aligned4(np0, pix - stride);
++    edge_store8_aligned4(nq0, pix);
++}
++static void edge_chroma_h8(uint8_t *pix, int stride, int alpha, int beta, const int8_t *tc)
++{
++    static const __declspec(align(16)) unsigned char rep2[16] = {0,0,1,1,2,2,3,3,0,0,1,1,2,2,3,3};
++    __declspec(align(16)) short limits[8];
++    __vector4 z = __vzero(), r0, r1, r2, r3, r4, r5, r6, r7;
++    __vector4 a0, a1, a2, a3, b0, b1, c01, c23, limv, a, b, tcv, np0, nq0, pq;
++    if (tc[0] <= 0 && tc[1] <= 0 && tc[2] <= 0 && tc[3] <= 0)
++        return;
++    limits[0] = (short)alpha;
++    limits[1] = (short)beta;
++    r0 = EDGE_CHROMA_LOADU(pix - 2);
++    r1 = EDGE_CHROMA_LOADU(pix + stride - 2);
++    r2 = EDGE_CHROMA_LOADU(pix + 2 * stride - 2);
++    r3 = EDGE_CHROMA_LOADU(pix + 3 * stride - 2);
++    r4 = EDGE_CHROMA_LOADU(pix + 4 * stride - 2);
++    r5 = EDGE_CHROMA_LOADU(pix + 5 * stride - 2);
++    r6 = EDGE_CHROMA_LOADU(pix + 6 * stride - 2);
++    r7 = EDGE_CHROMA_LOADU(pix + 7 * stride - 2);
++    tcv = __vupkhsb(__vperm(EDGE_CHROMA_LOADU(tc), z, __lvx(rep2, 0)));
++    limv = __lvx(limits, 0);
++    a = __vsplth(limv, 0);
++    b = __vsplth(limv, 1);
++    a0 = __vmrghb(r0, r1);
++    a1 = __vmrghb(r2, r3);
++    a2 = __vmrghb(r4, r5);
++    a3 = __vmrghb(r6, r7);
++    b0 = __vmrghh(a0, a1);
++    b1 = __vmrghh(a2, a3);
++    c01 = __vmrghw(b0, b1);
++    c23 = __vmrglw(b0, b1);
++    edge_chroma_core(__vmrghb(z, c01), __vmrglb(z, c01), __vmrghb(z, c23), __vmrglb(z, c23),
++                     tcv, a, b, &np0, &nq0);
++    pq = __vmrghb(np0, nq0);
++    edge_store2_chroma(__vsplth(pq, 0), pix);
++    edge_store2_chroma(__vsplth(pq, 1), pix + stride);
++    edge_store2_chroma(__vsplth(pq, 2), pix + 2 * stride);
++    edge_store2_chroma(__vsplth(pq, 3), pix + 3 * stride);
++    edge_store2_chroma(__vsplth(pq, 4), pix + 4 * stride);
++    edge_store2_chroma(__vsplth(pq, 5), pix + 5 * stride);
++    edge_store2_chroma(__vsplth(pq, 6), pix + 6 * stride);
++    edge_store2_chroma(__vsplth(pq, 7), pix + 7 * stride);
++}
++#undef EDGE_CHROMA_LOADU
++#endif
+ static void FUNCC(h264_v_loop_filter_chroma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {
++#if BIT_DEPTH == 8 && defined(_XBOX)
++    if ((((UINT_PTR)pix | stride) & 3) == 0) {
++        edge_chroma_v8(pix, stride, alpha, beta, tc0);
++        return;
++    }
++#endif
+     FUNCC(h264_loop_filter_chroma)(pix, stride, sizeof(pixel), 2, alpha, beta, tc0);
+ }
+ static void FUNCC(h264_h_loop_filter_chroma)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {
++#if BIT_DEPTH == 8 && defined(_XBOX)
++    edge_chroma_h8(pix, stride, alpha, beta, tc0);
++#else
+     FUNCC(h264_loop_filter_chroma)(pix, sizeof(pixel), stride, 2, alpha, beta, tc0);
++#endif
+ }
+ static void FUNCC(h264_h_loop_filter_chroma_mbaff)(uint8_t *pix, int stride, int alpha, int beta, int8_t *tc0)
+ {

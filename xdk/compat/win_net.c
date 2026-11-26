@@ -142,10 +142,30 @@ int WSAAPI xdk_setsockopt(SOCKET s, int level, int optname, const char *optval, 
     return setsockopt(s, level, optname, optval, optlen);
 }
 
+#ifndef LOW_LATENCY_INPUT
+#define LOW_LATENCY_INPUT 0
+#endif
+#ifndef XDK_INPUT_HW_THREAD
+#define XDK_INPUT_HW_THREAD 5
+#endif
+#ifndef XDK_VIDEO_RECV_HW_THREAD
+#define XDK_VIDEO_RECV_HW_THREAD 5
+#endif
+
 void xdk_configure_moonlight_thread(const char *name)
 {
     /* Video uses recvfrom(), not recv(). Never infer thread identity from a socket. */
-    if (xdk_video_receiver_name(name))
+    if (xdk_video_receiver_name(name)) {
+#if defined(_XBOX)
+        XSetThreadProcessor(GetCurrentThread(), XDK_VIDEO_RECV_HW_THREAD);
+#endif
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+#if defined(_XBOX) && LOW_LATENCY_INPUT
+    else if (name && strcmp(name, "InputSend") == 0) {
+        XSetThreadProcessor(GetCurrentThread(), XDK_INPUT_HW_THREAD);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    }
+#endif
     xdk_audit_thread(name);
 }

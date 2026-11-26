@@ -1,5 +1,6 @@
 #include "../src/wake.h"
 #include "../src/host_compat.h"
+#include "../src/crt_resolutions.h"
 #include <assert.h>
 static void cached_video_invalidate_history(){}
 static void configure_smoothing_history(bool,int){}
@@ -87,6 +88,7 @@ static unsigned stream_smooth(unsigned,unsigned n){return n;}
 static bool gfx_launch_pending(){return true;}
 static int cover_heartbeats;
 static void gfx_launch_idle(D3DDevice*){assert(owned && !guide);cover_heartbeats++;}
+static void apply_frame_pacing_present_interval(void){}
 /* RENDER_PUMP */
 static void test(){
     running=true;render_main(NULL);
@@ -114,6 +116,7 @@ static void free_video_buffers(){assert(joined);freed=true;}
 static bool cached_video_init(int w,int h){assert(joined&&freed&&w==vid_w&&h==vid_h);return cached_ok;}
 static bool create_legacy_video(){assert(joined&&freed);return legacy_ok;}
 static void video_start(){assert(joined&&freed);joined=false;freed=false;starts++;streaming_start_us=999;streaming_end_us=0;if(fail_thread)stream_error=VIDEO_STREAM_RESOURCE_ERROR;}
+static struct { bool valid; } present_geom;
 /* RESIZE */
 static void test(){
     cap_buf=(unsigned char*)malloc(16);cap_len=16;cap_frames=1;
@@ -126,6 +129,9 @@ static void test(){
     stream_error=0;assert(!resize_video(0,720)&&stops==2);
     stream_error=0;legacy_ok=false;assert(!resize_video(1280,720));assert(joined&&freed&&stream_error==VIDEO_STREAM_RESOURCE_ERROR&&active_pipeline==PIPE_DISABLED);
     stream_error=0;legacy_ok=true;fail_thread=true;assert(!resize_video(1280,720)&&stream_error==VIDEO_STREAM_RESOURCE_ERROR);
+    stream_error=0;fail_thread=false;cached_ok=true;
+    assert(resize_video(2560,240) && active_pipeline==PIPE_CACHED);
+    assert(vid_w==2560 && vid_h==240 && chroma_w==1280 && chroma_h==120);
 }
 }
 

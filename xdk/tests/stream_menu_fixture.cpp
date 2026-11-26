@@ -41,6 +41,7 @@ static void cv_rrect_outline(canvas_t *c,float x,float y,float w,float h,float,f
 static int font_text_width(int,float,const char *s){return s?(int)strlen(s)*8:0;}
 static int font_draw(canvas_t *c,int,float,int,int y,uint32_t,const char *s){assert(c->px && y>0 && y<c->h && s);return 0;}
 static void font_draw_fit(canvas_t *c,int,float,int x,int y,int width,uint32_t,const char *s){assert(c->px && x>=0 && y>0 && y<c->h && x+width<=c->w && s);}
+static bool ui_button(canvas_t *c,const char *s,int x,int y,int w,int h){assert(c->px && s && x>=0 && y>=0 && x+w<=c->w && y+h<=c->h);return false;}
 static int font_draw_wrapped(canvas_t *c,int,float,int x,int y,int width,float,uint32_t,const char *s){assert(c->px && x>=0 && y>0 && y<584 && x+width<=c->w && s);return 1;}
 struct D3DTexture {DWORD fence;int w,h;D3DTexture(int width,int height):fence(0),w(width),h(height){}void Release(){assert(!gfx_fence_pending(fence));releases++;delete this;}};
 struct D3DDevice {

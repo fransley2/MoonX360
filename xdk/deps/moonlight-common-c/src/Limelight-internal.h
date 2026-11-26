@@ -87,7 +87,7 @@ extern uint32_t EncryptionFeaturesEnabled;
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
 #define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
 
-#define UDP_RECV_POLL_TIMEOUT_MS 100
+#define UDP_RECV_POLL_TIMEOUT_MS 25
 
 // At this value or above, we will request high quality audio unless CAPABILITY_SLOW_OPUS_DECODER
 // is set on the audio renderer.

@@ -24,7 +24,7 @@ class BuildTests(unittest.TestCase):
             header = Path(folder) / "input_session.h"
             src.write_text("source")
             header.write_text("header")
-            def compiler(cmd):
+            def compiler(cmd, **_kwargs):
                 obj.write_bytes(b"object")
                 return 0, ""
             with patch.object(build.glob, "glob", return_value=[str(header)]), \
@@ -56,7 +56,7 @@ class BuildTests(unittest.TestCase):
             src.write_text("source")
             job = (str(src), str(obj), ["/O2"])
 
-            def compiler(cmd):
+            def compiler(cmd, **_kwargs):
                 obj.write_bytes(b"object")
                 return 0, ""
 

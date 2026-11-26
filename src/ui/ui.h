@@ -52,7 +52,10 @@ struct ui_stat {
 };
 
 bool ui_init(int width, int height);
-bool ui_init_layout(int width, int height, int layout_4_3);
+bool ui_init_layout(int width, int height, int layout);
+#ifdef _XBOX
+void ui_configure_layout(int layout,int source_w,int source_h);
+#endif
 canvas_t *ui_canvas(void);
 /* Size that box art should be scaled to before passing it to ui_draw_apps. */
 void ui_art_size(int *w, int *h);
@@ -61,6 +64,10 @@ int ui_apps_columns(void);
 int ui_apps_rows(void);
 
 void ui_draw_splash(const char *status, uint32_t t_ms);
+void ui_splash_restart(void);
+/* ms since the splash first appeared (0 if never shown); one continuous clock from boot */
+uint32_t ui_splash_elapsed(uint32_t now);
+void ui_draw_splash_exit(float progress);
 void ui_draw_main(const struct ui_host *host, const struct ui_menu_item *items, int n, int sel,
                   const char *console_ip, uint32_t t_ms);
 void ui_draw_apps(const struct ui_host *host, const struct ui_app *apps, int n, int sel, uint32_t t_ms);
@@ -123,6 +130,10 @@ int ui_dashboard_move_tiles(int selected,int dx,int dy,int count,int recents);
 
 void ui_draw_app_details(const struct ui_host*,const struct ui_app*,const char *profile,const char *coverage,int selected);
 void ui_app_details_aurora(bool enabled,bool exists);
+void ui_app_details_meta(const char *resolution,const char *last_played);
+void ui_app_details_enter(const char *app_name,uint32_t now_ms);
+bool ui_app_details_tick(uint32_t now_ms);
+void ui_app_details_finish(void);
 void ui_draw_performance(const char *grade,const char *mode,float shown,const char *decode,
     const char *latency,const char *cause,const char *note,bool can_apply);
 
@@ -158,6 +169,11 @@ void ui_toast_clear(void);
 
 /* Reusable safe-area clamped context menu anchored near the focused item. */
 void ui_draw_context_menu(const char *title, const struct ui_setting *items, int count, int selected, float anchor_x, float anchor_y);
+
+struct ui_hint { const char *button; const char *label; };
+void ui_surface_begin(const char *section, const char *leaf);
+void ui_surface_end(const struct ui_hint *hints, int count, const char *right);
+void ui_surface_metrics(float *out_w, float *out_h, float *out_scale, uint32_t *out_accent, uint32_t *out_sel);
 
 /* MoonX360 Smart Virtual Keyboard (16:9 & 4:3 CRT, Design System integrated). */
 struct sk_state;

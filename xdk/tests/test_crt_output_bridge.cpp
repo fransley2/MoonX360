@@ -7,6 +7,7 @@
 #include <string>
 #include "../../src/config.h"
 #include "../../src/crt_output.h"
+#include "../../src/crt_resolutions.h"
 #include "../../src/video_viewport.h"
 #include "../../src/product_features.h"
 
@@ -124,8 +125,10 @@ static void test_consolidated_profiles_and_v6_persistence(void) {
     int visible[CONFIG_PROFILE_COUNT];
     int vcount = config_visible_factory_profiles(visible, CONFIG_PROFILE_COUNT);
     assert(vcount == 8);
+    assert(visible[0] == CONFIG_PROFILE_SMOOTH && visible[1] == CONFIG_PROFILE_PERFORMANCE);
     assert(visible[6] == CONFIG_PROFILE_CRT_DISPLAY && visible[7] == CONFIG_PROFILE_CRT_RETRO_240P);
     for (int i = 0; i < vcount; i++) assert(!config_profile_is_legacy(visible[i]));
+    assert(config_profile_is_legacy(CONFIG_PROFILE_LOW_LATENCY) && !config_profile_is_visible(CONFIG_PROFILE_LOW_LATENCY) && !config_is_crt_factory(CONFIG_PROFILE_LOW_LATENCY));
     for (int id = CONFIG_PROFILE_CRT; id <= CONFIG_PROFILE_CRT_QUALITY; id++) {
         assert(config_profile_is_legacy(id) && !config_profile_is_visible(id));
     }
@@ -175,12 +178,103 @@ static void test_consolidated_profiles_and_v6_persistence(void) {
     assert(applied.crt_scaling == CRT_SCALE_SHARP_BILINEAR && applied.crt_aspect == CRT_ASPECT_ORIGINAL);
     assert(applied.crt_pos_x == -12 && applied.crt_pos_y == 7);
     assert(config_profiles_selected(&up_loaded, &applied) == 0);
+
+    /* CRT Retro 2.0 viewport: integer scaling, 5 aspect modes, size H/V, dedicated overscan. */
+    struct crt_viewport_params vp;
+    memset(&vp, 0, sizeof(vp));
+    vp.crt_aspect = CRT_ASPECT_4_3;
+    vp.crt_integer_scale = 1;
+    vp.retro_240p_bb = 1;
+    vp.crt_size_x = 100;
+    vp.crt_size_y = 100;
+    int l, t, r, b;
+    /* 320x240 -> 640x240 non-square physical 4:3: exact 2x1 integer (640x240) */
+    video_crt_fit_rect_v2(320, 240, 640, 240, &vp, &l, &t, &r, &b);
+    assert(l == 0 && t == 0 && r == 640 && b == 240);
+    /* 256x240 -> 640x240: exact 2x1 integer centered (512x240, left=64, right=576) */
+    video_crt_fit_rect_v2(256, 240, 640, 240, &vp, &l, &t, &r, &b);
+    assert(l == 64 && t == 0 && r == 576 && b == 240);
+    /* 320x240 -> 640x480: exact 2x2 integer (640x480) */
+    vp.retro_240p_bb = 0;
+    video_crt_fit_rect_v2(320, 240, 640, 480, &vp, &l, &t, &r, &b);
+    assert(l == 0 && t == 0 && r == 640 && b == 480);
+    /* 640x240 (4:3 DAR) -> 640x480: exact 1x2 integer (640x480) */
+    video_crt_fit_rect_v2(640, 240, 640, 480, &vp, &l, &t, &r, &b);
+    assert(l == 0 && t == 0 && r == 640 && b == 480);
+    /* 16:9, Stretch, Custom + independent size H/V + game overscan */
+    vp.crt_integer_scale = 0;
+    vp.crt_aspect = CRT_ASPECT_16_9;
+    video_crt_fit_rect_v2(1280, 720, 640, 480, &vp, &l, &t, &r, &b);
+    assert(l == 0 && r == 640 && t == 60 && b == 420);
+    vp.crt_aspect = CRT_ASPECT_STRETCH;
+    video_crt_fit_rect_v2(640, 480, 1280, 720, &vp, &l, &t, &r, &b);
+    assert(l == 0 && t == 0 && r == 1280 && b == 720);
+    vp.crt_aspect = CRT_ASPECT_CUSTOM;
+    vp.crt_size_x = 90; vp.crt_size_y = 110; vp.crt_overscan = 5;
+    video_crt_fit_rect_v2(640, 480, 640, 480, &vp, &l, &t, &r, &b);
+    assert((r - l) == 518 && (b - t) == 475);
+
+    /* CRT Retro 2.0 Presets & v8 persistence */
+    config_apply_crt_preset(&c, CRT_PRESET_INTEGER_SHARP);
+    assert(config_match_crt_preset(&c) == CRT_PRESET_INTEGER_SHARP);
+    assert(c.crt_integer_scale == 1 && c.crt_scaling == CRT_SCALE_POINT && c.vsync);
+    c.crt_size_x = 94; c.crt_size_y = 98; c.crt_overscan = 3;
+    assert(config_match_crt_preset(&c) == CRT_PRESET_CUSTOM);
+    assert(config_save(&c));
+    config_load(&loaded);
+    assert(loaded.crt_integer_scale == 1 && loaded.crt_size_x == 94 && loaded.crt_size_y == 98 && loaded.crt_overscan == 3);
+
+    /* Community resolution model checks */
+    assert(crt_stream_resolution_supported(256, 240));
+    assert(crt_stream_resolution_supported(320, 240));
+    assert(crt_stream_resolution_supported(400, 240));
+    assert(crt_stream_resolution_supported(432, 240));
+    assert(crt_stream_resolution_supported(426, 240));
+    assert(crt_stream_resolution_supported(800, 600));
+    assert(crt_stream_resolution_supported(1024, 768));
+    assert(crt_stream_resolution_supported(1280, 240));
+    assert(crt_stream_resolution_supported(1920, 240));
+    assert(crt_stream_resolution_supported(2560, 240));
+    assert(!crt_stream_resolution_supported(2560, 480));
+    int num,den;crt_source_dar(2560,240,&num,&den);
+    assert(num==4 && den==3);
+
+    /* Custom 320x240 and experimental 2560x240 must NOT activate t240.xex physical 240p switch. */
+    struct config custom240;
+    config_defaults(&custom240);
+    config_customize_stream(&custom240);
+    custom240.width = 2560; custom240.height = 240;
+    assert(!config_is_crt_retro(&custom240));
+    custom240.width = 320; custom240.height = 240;
+    assert(!config_is_crt_retro(&custom240));
+
+    /* Player presentation modes: Fit to screen, Pixel-to-pixel (1:1), Crop to 4:3 */
+    struct video_present_rect pr;
+    memset(&vp, 0, sizeof(vp));
+    vp.crt_size_x = 100; vp.crt_size_y = 100;
+    vp.crt_aspect = CRT_ASPECT_FIT;
+    video_compute_present_rect(1280, 720, 1280, 720, &vp, &pr);
+    assert(pr.src_left == 0 && pr.src_right == 1280 && pr.dst_left == 0 && pr.dst_right == 1280);
+    video_compute_present_rect(800, 600, 1280, 720, &vp, &pr);
+    assert(pr.src_left == 0 && pr.src_right == 800 && pr.dst_left == 160 && pr.dst_right == 1120 && pr.dst_top == 0 && pr.dst_bottom == 720);
+    vp.crt_aspect = CRT_ASPECT_CROP_4_3;
+    video_compute_present_rect(1280, 720, 640, 480, &vp, &pr);
+    assert(pr.src_left == 160 && pr.src_top == 0 && pr.src_right == 1120 && pr.src_bottom == 720);
+    assert(pr.dst_left == 0 && pr.dst_top == 0 && pr.dst_right == 640 && pr.dst_bottom == 480);
+    video_compute_present_rect(800, 600, 640, 480, &vp, &pr);
+    assert(pr.src_left == 0 && pr.src_right == 800 && pr.dst_left == 0 && pr.dst_right == 640);
+    vp.crt_aspect = CRT_ASPECT_PIXEL_1_1;
+    video_compute_present_rect(320, 240, 640, 480, &vp, &pr);
+    assert(pr.src_left == 0 && pr.src_right == 320 && pr.dst_left == 160 && pr.dst_top == 120 && pr.dst_right == 480 && pr.dst_bottom == 360);
+    vp.crt_aspect = CRT_ASPECT_FIT;
+    video_compute_present_rect(2560, 240, 640, 480, &vp, &pr);
+    assert(pr.src_left == 0 && pr.src_right == 2560 && pr.dst_left == 0 && pr.dst_top == 0 && pr.dst_right == 640 && pr.dst_bottom == 480);
 }
 
 int main(void) {
     test_beacon_and_evaluation();
     test_crt_viewport_geometry();
     test_consolidated_profiles_and_v6_persistence();
-    puts("PASS: S240 v3 validation, 240p state guards, non-stretching CRT viewport geometry, 2 visible CRT profiles + hidden legacy IDs, 640x240 & v6 persistence.");
+    puts("PASS: S240 v3 validation, 240p state guards, non-stretching CRT viewport geometry, CRT 2.0 integer/aspect/overscan/presets, 2 visible CRT profiles + hidden legacy IDs, 240p resolutions & v8 persistence.");
     return 0;
 }

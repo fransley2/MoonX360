@@ -4,6 +4,18 @@
 #include <stdint.h>
 
 struct AVCodecContext;
+
+enum {
+    FF_H264_DEEP_MC = 0,
+    FF_H264_DEEP_IDCT = 1,
+    FF_H264_DEEP_INTRA = 2,
+    FF_H264_DEEP_LF_CACHE = 3,
+    FF_H264_DEEP_LF_FILTER = 4,
+    FF_H264_DEEP_WAVEFRONT_WAIT = 5,
+    FF_H264_DEEP_DISPATCH_SYNC = 6,
+    FF_H264_DEEP_WORKER_SPAN = 7
+};
+
 typedef struct FFH264ParallelDiagnostic {
     uint32_t slices;
     uint32_t raw_idc[3];          /* disable_deblocking_filter_idc, before FFmpeg remap */
@@ -18,7 +30,7 @@ typedef struct FFH264ParallelDiagnostic {
     uint32_t max_dispatch_contexts;
     uint32_t max_worker_participants;
     uint32_t max_concurrent_workers;
-    /* Xenon QPC ticks, populated only by the isolated stage-profile build. */
+    /* Xenon timebase/QPC ticks, populated only by the isolated stage-profile build. */
     uint64_t slice_ticks;
     uint64_t loopfilter_ticks;
     uint64_t entropy_sample_ticks;
@@ -26,10 +38,10 @@ typedef struct FFH264ParallelDiagnostic {
     uint32_t loopfilter_calls;
     uint32_t entropy_samples;
     uint64_t reconstruct_wall, filter_wall;
-    uint64_t deep[8]; /* worker CPU, sampled MC/IDCT, wait, cache and directional filtering */
-#if XDK_R47D_DISPATCH_PROFILE
-    uint64_t slice_begin[8], slice_end[8];
-    uint32_t slice_cpu[8], dispatches_profiled;
+    uint64_t deep[8]; /* 0..5 worker CPU sums (MC, IDCT, intra, LF cache, LF filter, wavefront wait); 6..7 coordinator dispatch sync & worker span */
+#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+    uint64_t slice_begin[16], slice_end[16];
+    uint32_t slice_cpu[16], dispatches_profiled, slices_profiled;
 #endif
 } FFH264ParallelDiagnostic;
 
@@ -40,6 +52,9 @@ int ff_h264_xbox_parallel_diagnostic(const struct AVCodecContext *avctx,
                                      FFH264ParallelDiagnostic *out);
 void ff_xbox_slice_last_dispatch(const struct AVCodecContext *avctx,
                                  unsigned *participants, unsigned *concurrent);
+#ifdef XDK_H264_STAGE_PROFILE
+uint64_t ff_xbox_slice_last_dispatch_sync_ticks(const struct AVCodecContext *avctx);
+#endif
 #ifdef __cplusplus
 }
 #endif

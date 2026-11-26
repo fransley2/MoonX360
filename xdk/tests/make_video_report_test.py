@@ -13,6 +13,7 @@ fixture = r'''
 #include <string.h>
 #include "../src/video.h"
 #include "../src/config.h"
+#include "../src/frame_pacing.h"
 #include "../src/video_gpu_policy.h"
 #include "../src/stream_metrics.h"
 #include "../src/decode_deadline.h"
@@ -47,6 +48,8 @@ static uint32_t last_complete_frames,last_video_packets,last_video_bytes,last_la
 static uint32_t last_data_packets,last_fec_packets;
 static uint32_t last_present_serial,present_duplicates;
 static uint64_t last_present_start_us,last_present_return_us;
+static uint64_t first_callback_us,first_decoded_us,last_decoded_us;
+static uint32_t callback_gap_lt20,callback_gap_20_35,callback_gap_35_60,callback_gap_gt60,callback_gap_max_us,present_blocking_gt4ms,present_iv_count,present_iv_gt25ms,present_iv_gt33_3ms,present_geom_recalcs;
 static unsigned writes;
 static char saved[8192];
 static const char *storage_dir(){return "test";}
@@ -58,6 +61,9 @@ static void gfx_display_size(int *w,int *h){*w=1920;*h=1080;}
 static void gfx_backbuffer_size(int *w,int *h){*w=1280;*h=720;}
 static float gfx_display_hz(){return 60;}
 static bool gfx_display_interlaced(){return false;}
+static bool gfx_display_widescreen(){return true;}
+static int gfx_layout_width(){return 1280;}
+enum {UI_LOGICAL_HEIGHT=720};
 static int current_pipeline(){return 1;}
 static const char *pipeline_name(int){return "CPU_CACHED_TEXTURE";}
 static uint64_t cached_video_memory(){return 5000000;}

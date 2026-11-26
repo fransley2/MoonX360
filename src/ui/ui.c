@@ -9,6 +9,7 @@
 #include "brand.h"
 #include "layout.h"
 #include "../config.h"
+#include "../ui_layout_geometry.h"
 #include "../input.h"
 #include "../settings_layout.h"
 
@@ -61,7 +62,7 @@ static uint32_t theme_icon[128*128];
 static canvas_t cv;     /* the frame being drawn */
 static canvas_t bg;     /* pre-rendered background */
 static float s;         /* design px -> screen px */
-static float W, H;      /* 1280x720 wide or 960x720 compact design space */
+static float W, H;      /* dimensions in logical UI units */
 static int exit_shortcut;
 static canvas_t main_cache;
 static bool main_cache_valid,main_cache_gpu;
@@ -185,32 +186,40 @@ void ui_set_appearance(int background,int accent)
 }
 
 static void reset_scroll(void);
-bool ui_init_layout(int width, int height, int layout_4_3)
+bool ui_init_layout(int width, int height, int layout)
 {
+    canvas_t next_cv={0},next_bg={0};
+    int design_w,design_h;
+    if(width<=0 || height<=0 || !font_init() || !cv_init(&next_cv,width,height))return false;
+    if(!ui_draw_enabled() && !cv_init(&next_bg,width,height)) {
+        cv_free(&next_cv);
+        return false;
+    }
+
     reset_scroll();
+    ui_focus_finish();
     ui_drop_main_cache();
-    if (!font_init())
-        return false;
-    if(cv.px)cv_free(&cv);
-    if(bg.px)cv_free(&bg);
-    if (!cv_init(&cv, width, height))
-        return false;
-    s = height / 720.0f;
-    if(width/s<(layout_4_3?960.0f:1280.0f))s=width/(layout_4_3?960.0f:1280.0f);
-    H = height / s;
-    W = width / s;
-    if(!ui_draw_enabled()) {if(!cv_init(&bg,width,height))return false;draw_background();}
+    cv_free(&cv);
+    cv_free(&bg);
+    cv=next_cv;
+    bg=next_bg;
+    ui_layout_canvas_size(layout,&design_w,&design_h);
+    s=height/(float)design_h;
+    if(width/s<design_w)s=width/(float)design_w;
+    H=height/s;
+    W=width/s;
+    if(bg.px)draw_background();
     return true;
 }
-bool ui_init(int width,int height){return ui_init_layout(width,height,0);}
+bool ui_init(int width,int height){return ui_init_layout(width,height,UI_LAYOUT_16_9);}
 
 canvas_t *ui_canvas(void)
 {
     return &cv;
 }
 
-#define TILE_W 150
-#define TILE_H 225
+#define TILE_W 300
+#define TILE_H 450
 
 /* Last selected art rectangle, also available for placeholders/software UI. */
 static char launch_source_name[64];
@@ -315,11 +324,16 @@ static const char *state_text(int state)
 
 struct icon_ctx { float cx, cy, k; };
 
-static void moon_logo(float cx, float cy, float r)
+static void moon_logo_alpha(float cx, float cy, float r, unsigned alpha)
 {
     /* Shared 128px brand bitmap: one existing image command, no runtime decoder. */
     ui_picture_region(&cv,theme_accent_id?theme_icon:moonx360_icon,128,128,0,0,128,128,
-                      S(cx-r),S(cy-r),S(r*2),S(r*2),255,theme_generation);
+                      S(cx-r),S(cy-r),S(r*2),S(r*2),alpha,theme_generation);
+}
+
+static void moon_logo(float cx, float cy, float r)
+{
+    moon_logo_alpha(cx, cy, r, 255);
 }
 
 static float gear_sdf(float x, float y, const void *p)
@@ -405,7 +419,7 @@ static void icon(int which, float cx, float cy, float k, uint32_t color)
     }
 }
 
-static void spinner(float cx, float cy, float r, uint32_t t_ms)
+static void spinner_alpha(float cx, float cy, float r, uint32_t t_ms, unsigned alpha_scale)
 {
     /* Unified smooth Xbox-style spinning ring (900ms period, 225 deg sweeping arc).
      * 24 fixed-geometry segments around the ring with smooth per-segment color/alpha
@@ -415,6 +429,7 @@ static void spinner(float cx, float cy, float r, uint32_t t_ms)
     float thick = r * 0.22f;
     if (thick < 2.2f) thick = 2.2f;
     float phase = (float)(t_ms % 900u) / 900.0f;
+    if (!alpha_scale) return;
 
     for (int i = 0; i < steps; i++) {
         float a0 = (float)i / (float)steps * two_pi - 1.5707963f;
@@ -426,12 +441,18 @@ static void spinner(float cx, float cy, float r, uint32_t t_ms)
         if (tail < 0.0f) tail = 0.0f;
         float fade = tail * tail;
         uint32_t rgb = cv_mix(C_BORDER, C_ACCENT, (unsigned)(fade * 255.0f));
-        unsigned alpha = (unsigned)(105.0f + 150.0f * fade);
+        unsigned alpha = (unsigned)((105.0f + 150.0f * fade) * ((float)alpha_scale / 255.0f));
+        if (!alpha) continue;
         cv_line(&cv,
                 S(cx + cosf(a0) * r), S(cy + sinf(a0) * r),
                 S(cx + cosf(a1) * r), S(cy + sinf(a1) * r),
                 S(thick), WITH_ALPHA(rgb, alpha));
     }
+}
+
+static void spinner(float cx, float cy, float r, uint32_t t_ms)
+{
+    spinner_alpha(cx, cy, r, t_ms, 255u);
 }
 
 /* ------------------------------------------------------------ chrome */
@@ -443,6 +464,11 @@ static void keycap(float x, float baseline, const char *button, float *out_w)
     if(!strcmp(button,"LB/RB") || !strcmp(button,"LB / RB")) {
         ui_button(&cv,"LB",SI(x),SI(baseline-22),SI(35),SI(28));
         ui_button(&cv,"RB",SI(x+38),SI(baseline-22),SI(35),SI(28));
+        *out_w=73.0f;return;
+    }
+    if(!strcmp(button,"LT/RT") || !strcmp(button,"LT / RT")) {
+        ui_button(&cv,"LT",SI(x),SI(baseline-22),SI(35),SI(28));
+        ui_button(&cv,"RT",SI(x+38),SI(baseline-22),SI(35),SI(28));
         *out_w=73.0f;return;
     }
     if(!strcmp(button,"X Y")) {
@@ -548,19 +574,35 @@ static void draw_toast(void)
 static void footer(const struct hint *hints, int n, const char *right)
 {
     float x = UI_SAFE_X, y = H - 27;
+    float right_edge = W - UI_SAFE_X;
+    float right_reserve = right ? text_w(FONT_REGULAR, 15, right) + 24.0f : 0.0f;
+    float max_x = right_edge - right_reserve;
+    float total_w = 0.0f, gap = 28.0f, font_sz = 17.0f;
     int i;
+
+    for (i = 0; i < n; i++) {
+        const char *lbl = ui_translate(hints[i].label);
+        total_w += 26.0f + strlen(hints[i].button) * 8.0f + 9.0f + text_w(FONT_REGULAR, font_sz, lbl) + (i + 1 < n ? gap : 0.0f);
+    }
+    if (UI_SAFE_X + total_w > max_x && n > 1) {
+        gap = 16.0f;
+        font_sz = 15.0f;
+    }
 
     cv_fill(&cv,0,SI(H-56),cv.w,SI(56),DS_BG_FOOTER);
     cv_fill(&cv, 0, SI(H - 56), cv.w, 1, WITH_ALPHA(C_BORDER, 140));
     for (i = 0; i < n; i++) {
+        const char *lbl = ui_translate(hints[i].label);
+        float lw = text_w(FONT_REGULAR, font_sz, lbl);
         float kw;
+        if (i > 0 && x + 40.0f + lw > max_x) break;
         keycap(x, y, hints[i].button, &kw);
         x += kw + 9;
-        text(FONT_REGULAR, 17, x, y, C_TEXT_DIM, ui_translate(hints[i].label));
-        x += text_w(FONT_REGULAR, 17, ui_translate(hints[i].label)) + 28;
+        text(FONT_REGULAR, font_sz, x, y, C_TEXT_DIM, lbl);
+        x += lw + gap;
     }
     if (right)
-        text_right(FONT_REGULAR, 15, W - 64, y, C_TEXT_FAINT, right);
+        text_right(FONT_REGULAR, 15, W - UI_SAFE_X, y, C_TEXT_FAINT, right);
     draw_toast();
 }
 
@@ -603,30 +645,39 @@ static void begin_frame(void)
     draw_wallpaper();
 }
 
+static float top_nav_offset(void){return W<960.0f?40.0f:0.0f;}
+
 static void top_nav(int focus,int active)
 {
     static const char *names[]={"Home","Library","Computers","Settings"};
-    rrect(W/2-214,48,428,50,8,ARGB(145,12,16,20));
-    cv_rrect_outline(&cv,S(W/2-214),S(48),S(428),S(50),S(8),S(1),WITH_ALPHA(C_BORDER,90));
+    float dy=top_nav_offset();
+    rrect(W/2-214,48+dy,428,50,8,ARGB(145,12,16,20));
+    cv_rrect_outline(&cv,S(W/2-214),S(48+dy),S(428),S(50),S(8),S(1),WITH_ALPHA(C_BORDER,90));
     for(int i=0;i<4;i++) {
         float cx=W/2-169.5f+(float)i*113;
         uint32_t color=i==focus || i==active?C_TEXT:C_TEXT_DIM;
-        if(i==focus)rrect(cx-24,52,48,42,6,ARGB(180,32,44,40));
-        else if(i==active)rrect(cx-24,52,48,42,6,ARGB(85,255,255,255));
-        if(i==0)moon_logo(cx,73,12);
-        else if(i==1){for(int j=0;j<3;j++)rrect(cx-11,63.0f+(float)j*8.0f,22,3,0,color);}
-        else if(i==2)icon(ICON_MONITOR,cx,73,14,color);
-        else icon(ICON_GEAR,cx,73,14,color);
-        if(i==focus)text_center(FONT_BOLD,14,cx,116,C_TEXT,ui_translate(names[i]));
-        else if(i==active)cv_fill(&cv,SI(cx-10),SI(101),SI(20),SI(2),C_ACCENT);
+        if(i==focus)rrect(cx-24,52+dy,48,42,6,ARGB(180,32,44,40));
+        else if(i==active)rrect(cx-24,52+dy,48,42,6,ARGB(85,255,255,255));
+        if(i==0)moon_logo(cx,73+dy,12);
+        else if(i==1){for(int j=0;j<3;j++)rrect(cx-11,63.0f+dy+(float)j*8.0f,22,3,0,color);}
+        else if(i==2)icon(ICON_MONITOR,cx,73+dy,14,color);
+        else icon(ICON_GEAR,cx,73+dy,14,color);
+        if(i==focus)text_center(FONT_BOLD,14,cx,116+dy,C_TEXT,ui_translate(names[i]));
+        else if(i==active)cv_fill(&cv,SI(cx-10),SI(101+dy),SI(20),SI(2),C_ACCENT);
     }
+}
+static void nav_shoulders(void)
+{
+    bool narrow=top_nav_offset()>0;
+    float y=narrow?101.0f:97.0f;
+    ui_button(&cv,"LB",SI(narrow?UI_SAFE_X:W-140),SI(y),SI(35),SI(26));
+    ui_button(&cv,"RB",SI(W-101),SI(y),SI(35),SI(26));
 }
 static void tabs(void)
 {
     /* All native screens use Home's compact navigation and one content area. */
     top_nav(-1,active_page==UI_LIBRARY?1:active_page==UI_HOME?2:3);
-    ui_button(&cv,"LB",SI(W-140),SI(97),SI(35),SI(26));
-    ui_button(&cv,"RB",SI(W-101),SI(97),SI(35),SI(26));
+    nav_shoulders();
 }
 
 static void breadcrumb(const char *section,const char *leaf)
@@ -658,15 +709,291 @@ static void dialog(float w, float h, float *x, float *y)
 
 /* ------------------------------------------------------------ screens */
 
+/* ------------------------------------------------------------ splash */
+
+static bool     splash_started;
+static uint32_t splash_start_ms, splash_last_ms;
+static char     splash_cur_status[128], splash_prev_status[128];
+static uint32_t splash_status_ms;
+
+void ui_splash_restart(void)
+{
+    splash_started = false;
+    splash_cur_status[0] = '\0';
+    splash_prev_status[0] = '\0';
+    splash_status_ms = 0;
+}
+
+uint32_t ui_splash_elapsed(uint32_t now)
+{
+    return splash_started ? (uint32_t)(now - splash_start_ms) : 0u;
+}
+
+static float splash_clamp01(float v)
+{
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+/* progresso 0..1 de um trecho [delay, delay+dur] da linha do tempo */
+static float splash_seg(uint32_t elapsed, uint32_t delay, uint32_t dur)
+{
+    if (elapsed <= delay) return 0.0f;
+    return splash_clamp01((float)(elapsed - delay) / (float)dur);
+}
+
+static float splash_out_cubic(float t)
+{
+    float u = 1.0f - t;
+    return 1.0f - u * u * u;
+}
+
+/* ease-out-back leve: passa ~4% do alvo e volta (vale 0 em t=0 e 1 em t=1) */
+static float splash_out_back(float t)
+{
+    float u = t - 1.0f;
+    return 1.0f + 2.2f * u * u * u + 1.2f * u * u;
+}
+
+static unsigned splash_alpha(float p, unsigned max_alpha)
+{
+    return (unsigned)(splash_clamp01(p) * (float)max_alpha + 0.5f);
+}
+
+static float splash_px(float v) { return floorf(v + 0.5f); }
+
+static void splash_background(float t_sec, bool motion, float amount)
+{
+    perf_ui_begin();
+    cv_unclip(&cv);
+    ui_draw_begin(&cv);
+    font_set_sink(&cv, ui_glyph);
+    cv_vgradient(&cv, 0, 0, cv.w, cv.h, HEX(0x172B35), C_BG_BOTTOM);
+    if (theme_background_id != 2) {
+        bool midnight = theme_background_id == 1;
+        float k = motion ? splash_clamp01(amount) : 0.0f;
+        float pad = 24.0f * k;
+        float dx1 = 14.0f * sinf(t_sec * 0.55f) * k, dy1 = 10.0f * cosf(t_sec * 0.42f) * k;
+        float dx2 = 20.0f * sinf(t_sec * 0.85f + 1.1f) * k, dy2 = 14.0f * cosf(t_sec * 0.68f + 0.7f) * k;
+
+        /* camada 1: A-B-C e A-C-D compartilham A e C (sem fresta na diagonal) */
+        float ax = W - 870 + dx1, ay = dy1 - pad, bx = W + dx1 + pad, by = dy1 - pad;
+        float cx_ = W + dx1 + pad, cy_ = 510 + dy1, dx_ = W - 290 + dx1, dy_ = 660 + dy1;
+        cv_triangle(&cv, S(ax), S(ay), S(bx), S(by), S(cx_), S(cy_), (midnight ? HEX(0x182535) : HEX(0x19272A)));
+        cv_triangle(&cv, S(ax), S(ay), S(cx_), S(cy_), S(dx_), S(dy_), (midnight ? HEX(0x16202E) : HEX(0x172126)));
+
+        /* camada 2 */
+        float a2x = W - 620 + dx2, a2y = dy2 - pad, b2x = W + dx2 + pad, b2y = dy2 - pad;
+        float c2x = W + dx2 + pad, c2y = 390 + dy2, d2x = W - 128 + dx2, d2y = 404 + dy2;
+        cv_triangle(&cv, S(a2x), S(a2y), S(b2x), S(b2y), S(c2x), S(c2y), (midnight ? HEX(0x24364C) : HEX(0x20332D)));
+        cv_triangle(&cv, S(a2x), S(a2y), S(c2x), S(c2y), S(d2x), S(d2y), (midnight ? HEX(0x1E2B3D) : HEX(0x1C2C28)));
+        cv_line(&cv, S(a2x), S(a2y), S(d2x), S(d2y), S(1), (midnight ? HEX(0x3A4D64) : HEX(0x30453B)));
+        cv_fill(&cv, 0, 0, cv.w, SI(132), ARGB(100, 12, 16, 19));
+    }
+}
+
+static void splash_letters(const char *title, float start_x, float title_y, uint32_t elapsed,
+                           bool animate, unsigned global_alpha, uint32_t rgb, unsigned max_alpha)
+{
+    char prefix[64], ch[2];
+    int len = (int)strlen(title);
+    if (len > 63) len = 63;
+    for (int i = 0; i < len; i++) {
+        float pl = animate ? splash_out_cubic(splash_seg(elapsed, 180u + (uint32_t)i * 40u, 380u)) : 1.0f;
+        unsigned ca = splash_alpha(pl * ((float)global_alpha / 255.0f), max_alpha);
+        if (!ca) continue;
+        memcpy(prefix, title, (size_t)i);
+        prefix[i] = '\0';
+        ch[0] = title[i];
+        ch[1] = '\0';
+        text(FONT_BOLD, 60, splash_px(start_x + (i > 0 ? text_w(FONT_BOLD, 60, prefix) : 0.0f)),
+             title_y + (animate ? floorf(14.0f * (1.0f - pl) + 0.5f) : 0.0f), WITH_ALPHA(rgb, ca), ch);
+    }
+}
+
+#define SPLASH_LETTERS_DONE_MS 860u   /* última letra: 180 + 7*40 + 380 */
+
+static void splash_draw_title(float cx, float title_y, uint32_t elapsed, bool motion, unsigned global_alpha)
+{
+    const char *title = ui_translate("MoonX360");
+    float tw = text_w(FONT_BOLD, 60, title);
+    float start_x = cx - tw * 0.5f;
+
+    splash_letters(title, start_x, title_y, elapsed, motion, global_alpha, C_TEXT, 255);
+
+    if (motion && global_alpha > 40u && elapsed >= SPLASH_LETTERS_DONE_MS && elapsed <= SPLASH_LETTERS_DONE_MS + 600u) {
+        float sp = (float)(elapsed - SPLASH_LETTERS_DONE_MS) / 600.0f;
+        float band = 46.0f, travel = tw + band * 3.0f;
+        unsigned ba = (unsigned)(170.0f * sinf(sp * 3.14159265f) * ((float)global_alpha / 255.0f));
+        if (ba > 4u) {
+            for (int k = 0; k < 3; k++) {
+                float x0 = start_x - band * 2.0f + travel * sp - (float)(2 - k) * 10.0f;
+                float y0 = title_y - 52.0f + (float)k * 22.0f;
+                cv_clip(&cv, SI(x0), SI(y0), SI(band), SI(22.0f));
+                splash_letters(title, start_x, title_y, elapsed, false, global_alpha, HEX(0xFFFFFF), ba);
+                cv_unclip(&cv);
+            }
+        }
+    }
+}
+
 void ui_draw_splash(const char *status, uint32_t t_ms)
 {
-    begin_frame();
-    moon_logo(W / 2, 270, 52);
-    text_center(FONT_BOLD, 60, W / 2, 400, C_TEXT, ui_translate("MoonX360"));
-    text_center(FONT_REGULAR, 24, W / 2, 440, C_TEXT_DIM, ui_translate("for Xbox 360"));
-    if (status)
-        text_center(FONT_REGULAR, 19, W / 2, 524, C_TEXT_DIM, ui_translate(status));
-    spinner(W / 2, 582, 18, t_ms);
+    if (!splash_started || t_ms < splash_last_ms) {
+        splash_started = true;
+        splash_start_ms = t_ms;
+        splash_cur_status[0] = '\0';
+        splash_prev_status[0] = '\0';
+        splash_status_ms = t_ms;
+    }
+    splash_last_ms = t_ms;
+
+    if (status && strcmp(splash_cur_status, status)) {
+        snprintf(splash_prev_status, sizeof(splash_prev_status), "%s", splash_cur_status);
+        snprintf(splash_cur_status, sizeof(splash_cur_status), "%s", status);
+        splash_status_ms = t_ms;
+    } else if (!status) {
+        splash_cur_status[0] = '\0';
+    }
+
+    bool motion = ui_motion_enabled();
+    uint32_t elapsed = (uint32_t)(t_ms - splash_start_ms);
+
+    float fade_in  = motion ? splash_out_cubic(splash_seg(elapsed,   0, 250)) : 1.0f;
+    float p_glow   = motion ? splash_out_cubic(splash_seg(elapsed,   0, 650)) : 1.0f;
+    float p_logo   = motion ? splash_out_back (splash_seg(elapsed,   0, 640)) : 1.0f;
+    float p_logo_a = motion ? splash_out_cubic(splash_seg(elapsed,   0, 380)) : 1.0f;
+    float p_ring   = motion ? splash_seg(elapsed,  80, 820)                   : 1.0f;
+    float p_sub    = motion ? splash_out_cubic(splash_seg(elapsed, 300, 520)) : 1.0f;
+    float p_bar    = motion ? splash_out_cubic(splash_seg(elapsed, 420, 480)) : 1.0f;
+    float p_status = motion ? splash_out_cubic(splash_seg(elapsed, 520, 400)) : 1.0f;
+
+    const float cx = splash_px(W * 0.5f), cy = splash_px(H * 0.375f);
+    const float title_y = splash_px(H * 0.555f), sub_y = splash_px(H * 0.611f), bar_y = splash_px(H * 0.633f);
+    const float status_y = splash_px(H * 0.728f), spin_y = splash_px(H * 0.808f);
+
+    splash_background((float)elapsed * 0.001f, motion, 1.0f);
+
+    {
+        float pulse = motion ? 1.0f + 0.10f * sinf((float)elapsed * 0.004f) * p_glow : 1.0f;
+        float glow_r = (96.0f + 56.0f * p_glow) * pulse;
+        unsigned layer_a = splash_alpha(p_glow * pulse * fade_in, 6);
+        if (layer_a) {
+            for (int i = 0; i < 8; i++) {
+                float k = (float)(8 - i) / 8.0f;
+                cv_circle(&cv, S(cx), S(cy), S(glow_r * (0.30f + 0.70f * k)),
+                          WITH_ALPHA(C_ACCENT, layer_a));
+            }
+        }
+    }
+
+    if (motion && p_ring > 0.0f && p_ring < 1.0f) {
+        float e = splash_out_cubic(p_ring);
+        unsigned ra = splash_alpha((1.0f - e) * fade_in, 150);
+        if (ra)
+            cv_ring(&cv, S(cx), S(cy), S(58.0f + 86.0f * e), S(2.5f * (1.0f - e) + 0.8f),
+                    WITH_ALPHA(C_ACCENT, ra));
+    }
+
+    {
+        unsigned la = splash_alpha(p_logo_a * fade_in, 255);
+        if (la) moon_logo_alpha(cx, cy, 54.0f * (0.80f + 0.20f * p_logo), la);
+    }
+
+    splash_draw_title(cx, title_y, elapsed, motion, splash_alpha(fade_in, 255));
+
+    {
+        unsigned sa = splash_alpha(p_sub * fade_in, 255);
+        float sub_dy = floorf(16.0f * (1.0f - p_sub) + 0.5f);
+        if (sa)
+            text_center(FONT_REGULAR, 24, cx, sub_y + sub_dy, WITH_ALPHA(C_TEXT_DIM, sa),
+                        ui_translate("for Xbox 360"));
+    }
+
+    {
+        float half = 55.0f * p_bar;
+        int bx0 = SI(cx - half), bx1 = SI(cx + half);
+        if (bx1 - bx0 >= 2)
+            cv_fill(&cv, bx0, SI(bar_y), bx1 - bx0, SI(2.0f),
+                    WITH_ALPHA(C_ACCENT, splash_alpha(p_bar * fade_in, 190)));
+    }
+
+    {
+        unsigned st = splash_alpha(p_status * fade_in, 255);
+        if (st) {
+            uint32_t st_elapsed = (uint32_t)(t_ms - splash_status_ms);
+            float xf = (motion && splash_prev_status[0] && st_elapsed < 240u)
+                ? splash_out_cubic((float)st_elapsed / 240.0f) : 1.0f;
+            if (xf < 1.0f && splash_prev_status[0]) {
+                unsigned pa = splash_alpha((1.0f - xf) * ((float)st / 255.0f), 255);
+                float pdy = -floorf(6.0f * xf + 0.5f);
+                if (pa)
+                    text_center(FONT_REGULAR, 19, cx, status_y + pdy, WITH_ALPHA(C_TEXT_DIM, pa),
+                                ui_translate(splash_prev_status));
+            }
+            if (splash_cur_status[0]) {
+                unsigned ca = splash_alpha(xf * ((float)st / 255.0f), 255);
+                float cdy = floorf(6.0f * (1.0f - xf) + 0.5f);
+                if (ca)
+                    text_center(FONT_REGULAR, 19, cx, status_y + cdy, WITH_ALPHA(C_TEXT_DIM, ca),
+                                ui_translate(splash_cur_status));
+            }
+            spinner_alpha(cx, spin_y, 18.0f, t_ms, st);
+        }
+    }
+}
+
+void ui_draw_splash_exit(float progress)
+{
+    float p = splash_clamp01(progress);
+    float e = ui_motion_enabled() ? splash_out_cubic(p) : 1.0f;
+    float fade = 1.0f - e;
+    unsigned fa = splash_alpha(fade, 255);
+
+    const float src_cx = splash_px(W * 0.5f), src_cy = splash_px(H * 0.375f), src_r = 54.0f;
+    const float dst_cx = W * 0.5f - 169.5f, dst_cy = 73.0f + top_nav_offset(), dst_r = 12.0f;
+    float cur_cx = src_cx + (dst_cx - src_cx) * e;
+    float cur_cy = src_cy + (dst_cy - src_cy) * e;
+    float cur_r  = src_r  + (dst_r  - src_r)  * e;
+
+    const float title_y = splash_px(H * 0.555f), sub_y = splash_px(H * 0.611f), bar_y = splash_px(H * 0.633f);
+    const float status_y = splash_px(H * 0.728f), spin_y = splash_px(H * 0.808f);
+
+    uint32_t elapsed = (uint32_t)(splash_last_ms - splash_start_ms);
+    splash_background((float)elapsed * 0.001f + p * 0.4f, ui_motion_enabled(), fade);
+
+    if (fa) {
+        unsigned layer_a = splash_alpha(fade, 6);
+        if (layer_a) {
+            for (int i = 0; i < 8; i++) {
+                float k = (float)(8 - i) / 8.0f;
+                cv_circle(&cv, S(src_cx), S(src_cy), S(152.0f * (0.30f + 0.70f * k)),
+                          WITH_ALPHA(C_ACCENT, layer_a));
+            }
+        }
+        {
+            const char *t = ui_translate("MoonX360");
+            splash_letters(t, src_cx - text_w(FONT_BOLD, 60, t) * 0.5f, title_y, 0u, false, fa, C_TEXT, 255);
+        }
+        text_center(FONT_REGULAR, 24, src_cx, sub_y, WITH_ALPHA(C_TEXT_DIM, fa), ui_translate("for Xbox 360"));
+        {
+            float half = 55.0f * fade;
+            int bx0 = SI(src_cx - half), bx1 = SI(src_cx + half);
+            if (bx1 - bx0 >= 2)
+                cv_fill(&cv, bx0, SI(bar_y), bx1 - bx0, SI(2.0f),
+                        WITH_ALPHA(C_ACCENT, splash_alpha(fade, 190)));
+        }
+        if (splash_cur_status[0])
+            text_center(FONT_REGULAR, 19, src_cx, status_y, WITH_ALPHA(C_TEXT_DIM, fa),
+                        ui_translate(splash_cur_status));
+        spinner_alpha(src_cx, spin_y, 18.0f, splash_last_ms + (uint32_t)(p * 400.0f), fa);
+    }
+
+    if (ui_motion_enabled()) {
+        unsigned scrim = splash_alpha(e, 140);
+        if (scrim) cv_fill(&cv, 0, 0, cv.w, cv.h, ARGB(scrim, 13, 17, 20));
+    }
+
+    moon_logo_alpha(cur_cx, cur_cy, cur_r, 255u);
 }
 
 int ui_dashboard_move(int sel,int dx,int dy,int n)
@@ -710,8 +1037,8 @@ bool ui_home_tick(uint32_t now)
 /* Four destinations, a contextual action, portrait recents and four shortcuts. */
 static void dashboard_rect(int item,int recents,float *x,float *y,float *w,float *h)
 {
-    if(item<4){*x=W/2-169.5f+(float)item*113-20;*y=53;*w=40;*h=40;return;}
-    if(item==4){*x=64;*y=152;*w=500;*h=124;return;}
+    if(item<4){*x=W/2-169.5f+(float)item*113-20;*y=53+top_nav_offset();*w=40;*h=40;return;}
+    if(item==4){*x=64;*y=top_nav_offset()>0?170:152;*w=500;*h=124;return;}
     if(item<5+recents){
         int index=item-5;float pos=64-home_scroll.current;
         for(int i=0;i<index;i++) {float d=fabsf(home_focus.current-(float)i);if(d>1)d=1;pos+=140-28*d+18;}
@@ -749,91 +1076,181 @@ static void dashboard_art(const struct ui_app *app,float x,float y,float w,float
         ui_cover_fade_mark();
     } else placeholder_art(app && app->name?app->name:ui_translate("Your games"),x,y,w,h);
 }
-/* Two cover transition slots and one user image. 1280x720 costs 3.52 MiB per
- * slot on CPU and GPU; preparation happens only after focus settles. */
+/* One 1280x720 user wallpaper slot plus two fast 320x180 blurred cover slots
+ * upscaled smoothly by the Xenos GPU (saves ~7 MiB RAM/VRAM and removes blocks). */
 #define HOME_WALL_W 1280
 #define HOME_WALL_H 720
-static uint32_t home_wall[3][HOME_WALL_W*HOME_WALL_H];
+#define COVER_WALL_W 320
+#define COVER_WALL_H 180
+static uint32_t home_wall_user[HOME_WALL_W*HOME_WALL_H];
+static uint32_t cover_wall[2][COVER_WALL_W*COVER_WALL_H];
+static uint32_t cover_wall_tmp[COVER_WALL_W*COVER_WALL_H];
 static uint32_t home_wall_generation[3];
-static uint32_t home_wall_small[160*90];
 static int home_wall_current=-1;
 static const uint32_t *home_wall_source;
 static uint32_t home_wall_source_generation;
 static char home_wall_host[96];
-static struct {const uint32_t *source;uint32_t generation;char host[96];int row,slot,w,h;bool active;} home_wall_pending;
-void ui_home_cancel_prepare(void){home_wall_pending.active=false;}
-static uint32_t wall_sample(const uint32_t *source,int sw,int sh,int x,int y,int dw,int dh,bool cover)
+void ui_home_cancel_prepare(void){}
+static void wall_scale_cover(const uint32_t *src,int sw,int sh,uint32_t *dst,int dw,int dh,
+    int *sx_tab,int *sx1_tab,int *fx_tab,unsigned scale_256)
 {
     int crop_w=sw,crop_h=sh,ox=0,oy=0;
-    if(cover) {
-        if((int64_t)sw*dh>(int64_t)sh*dw){crop_w=(int)((int64_t)sh*dw/dh);ox=(sw-crop_w)/2;}
-        else {crop_h=(int)((int64_t)sw*dh/dw);oy=(sh-crop_h)/2;}
-        if(crop_w<1)crop_w=1;if(crop_h<1)crop_h=1;
+    if((int64_t)sw*dh>(int64_t)sh*dw){crop_w=(int)((int64_t)sh*dw/dh);ox=(sw-crop_w)/2;}
+    else {crop_h=(int)((int64_t)sw*dh/dw);oy=(sh-crop_h)/2;}
+    if(crop_w<1)crop_w=1;if(crop_h<1)crop_h=1;
+    for(int x=0;x<dw;x++) {
+        int sx=ox+x*crop_w/dw;if(sx>=sw)sx=sw-1;
+        sx_tab[x]=sx;sx1_tab[x]=sx+1<sw?sx+1:sx;
+        fx_tab[x]=(x*crop_w*256/dw)&255;
     }
-    int sx=ox+x*crop_w/dw,sy=oy+y*crop_h/dh;
-    int fx=(x*crop_w*256/dw)&255,fy=(y*crop_h*256/dh)&255;
-    if(sx>=sw)sx=sw-1;if(sy>=sh)sy=sh-1;
-    int sx1=sx+1<sw?sx+1:sx,sy1=sy+1<sh?sy+1:sy;
-    uint32_t p[4]={source[sy*sw+sx],source[sy*sw+sx1],source[sy1*sw+sx],source[sy1*sw+sx1]};
-    uint32_t color=0xFF000000u;
-    for(int shift=0;shift<24;shift+=8){
-        int a=(int)((p[0]>>shift)&255),b=(int)((p[1]>>shift)&255);
-        int c=(int)((p[2]>>shift)&255),d=(int)((p[3]>>shift)&255);
-        int v=((a*(256-fx)+b*fx)*(256-fy)+(c*(256-fx)+d*fx)*fy)/65536;
-        color|=(uint32_t)v<<shift;
+    for(int y=0;y<dh;y++) {
+        int sy=oy+y*crop_h/dh;if(sy>=sh)sy=sh-1;
+        int sy1=sy+1<sh?sy+1:sy;
+        int fy=(y*crop_h*256/dh)&255,ify=256-fy;
+        const uint32_t *r0=src+sy*sw,*r1=src+sy1*sw;
+        uint32_t *out=dst+y*dw;
+        for(int x=0;x<dw;x++) {
+            int fx=fx_tab[x],ifx=256-fx,sx0=sx_tab[x],sx1=sx1_tab[x];
+            uint32_t p0=r0[sx0],p1=r0[sx1],p2=r1[sx0],p3=r1[sx1];
+            uint32_t wr=((((p0>>16)&255)*ifx+((p1>>16)&255)*fx)*ify+(((p2>>16)&255)*ifx+((p3>>16)&255)*fx)*fy)>>16;
+            uint32_t wg=((((p0>>8)&255)*ifx+((p1>>8)&255)*fx)*ify+(((p2>>8)&255)*ifx+((p3>>8)&255)*fx)*fy)>>16;
+            uint32_t wb=(((p0&255)*ifx+(p1&255)*fx)*ify+((p2&255)*ifx+(p3&255)*fx)*fy)>>16;
+            if(scale_256!=256u){wr=(wr*scale_256)>>8;wg=(wg*scale_256)>>8;wb=(wb*scale_256)>>8;}
+            out[x]=0xFF000000u|(wr<<16)|(wg<<8)|wb;
+        }
     }
-    return color;
 }
-static void home_wall_resample_rows(uint32_t *out,const uint32_t *source,int sw,int sh,bool cover,int first,int end)
+static void cover_wall_blur_pass(uint32_t *buf,uint32_t *tmp,int w,int h,int radius)
 {
-    for(int y=first;y<end;y++)for(int x=0;x<HOME_WALL_W;x++) {
-        uint32_t color=cover?wall_sample(home_wall_small,160,90,x,y,HOME_WALL_W,HOME_WALL_H,false):
-            wall_sample(source,sw,sh,x,y,HOME_WALL_W,HOME_WALL_H,true);
-        int shade=cover?(y<HOME_WALL_H/2?78:61):90;
-        for(int shift=0;shift<24;shift+=8){int v=(int)((color>>shift)&255);
-            color=(color&~(255u<<shift))|((uint32_t)(v*shade/100)<<shift);}
-        out[y*HOME_WALL_W+x]=color;
+    int diam=radius*2+1;
+    uint32_t inv_diam=(65536u+(uint32_t)diam/2u)/(uint32_t)diam;
+    for(int y=0;y<h;y++) {
+        const uint32_t *row=buf+y*w;
+        uint32_t *dst=tmp+y*w;
+        int sr=0,sg=0,sb=0;
+        for(int k=-radius;k<=radius;k++) {
+            int sx=k<0?0:k>=w?w-1:k;
+            uint32_t c=row[sx];
+            sr+=(int)((c>>16)&255);sg+=(int)((c>>8)&255);sb+=(int)(c&255);
+        }
+        for(int x=0;x<w;x++) {
+            uint32_t r=((uint32_t)sr*inv_diam)>>16;
+            uint32_t g=((uint32_t)sg*inv_diam)>>16;
+            uint32_t b=((uint32_t)sb*inv_diam)>>16;
+            dst[x]=0xFF000000u|(r<<16)|(g<<8)|b;
+            int x_out=x-radius;if(x_out<0)x_out=0;
+            int x_in=x+radius+1;if(x_in>=w)x_in=w-1;
+            uint32_t co=row[x_out],ci=row[x_in];
+            sr+=(int)((ci>>16)&255)-(int)((co>>16)&255);
+            sg+=(int)((ci>>8)&255)-(int)((co>>8)&255);
+            sb+=(int)(ci&255)-(int)(co&255);
+        }
+    }
+    if(w<=COVER_WALL_W) {
+        int sr[COVER_WALL_W],sg[COVER_WALL_W],sb[COVER_WALL_W];
+        for(int x=0;x<w;x++)sr[x]=sg[x]=sb[x]=0;
+        for(int k=-radius;k<=radius;k++) {
+            int sy=k<0?0:k>=h?h-1:k;
+            const uint32_t *row=tmp+sy*w;
+            for(int x=0;x<w;x++) {
+                uint32_t c=row[x];
+                sr[x]+=(int)((c>>16)&255);sg[x]+=(int)((c>>8)&255);sb[x]+=(int)(c&255);
+            }
+        }
+        for(int y=0;y<h;y++) {
+            uint32_t *dst=buf+y*w;
+            int y_out=y-radius;if(y_out<0)y_out=0;
+            int y_in=y+radius+1;if(y_in>=h)y_in=h-1;
+            const uint32_t *ro=tmp+y_out*w,*ri=tmp+y_in*w;
+            for(int x=0;x<w;x++) {
+                uint32_t r=((uint32_t)sr[x]*inv_diam)>>16;
+                uint32_t g=((uint32_t)sg[x]*inv_diam)>>16;
+                uint32_t b=((uint32_t)sb[x]*inv_diam)>>16;
+                dst[x]=0xFF000000u|(r<<16)|(g<<8)|b;
+                uint32_t co=ro[x],ci=ri[x];
+                sr[x]+=(int)((ci>>16)&255)-(int)((co>>16)&255);
+                sg[x]+=(int)((ci>>8)&255)-(int)((co>>8)&255);
+                sb[x]+=(int)(ci&255)-(int)(co&255);
+            }
+        }
+    } else {
+        for(int x=0;x<w;x++) {
+            int sr=0,sg=0,sb=0;
+            for(int k=-radius;k<=radius;k++) {
+                int sy=k<0?0:k>=h?h-1:k;
+                uint32_t c=tmp[sy*w+x];
+                sr+=(int)((c>>16)&255);sg+=(int)((c>>8)&255);sb+=(int)(c&255);
+            }
+            for(int y=0;y<h;y++) {
+                uint32_t r=((uint32_t)sr*inv_diam)>>16;
+                uint32_t g=((uint32_t)sg*inv_diam)>>16;
+                uint32_t b=((uint32_t)sb*inv_diam)>>16;
+                buf[y*w+x]=0xFF000000u|(r<<16)|(g<<8)|b;
+                int y_out=y-radius;if(y_out<0)y_out=0;
+                int y_in=y+radius+1;if(y_in>=h)y_in=h-1;
+                uint32_t co=tmp[y_out*w+x],ci=tmp[y_in*w+x];
+                sr+=(int)((ci>>16)&255)-(int)((co>>16)&255);
+                sg+=(int)((ci>>8)&255)-(int)((co>>8)&255);
+                sb+=(int)(ci&255)-(int)(co&255);
+            }
+        }
     }
 }
 bool ui_home_prepare_cover(const char *host,const struct ui_app *app,uint32_t now)
 {
     if(!app || !app->art)return false;
-    if(!home_wall_pending.active && home_wall_current>=0 && app->art==home_wall_source && app->generation==home_wall_source_generation &&
+    if(home_wall_current>=0 && app->art==home_wall_source && app->generation==home_wall_source_generation &&
        !strcmp(home_wall_host,host?host:""))return false;
-    if(!home_wall_pending.active || home_wall_pending.source!=app->art ||
-       home_wall_pending.generation!=app->generation || strcmp(home_wall_pending.host,host?host:"")) {
-        home_wall_pending.source=app->art;home_wall_pending.generation=app->generation;
-        snprintf(home_wall_pending.host,sizeof(home_wall_pending.host),"%s",host?host:"");
-        home_wall_pending.slot=home_wall_current==0?1:0;home_wall_pending.row=0;
-        ui_art_size(&home_wall_pending.w,&home_wall_pending.h);
-        for(int y=0;y<90;y++)for(int x=0;x<160;x++)
-            home_wall_small[y*160+x]=wall_sample(app->art,home_wall_pending.w,home_wall_pending.h,x,y,160,90,true);
-        home_wall_pending.active=true;
+    int slot=home_wall_current==0?1:0;
+    int aw=0,ah=0;ui_art_size(&aw,&ah);
+    if(aw<=0 || ah<=0)return false;
+    uint32_t *dst=cover_wall[slot];
+    int sx_tab[COVER_WALL_W],sx1_tab[COVER_WALL_W],fx_tab[COVER_WALL_W],dx_sq[COVER_WALL_W];
+    wall_scale_cover(app->art,aw,ah,dst,COVER_WALL_W,COVER_WALL_H,sx_tab,sx1_tab,fx_tab,256u);
+    for(int x=0;x<COVER_WALL_W;x++) {
+        int dx=x*256/COVER_WALL_W-128;dx_sq[x]=dx*dx;
     }
-    int next=home_wall_pending.row+24;if(next>HOME_WALL_H)next=HOME_WALL_H;
-    home_wall_resample_rows(home_wall[home_wall_pending.slot],home_wall_small,160,90,true,home_wall_pending.row,next);
-    home_wall_pending.row=next;
-    if(next<HOME_WALL_H)return false;
-    home_wall_previous=ui_motion_enabled()?home_wall_current:-1;home_wall_current=home_wall_pending.slot;home_wall_started=now;
+    for(int pass=0;pass<3;pass++)
+        cover_wall_blur_pass(dst,cover_wall_tmp,COVER_WALL_W,COVER_WALL_H,7);
+    for(int y=0;y<COVER_WALL_H;y++) {
+        int ny=(y*256)/COVER_WALL_H;
+        int v_shade=195-((61*ny)>>8);
+        int dy=ny-128,dy2=dy*dy;
+        uint32_t *out=dst+y*COVER_WALL_W;
+        for(int x=0;x<COVER_WALL_W;x++) {
+            int dist2=(dx_sq[x]+dy2)>>7;
+            int vig=256-((dist2*46)>>8);
+            if(vig<174)vig=174;
+            uint32_t shade=(uint32_t)((v_shade*vig)>>8);
+            uint32_t c=out[x];
+            uint32_t r=(((c>>16)&255u)*shade)>>8;
+            uint32_t g=(((c>>8)&255u)*shade)>>8;
+            uint32_t b=((c&255u)*shade)>>8;
+            out[x]=0xFF000000u|(r<<16)|(g<<8)|b;
+        }
+    }
+    home_wall_previous=ui_motion_enabled()?home_wall_current:-1;home_wall_current=slot;home_wall_started=now;
     home_wall_source=app->art;home_wall_source_generation=app->generation;
     snprintf(home_wall_host,sizeof(home_wall_host),"%s",host?host:"");
-    home_wall_pending.active=false;
     home_wall_generation[home_wall_current]++;ui_drop_main_cache();return true;
 }
 void ui_home_set_user_wallpaper(const uint32_t *pixels,int width,int height)
 {
     if(!pixels || width<=0 || height<=0 || width>2048 || height>2048)return;
-    home_wall_resample_rows(home_wall[2],pixels,width,height,false,0,HOME_WALL_H);
+    static int sx_tab[HOME_WALL_W],sx1_tab[HOME_WALL_W],fx_tab[HOME_WALL_W];
+    wall_scale_cover(pixels,width,height,home_wall_user,HOME_WALL_W,HOME_WALL_H,sx_tab,sx1_tab,fx_tab,230u);
     home_wall_generation[2]++;ui_drop_main_cache();
 }
 static void home_wall_draw(int index,unsigned alpha)
 {
-    int sx=0,sy=0,sw=HOME_WALL_W,sh=HOME_WALL_H;
+    int ww=index==2?HOME_WALL_W:COVER_WALL_W;
+    int wh=index==2?HOME_WALL_H:COVER_WALL_H;
+    const uint32_t *src=index==2?home_wall_user:cover_wall[index];
+    int sx=0,sy=0,sw=ww,sh=wh;
     float aspect=W/H;
-    if(aspect<(float)HOME_WALL_W/HOME_WALL_H){sw=(int)(HOME_WALL_H*aspect);sx=(HOME_WALL_W-sw)/2;}
-    else {sh=(int)(HOME_WALL_W/aspect);sy=(HOME_WALL_H-sh)/2;}
-    ui_picture_region(&cv,home_wall[index],HOME_WALL_W,HOME_WALL_H,sx,sy,sw,sh,
-        0,0,S(W),S(H),alpha,home_wall_generation[index]);
+    if(aspect<(float)ww/wh){sw=(int)(wh*aspect);sx=(ww-sw)/2;}
+    else {sh=(int)(ww/aspect);sy=(wh-sh)/2;}
+    ui_picture_region(&cv,src,ww,wh,sx,sy,sw,sh,0,0,S(W),S(H),alpha,home_wall_generation[index]);
 }
 static void draw_wallpaper(void)
 {
@@ -1048,9 +1465,7 @@ void ui_draw_main(const struct ui_host *host,const struct ui_menu_item *items,in
 
 void ui_draw_hosts(const struct ui_setting *rows,int n,int sel,int page,bool searching)
 {
-    ui_set_page(page);begin_frame();header(NULL);top_nav(-1,2);
-    ui_button(&cv,"LB",SI(W-140),SI(97),SI(35),SI(26));
-    ui_button(&cv,"RB",SI(W-101),SI(97),SI(35),SI(26));
+    ui_set_page(page);begin_frame();header(NULL);top_nav(-1,2);nav_shoulders();
     breadcrumb(NULL,ui_translate("Hosts"));
     int first=sel>=6?sel-5:0;
     float card_w=W-2*UI_SAFE_X;
@@ -1100,24 +1515,34 @@ static int rail_visible(void)
     return fit;
 }
 
-static void app_tile(const struct ui_app *a,float x,float y,bool on,int item)
+static void app_tile(const struct ui_app *a,float x,float y,bool on,int item,float lift)
 {
     float w=UI_RAIL_CARD_WIDTH,h=UI_RAIL_CARD_HEIGHT;
-    float ty=on?y-4.0f:y;
-    if(on)launch_source_tile(a,x,ty,w,h);
+    if(on)launch_source_tile(a,x,y-4.0f,w,h);
+    float grow_w=6.0f*lift,grow_h=9.0f*lift;
+    float tx=x-grow_w*0.5f;
+    float ty=y-10.0f*lift-grow_h*0.25f;
+    float tw=w+grow_w,th=h+grow_h;
+    if(lift>0.05f) {
+        unsigned a1=(unsigned)(55.0f*lift);if(a1>70u)a1=70u;
+        unsigned a2=(unsigned)(30.0f*lift);if(a2>40u)a2=40u;
+        rrect(tx+2.0f,ty+6.0f*lift,tw,th,UI_CORNER,ARGB(a1,0,0,0));
+        rrect(tx+4.0f,ty+10.0f*lift,tw,th,UI_CORNER,ARGB(a2,0,0,0));
+    }
     if(a->art) {
-        ui_picture_region(&cv,a->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(x),S(ty),S(w),S(h),255,a->generation);
+        ui_picture_region(&cv,a->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(tx),S(ty),S(tw),S(th),255,a->generation);
         ui_cover_fade_mark();
-    } else placeholder_art(a->name,x,ty,w,h);
+    } else placeholder_art(a->name,tx,ty,tw,th);
     if(on) {
-        cv_rrect_outline(&cv,S(x-1),S(ty-1),S(w+2),S(h+2),S(UI_CORNER-1),S(1),WITH_ALPHA(C_TEXT,135));
-        cv_rrect_outline(&cv,S(x-5),S(ty-5),S(w+10),S(h+10),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
+        cv_rrect_outline(&cv,S(tx-1),S(ty-1),S(tw+2),S(th+2),S(UI_CORNER-1),S(1),WITH_ALPHA(C_TEXT,135));
+        cv_rrect_outline(&cv,S(tx-5),S(ty-5),S(tw+10),S(th+10),S(UI_CORNER),S(UI_FOCUS_BORDER),C_ACCENT);
         ui_focus_mark(UI_LIBRARY,item);
     }
-    if(a->favorite){rrect(x+w-52,ty+10,42,24,4,C_YELLOW);text_center(FONT_BOLD,12,x+w-31,ty+27,C_BG_BOTTOM,ui_translate("FAV"));}
-    if(a->running){rrect(x+10,ty+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,x+51,ty+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
+    if(a->favorite){rrect(tx+tw-52,ty+10,42,24,4,C_YELLOW);text_center(FONT_BOLD,12,tx+tw-31,ty+27,C_BG_BOTTOM,ui_translate("FAV"));}
+    if(a->running){rrect(tx+10,ty+10,82,24,4,C_GREEN);text_center(FONT_BOLD,12,tx+51,ty+27,C_BG_BOTTOM,ui_translate("RUNNING"));}
 }
 static struct {float current,target,origin;uint32_t now,started;uint64_t context;bool active,known;} library_scroll;
+static struct {int current,prev;float lift,prev_lift,prev_origin;uint32_t started;bool active,known;} library_focus={-1,-1,0,0,0,0,false,false};
 void ui_library_art_window(int count,int selected,int *first,int *end)
 {
     int vis=rail_visible();
@@ -1126,15 +1551,30 @@ void ui_library_art_window(int count,int selected,int *first,int *end)
     if(*first<0)*first=0;if(*first>=count)*first=count>0?count-1:0;
     *end=*first+vis+3;if(*end>count)*end=count;
 }
-static void reset_scroll(void){memset(&home_scroll,0,sizeof(home_scroll));memset(&home_focus,0,sizeof(home_focus));home_focus.current=home_focus.target=-1;memset(&library_scroll,0,sizeof(library_scroll));}
+static void reset_scroll(void){memset(&home_scroll,0,sizeof(home_scroll));memset(&home_focus,0,sizeof(home_focus));home_focus.current=home_focus.target=-1;memset(&library_scroll,0,sizeof(library_scroll));memset(&library_focus,0,sizeof(library_focus));library_focus.current=library_focus.prev=-1;}
 bool ui_library_tick(uint32_t now)
 {
-    library_scroll.now=now;if(!library_scroll.active)return false;
-    float t=ui_anim_progress(now,library_scroll.started,UI_SCROLL_MS);
-    if(!ui_motion_enabled())t=1.0f;
-    library_scroll.current=ui_anim_lerp(library_scroll.origin,library_scroll.target,ui_ease_out_cubic(t));
-    if(t>=1.0f){library_scroll.current=library_scroll.target;library_scroll.active=false;}
-    return true;
+    bool changed=false;
+    library_scroll.now=now;
+    if(library_scroll.active){
+        float t=ui_anim_progress(now,library_scroll.started,UI_SCROLL_MS);
+        if(!ui_motion_enabled())t=1.0f;
+        library_scroll.current=ui_anim_lerp(library_scroll.origin,library_scroll.target,ui_ease_out_cubic(t));
+        if(t>=1.0f){library_scroll.current=library_scroll.target;library_scroll.active=false;}
+        changed=true;
+    }
+    if(library_focus.active){
+        if(!ui_motion_enabled()){
+            library_focus.lift=1.0f;library_focus.prev_lift=0.0f;library_focus.prev=-1;library_focus.active=false;
+        } else {
+            float t=ui_anim_progress(now,library_focus.started,180u);
+            library_focus.lift=splash_out_back(t);
+            library_focus.prev_lift=library_focus.prev_origin*(1.0f-ui_ease_out_cubic(t));
+            if(t>=1.0f){library_focus.lift=1.0f;library_focus.prev_lift=0.0f;library_focus.prev=-1;library_focus.active=false;}
+        }
+        changed=true;
+    }
+    return changed;
 }
 void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,int sel,const char *filter)
 {
@@ -1151,19 +1591,28 @@ void ui_draw_library(const struct ui_host *host,const struct ui_app *apps,int n,
     int first=sel>=vis?sel-vis+1:0;
     uint64_t context=main_hash_text(main_hash_text(14695981039346656037ULL,filter),host?host->name:NULL)^(unsigned)n^(unsigned)(vis<<16);
     float target=(float)first*(float)UI_RAIL_STEP;
-    if(!library_scroll.known || library_scroll.context!=context) {
+    bool context_reset=!library_scroll.known || library_scroll.context!=context;
+    if(context_reset) {
         library_scroll.current=library_scroll.target=target;library_scroll.active=false;library_scroll.known=true;library_scroll.context=context;
     } else if(target!=library_scroll.target) {
         library_scroll.origin=library_scroll.current;library_scroll.target=target;library_scroll.started=library_scroll.now;
         library_scroll.active=ui_motion_enabled();if(!library_scroll.active)library_scroll.current=target;
     }
+    if(context_reset || !library_focus.known) {
+        library_focus.current=sel;library_focus.prev=-1;library_focus.lift=1.0f;library_focus.prev_lift=0.0f;library_focus.active=false;library_focus.known=true;
+    } else if(sel!=library_focus.current) {
+        library_focus.prev=library_focus.current;library_focus.prev_origin=library_focus.lift;library_focus.prev_lift=library_focus.lift;
+        library_focus.current=sel;library_focus.started=library_scroll.now;library_focus.active=ui_motion_enabled();
+        library_focus.lift=library_focus.active?0.0f:1.0f;
+    }
     /* Draw just the clipped visible rail and one overscan card either side.
      * All cards share one position; no per-card animation or allocation. */
-    float top=206;cv_clip(&cv,SI(UI_SAFE_X-8),SI(top-14),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-8),SI(UI_RAIL_CARD_HEIGHT+74));
+    float top=206;cv_clip(&cv,SI(UI_SAFE_X-14),SI(top-24),cv.w-SI(UI_SAFE_X)-SI(UI_SAFE_X-14)+SI(12),SI(UI_RAIL_CARD_HEIGHT+86));
     int begin,end;ui_library_art_window(n,sel,&begin,&end);
     for(int i=begin;i<end;i++) {
         float x=UI_SAFE_X+(float)i*UI_RAIL_STEP-library_scroll.current;
-        app_tile(apps+i,x,top,i==sel,i);
+        float lift=i==sel?library_focus.lift:(library_focus.active && i==library_focus.prev?library_focus.prev_lift:0.0f);
+        app_tile(apps+i,x,top,i==sel,i,lift);
         text_fit(i==sel?FONT_BOLD:FONT_REGULAR,i==sel?(float)UI_TEXT_PRIMARY:19.0f,x,top+UI_RAIL_CARD_HEIGHT+31,UI_RAIL_CARD_WIDTH,i==sel?C_TEXT:C_TEXT_DIM,apps[i].name);
     }
     cv_unclip(&cv);
@@ -1327,9 +1776,15 @@ void ui_draw_profiles(const struct ui_setting *rows,int n,int sel,int factory_co
     text(FONT_BOLD,18,UI_SAFE_X,198,C_ACCENT,ui_translate(first<factory_count?"Factory":"My Profiles"));
     for(int i=first;i<n && i<first+5;i++) {
         if(i==factory_count && i>first){text(FONT_BOLD,18,UI_SAFE_X,y+18,C_ACCENT,ui_translate("My Profiles"));y+=28;}
-        bool on=i==sel;card(UI_SAFE_X,y,W-2*UI_SAFE_X,58,UI_CORNER,on);
-        text_fit(on?FONT_BOLD:FONT_REGULAR,22,UI_SAFE_X+24,y+36,600,on?C_TEXT:C_TEXT_DIM,rows[i].label);
-        text_right(FONT_REGULAR,19,W-UI_SAFE_X-24,y+36,C_TEXT_DIM,i==n-1?ui_translate(rows[i].value):rows[i].value);y+=66;
+        bool on=i==sel;
+        float row_w=W-2*UI_SAFE_X;
+        const char *val_s=i==n-1?ui_translate(rows[i].value):rows[i].value;
+        float vw=text_w(FONT_REGULAR,19,val_s);
+        float max_lw=row_w-64-vw;
+        if(max_lw<140)max_lw=140;
+        card(UI_SAFE_X,y,row_w,58,UI_CORNER,on);
+        text_fit(on?FONT_BOLD:FONT_REGULAR,22,UI_SAFE_X+24,y+36,max_lw,on?C_TEXT:C_TEXT_DIM,rows[i].label);
+        text_right(FONT_REGULAR,19,W-UI_SAFE_X-24,y+36,C_TEXT_DIM,val_s);y+=66;
     }
     wrapped(FONT_REGULAR,18,UI_SAFE_X,608,W-2*UI_SAFE_X,24,C_TEXT_DIM,ui_translate(rows[sel].help));
     struct hint hints[]={{"A","Use profile"},{"X","Edit"},{"Y","Manage"},{"B","Back"}};
@@ -1407,36 +1862,216 @@ void ui_draw_advisor(const struct ui_stat *rows,int n,const char *note,bool can_
         "See measured details","See measured details",n>1?rows[1].value:"Unknown",note,can_apply);
 }
 static bool aurora_detail_enabled,aurora_detail_exists;
+static char detail_meta_res[48],detail_meta_last[48];
+static uint32_t details_enter_ms;
+static bool details_entering,details_has_from;
+static float details_from[4],details_enter_p=1.0f;
+static unsigned details_alpha(unsigned base_a,float factor)
+{
+    unsigned r=(unsigned)((float)base_a*factor+0.5f);
+    return r>255u?255u:r;
+}
+void ui_app_details_enter(const char *app_name,uint32_t now_ms)
+{
+    if(!ui_motion_enabled()) {
+        details_entering=false;details_enter_p=1.0f;details_has_from=false;
+        return;
+    }
+    details_entering=true;details_enter_ms=now_ms;details_enter_p=0.0f;
+    if(app_name && !strcmp(launch_source_name,app_name) && launch_source[2]>0.0f && launch_source[3]>0.0f) {
+        for(int i=0;i<4;i++)details_from[i]=launch_source[i];
+        details_has_from=true;
+    } else {
+        details_has_from=false;
+    }
+}
+bool ui_app_details_tick(uint32_t now_ms)
+{
+    if(!details_entering){details_enter_p=1.0f;return false;}
+    uint32_t elapsed=now_ms-details_enter_ms;
+    if(elapsed>=240u){details_entering=false;details_enter_p=1.0f;return false;}
+    details_enter_p=(float)elapsed/240.0f;
+    return true;
+}
+void ui_app_details_finish(void)
+{
+    details_entering=false;details_enter_p=1.0f;
+}
 void ui_app_details_aurora(bool enabled,bool exists)
 {aurora_detail_enabled=enabled;aurora_detail_exists=exists;}
+void ui_app_details_meta(const char *resolution,const char *last_played)
+{
+    snprintf(detail_meta_res,sizeof(detail_meta_res),"%s",resolution?resolution:"");
+    snprintf(detail_meta_last,sizeof(detail_meta_last),"%s",last_played?last_played:"");
+}
+static void detail_draw_icon(int row,float cx,float cy,uint32_t color,bool active_flag)
+{
+    float k=10.5f;
+    switch(row) {
+    case 0:
+        icon(ICON_PLAY,cx,cy,k,color);
+        break;
+    case 1:
+        icon(ICON_MONITOR,cx,cy,k,color);
+        break;
+    case 2: {
+        uint32_t hc=active_flag?C_ACCENT:color;
+        float r=4.2f;
+        cv_circle(&cv,S(cx-3.6f),S(cy-2.2f),S(r),hc);
+        cv_circle(&cv,S(cx+3.6f),S(cy-2.2f),S(r),hc);
+        cv_triangle(&cv,S(cx-7.5f),S(cy-0.5f),S(cx+7.5f),S(cy-0.5f),S(cx),S(cy+7.8f),hc);
+        break;
+    }
+    case 3:
+        cv_ring(&cv,S(cx),S(cy),S(8.5f),S(1.8f),color);
+        cv_line(&cv,S(cx),S(cy),S(cx),S(cy-4.8f),S(1.8f),color);
+        cv_line(&cv,S(cx),S(cy),S(cx+4.0f),S(cy+2.0f),S(1.8f),color);
+        break;
+    case 4: {
+        uint32_t sc=active_flag?C_RED:color;
+        cv_ring(&cv,S(cx),S(cy),S(8.5f),S(1.8f),sc);
+        cv_line(&cv,S(cx-3.8f),S(cy-3.8f),S(cx+3.8f),S(cy+3.8f),S(1.8f),sc);
+        cv_line(&cv,S(cx+3.8f),S(cy-3.8f),S(cx-3.8f),S(cy+3.8f),S(1.8f),sc);
+        break;
+    }
+    case 5:
+        cv_rrect_outline(&cv,S(cx-9.0f),S(cy-7.0f),S(18.0f),S(14.0f),S(2.5f),S(1.8f),color);
+        cv_line(&cv,S(cx-9.0f),S(cy-2.5f),S(cx+9.0f),S(cy-2.5f),S(1.6f),color);
+        break;
+    default:
+        icon(ICON_GEAR,cx,cy,k,color);
+        break;
+    }
+}
 void ui_draw_app_details(const struct ui_host *host,const struct ui_app *app,const char *profile,const char *coverage,int selected)
 {
-    ui_set_page(UI_LIBRARY);begin_frame();header(host);tabs();
-    breadcrumb(NULL,app->name);
-    float cover_x=W<1100?UI_SAFE_X:220.0f;
-    float info_x=cover_x+UI_RAIL_CARD_WIDTH+32.0f;
-    float info_w=W-info_x-UI_SAFE_X;
-    float value_x=info_x+info_w*0.52f;
-    float value_w=info_x+info_w-value_x-20.0f;
-    app_tile(app,cover_x,186,false,0);launch_source_tile(app,cover_x,186,UI_RAIL_CARD_WIDTH,UI_RAIL_CARD_HEIGHT);
-    text_fit(FONT_BOLD,32,info_x,207,info_w,C_TEXT,app->name);
-    text_fit(FONT_REGULAR,19,info_x,244,info_w,C_TEXT_DIM,host && host->name?host->name:ui_translate("Your PC"));
-    text_fit(FONT_REGULAR,19,info_x,277,info_w,C_TEXT_DIM,ui_translate(profile));
-    const char *options[]={"Play","Stream Profile",app->favorite?"Remove favorite":"Add favorite","Performance history","Stop app","Launch coverage"};
-    const char *actions[]={"Start now",profile,app->favorite?"Remove":"Add","Open history  >",app->running?"Stop on PC":"Not running",coverage};
-    for(int i=0;i<(aurora_detail_enabled?7:6);i++) {
-        float y=290+(float)i*49;bool enabled=i!=4 || app->running;
-        card(info_x,y,info_w,46,UI_CORNER,i==selected);
+    ui_set_page(UI_LIBRARY);
+    perf_ui_begin();
+    cv_unclip(&cv);
+    ui_draw_begin(&cv);font_set_sink(&cv,ui_glyph);
+    float ep=details_entering?details_enter_p:1.0f;
+    float ease=1.0f-(1.0f-ep)*(1.0f-ep)*(1.0f-ep);
+    float wash_k=0.45f+0.55f*ease;
+    if(app && app->art && home_wall_current>=0) {
+        home_wall_draw(home_wall_current,255);
+    } else if(ui_draw_recording()) {
+        theme_background(&cv);
+    } else {
+        if(!bg.px && cv_init(&bg,cv.w,cv.h))draw_background();
+        if(bg.px)cv_copy(&cv,&bg);else cv_fill(&cv,0,0,cv.w,cv.h,C_BG_BOTTOM);
+    }
+    /* Glassmorphic blue-green Xbox gradient wash over blurred art */
+    cv_vgradient(&cv,0,0,cv.w,cv.h,ARGB(details_alpha(145,wash_k),10,24,38),ARGB(details_alpha(185,wash_k),10,28,28));
+    cv_vgradient(&cv,0,0,cv.w,SI(140),ARGB(details_alpha(150,wash_k),8,14,20),ARGB(details_alpha(20,wash_k),8,14,20));
+    cv_vgradient(&cv,0,SI(H-160),cv.w,SI(160),ARGB(details_alpha(20,wash_k),8,14,20),ARGB(details_alpha(185,wash_k),8,14,20));
+
+    /* Simplified, aligned header */
+    moon_logo(84,52,20);
+    text(FONT_BOLD,24,116,56,C_TEXT,ui_translate("MoonX360"));
+    if(host) {
+        char hlabel[160];
+        if(host->state==HOST_UNKNOWN)snprintf(hlabel,sizeof(hlabel),"%s",state_text(host->state));
+        else snprintf(hlabel,sizeof(hlabel),"%s  \xC2\xB7  %s",host->name && host->name[0]?host->name:ui_translate("Your PC"),state_text(host->state));
+        cv_circle(&cv,S(122),S(76),S(4.5f),state_color(host->state));
+        text_fit(FONT_REGULAR,15,134,81,320,C_TEXT_DIM,hlabel);
+    }
+    time_t stamp=time(NULL);
+    if(stamp>0){struct tm *clk=localtime(&stamp);if(clk){char tlbl[16];snprintf(tlbl,sizeof(tlbl),"%02d:%02d",clk->tm_hour,clk->tm_min);text_right(FONT_BOLD,20,W-64,56,C_TEXT,tlbl);}}
+#ifdef _XBOX
+    {int pads=input_connected_count();if(pads>0){char plbl[40];snprintf(plbl,sizeof(plbl),"%d %s",pads,ui_translate(pads==1?"controller":"controllers"));text_right(FONT_REGULAR,15,W-64,78,C_TEXT_DIM,plbl);}}
+#endif
+    ui_button(&cv,"LB",SI(W-139),SI(92),SI(35),SI(24));
+    ui_button(&cv,"RB",SI(W-99),SI(92),SI(35),SI(24));
+
+    /* Left column: 2:3 console cover with drop shadow + centered metadata below */
+    float cover_w=200.0f,cover_h=300.0f;
+    float cover_x=W<1100?56.0f:112.0f,cover_y=138.0f;
+    float dcx=cover_x,dcy=cover_y,dcw=cover_w,dch=cover_h;
+    if(details_entering) {
+        if(details_has_from) {
+            dcx=details_from[0]+(cover_x-details_from[0])*ease;
+            dcy=details_from[1]+(cover_y-details_from[1])*ease;
+            dcw=details_from[2]+(cover_w-details_from[2])*ease;
+            dch=details_from[3]+(cover_h-details_from[3])*ease;
+        } else {
+            float sc=0.94f+0.06f*ease;
+            dcw=cover_w*sc;dch=cover_h*sc;
+            dcx=cover_x+(cover_w-dcw)*0.5f-20.0f*(1.0f-ease);
+            dcy=cover_y+(cover_h-dch)*0.5f+16.0f*(1.0f-ease);
+        }
+    }
+    rrect(dcx+4,dcy+8,dcw,dch,UI_CORNER+2,ARGB(details_alpha(90,ease),0,0,0));
+    rrect(dcx+8,dcy+14,dcw,dch,UI_CORNER+2,ARGB(details_alpha(55,ease),0,0,0));
+    if(app && app->art) {
+        ui_picture_region(&cv,app->art,SI(TILE_W),SI(TILE_H),0,0,SI(TILE_W),SI(TILE_H),S(dcx),S(dcy),S(dcw),S(dch),255,app->generation);
+        ui_cover_fade_mark();
+    } else placeholder_art(app?app->name:"",dcx,dcy,dcw,dch);
+    cv_rrect_outline(&cv,S(dcx),S(dcy),S(dcw),S(dch),S(UI_CORNER),S(1.5f),ARGB(details_alpha(95,ease),255,255,255));
+    launch_source_tile(app,cover_x,cover_y,cover_w,cover_h);
+
+    float mp=details_entering?(ep<0.15f?0.0f:(ep>0.85f?1.0f:(ep-0.15f)/0.70f)):1.0f;
+    float me=1.0f-(1.0f-mp)*(1.0f-mp)*(1.0f-mp);
+    if(me>0.02f) {
+        float meta_w=260.0f,meta_cx=cover_x+cover_w*0.5f,meta_y=cover_y+cover_h+34.0f+14.0f*(1.0f-me);
+        text_fit(FONT_BOLD,26,meta_cx-meta_w*0.5f,meta_y,meta_w,WITH_ALPHA(C_TEXT,details_alpha(255,me)),app?app->name:"");
+        text_fit(FONT_REGULAR,16,meta_cx-meta_w*0.5f,meta_y+28,meta_w,WITH_ALPHA(C_TEXT_DIM,details_alpha(255,me)),host && host->name?host->name:ui_translate("Your PC"));
+        text_fit(FONT_REGULAR,16,meta_cx-meta_w*0.5f,meta_y+50,meta_w,WITH_ALPHA(C_ACCENT,details_alpha(255,me)),ui_translate(profile));
+        if(detail_meta_res[0])
+            text_fit(FONT_REGULAR,15,meta_cx-meta_w*0.5f,meta_y+72,meta_w,WITH_ALPHA(C_TEXT_FAINT,details_alpha(255,me)),detail_meta_res);
+        if(detail_meta_last[0])
+            text_fit(FONT_REGULAR,15,meta_cx-meta_w*0.5f,meta_y+92,meta_w,WITH_ALPHA(C_TEXT_FAINT,details_alpha(255,me)),detail_meta_last);
+    }
+
+    /* Right column: glassmorphic cards + vector icons + green CTA pill + neon focus */
+    float info_x=cover_x+cover_w+58.0f,info_w=W-info_x-64.0f;
+    const char *options[]={"Play","Stream Profile",app && app->favorite?"Remove favorite":"Add favorite","Performance history","Stop app","Launch coverage"};
+    const char *actions[]={"Start now",profile,app && app->favorite?"Remove":"Add","Open history  >",app && app->running?"Stop on PC":"Not running",coverage};
+    int count=aurora_detail_enabled?7:6;
+    float row_h=count>6?50.0f:54.0f,row_gap=count>6?8.0f:10.0f,list_y=162.0f;
+
+    for(int i=0;i<count;i++) {
+        float rp=details_entering?((ep-(float)i*0.045f)/0.62f):1.0f;
+        if(rp<0.0f)rp=0.0f;if(rp>1.0f)rp=1.0f;
+        float re=1.0f-(1.0f-rp)*(1.0f-rp)*(1.0f-rp);
+        if(re<=0.01f)continue;
+        float rx=info_x+28.0f*(1.0f-re);
+        float y=list_y+(float)i*(row_h+row_gap);
+        bool on=(i==selected);
+        bool enabled=i!=4 || (app && app->running);
         const char *label=i==6?(aurora_detail_exists?"Aurora Shortcut":"Create Aurora Shortcut"):options[i];
         const char *value=i==6?(aurora_detail_exists?"Manage  >":"Create  >"):actions[i];
-        text_fit(FONT_BOLD,20,info_x+20,y+30,value_x-info_x-32,!enabled?C_TEXT_FAINT:i==selected?C_TEXT:C_TEXT_DIM,ui_translate(label));
-        text_fit(FONT_REGULAR,18,value_x,y+30,value_w,!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM,(i==1 || i==5)?value:ui_translate(value));
+        rrect(rx,y,info_w,row_h,10,on?ARGB(details_alpha(205,re),18,38,34):ARGB(details_alpha(155,re),14,26,36));
+        cv_rrect_outline(&cv,S(rx),S(y),S(info_w),S(row_h),S(10),S(1),on?ARGB(details_alpha(120,re),255,255,255):ARGB(details_alpha(65,re),160,195,210));
+        if(on) {
+            cv_rrect_outline(&cv,S(rx-3),S(y-3),S(info_w+6),S(row_h+6),S(12),S(5),WITH_ALPHA(C_ACCENT,details_alpha(60,re)));
+            cv_rrect_outline(&cv,S(rx),S(y),S(info_w),S(row_h),S(10),S(3),WITH_ALPHA(C_ACCENT,details_alpha(255,re)));
+            if(!details_entering)ui_focus_mark(UI_LIBRARY,i);
+        }
+        uint32_t ic_col=!enabled?C_TEXT_FAINT:(i==0 || on)?C_ACCENT:C_TEXT_DIM;
+        ic_col=WITH_ALPHA(ic_col,details_alpha(ic_col>>24,re));
+        bool ic_flag=(i==2 && app && app->favorite) || (i==4 && app && app->running);
+        detail_draw_icon(i,rx+26.0f,y+row_h*0.5f,ic_col,ic_flag);
+        uint32_t lbl_col=!enabled?C_TEXT_FAINT:on?C_TEXT:C_TEXT_DIM;
+        text_fit(FONT_BOLD,20,rx+52.0f,y+row_h*0.5f+7.0f,info_w-240.0f,WITH_ALPHA(lbl_col,details_alpha(lbl_col>>24,re)),ui_translate(label));
+
+        if(i==0) {
+            const char *cta=ui_translate(value);
+            float cta_w=text_w(FONT_BOLD,16,cta)+42.0f;if(cta_w<148.0f)cta_w=148.0f;
+            float cta_h=36.0f,cta_x=rx+info_w-cta_w-14.0f,cta_y=y+(row_h-cta_h)*0.5f;
+            rrect(cta_x,cta_y,cta_w,cta_h,18,WITH_ALPHA(C_ACCENT,details_alpha(255,re)));
+            text_center(FONT_BOLD,16,cta_x+cta_w*0.5f,cta_y+23.5f,ARGB(details_alpha(255,re),11,19,22),cta);
+        } else {
+            const char *val_str=(i==1 || i==5)?value:ui_translate(value);
+            uint32_t val_col=!enabled?C_TEXT_FAINT:i==4?C_RED:C_TEXT_DIM;
+            text_right(FONT_REGULAR,18,rx+info_w-20.0f,y+row_h*0.5f+6.5f,WITH_ALPHA(val_col,details_alpha(val_col>>24,re)),val_str);
+        }
     }
-    const char *action=selected==0?"Play now":selected==1?"Open stream settings":selected==2?(app->favorite?"Remove favorite":"Add favorite"):
-        selected==3?"Open history":selected==5?"Open settings  >":selected==6?"Open Aurora Shortcut":app->running?"Stop app":"Not running";
+
+    const char *action=selected==0?"Play now":selected==1?"Open stream settings":selected==2?(app && app->favorite?"Remove favorite":"Add favorite"):
+        selected==3?"Open history":selected==5?"Open settings  >":selected==6?"Open Aurora Shortcut":app && app->running?"Stop app":"Not running";
     struct hint hints[]={{"A",action},{"B","Back"}};
     if(selected==1 || selected==5){struct hint inline_hints[]={{"Left / Right","Change"},{"A","Details"},{"B","Back"}};footer(inline_hints,3,NULL);}
-    else footer(selected==4 && !app->running?hints+1:hints,selected==4 && !app->running?1:2,NULL);
+    else footer(selected==4 && !(app && app->running)?hints+1:hints,selected==4 && !(app && app->running)?1:2,NULL);
 }
 
 void ui_draw_ip_editor(const int octets[4], int sel)
@@ -1445,7 +2080,10 @@ void ui_draw_ip_editor(const int octets[4], int sel)
         { "\xE2\x86\x91 \xE2\x86\x93", "\xC2\xB1" "1" }, { "X Y", "\xC2\xB1" "10" },
         { "\xE2\x86\x90 \xE2\x86\x92", "Move" }, { "A", "Save" }, { "B", "Cancel" }
     };
-    float dw = 720, dh = 290, dx, dy, bw = 118, bh = 96, gap = 38, bx0;
+    float dw = W - 2.0f * UI_SAFE_X;
+    if (dw > 720.0f) dw = 720.0f;
+    float dh = 290, dx, dy, gap = 38, bw = (dw - 48 - 3 * gap) / 4.0f, bh = 96, bx0;
+    if (bw > 118.0f) bw = 118.0f;
     int i;
 
     begin_frame();
@@ -1453,8 +2091,8 @@ void ui_draw_ip_editor(const int octets[4], int sel)
     if(location_depth)breadcrumb(NULL,ui_translate("Add host"));
     dialog(dw, dh, &dx, &dy);
 
-    text(FONT_BOLD, 26, dx + 40, dy + 58, C_TEXT, ui_translate("Host PC address"));
-    text(FONT_REGULAR, 17, dx + 40, dy + 88, C_TEXT_DIM, ui_translate("The IP address of the PC running Vibepollo or Sunshine."));
+    text_fit(FONT_BOLD, 26, dx + 40, dy + 58, dw - 80, C_TEXT, ui_translate("Host PC address"));
+    text_fit(FONT_REGULAR, 17, dx + 40, dy + 88, dw - 80, C_TEXT_DIM, ui_translate("The IP address of the PC running Vibepollo or Sunshine."));
 
     bx0 = dx + (dw - (4 * bw + 3 * gap)) / 2;
     for (i = 0; i < 4; i++) {
@@ -1478,7 +2116,10 @@ void ui_draw_ip_editor(const int octets[4], int sel)
 
 void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms)
 {
-    float dw = 760, dh = 390, dx, dy, bw = 96, bh = 116, gap = 20, bx0;
+    float dw = W - 2.0f * UI_SAFE_X;
+    if (dw > 760.0f) dw = 760.0f;
+    float dh = 390, dx, dy, gap = 20, bw = (dw - 64 - 3 * gap) / 4.0f, bh = 116, bx0;
+    if (bw > 96.0f) bw = 96.0f;
     char title[160];
     int i;
 
@@ -1502,7 +2143,7 @@ void ui_draw_pair(const struct ui_host *host, const char *pin, uint32_t t_ms)
     }
 
     spinner(dx + 60, dy + dh - 50, 11, t_ms);
-    text(FONT_REGULAR, 17, dx + 84, dy + dh - 44, C_TEXT_DIM, ui_translate("Waiting for the PIN on the PC. B cancels."));
+    text_fit(FONT_REGULAR, 17, dx + 84, dy + dh - 44, dw - 112, C_TEXT_DIM, ui_translate("Waiting for the PIN on the PC. B cancels."));
 }
 
 void ui_draw_host_failure(const char *title,const char *reason)
@@ -1519,7 +2160,8 @@ void ui_draw_host_failure(const char *title,const char *reason)
 void ui_draw_busy(const char *title, const char *message, uint32_t t_ms)
 {
     message=ui_translate(message);
-    float dw = 640, dx, dy;
+    float dw = W - 2.0f * UI_SAFE_X, dx, dy;
+    if (dw > 640.0f) dw = 640.0f;
     int lines = message ? wrapped_lines(FONT_REGULAR, 18, dw - 150, message) : 0;
     float dh = 120.0f + (float)lines * 25.0f;
 
@@ -1537,7 +2179,8 @@ void ui_draw_message(int which, const char *title, const char *body)
 {
     body=ui_translate(body);
     static const struct hint hints[] = { { "A", "OK" } };
-    float dw = 700, dx, dy;
+    float dw = W - 2.0f * UI_SAFE_X, dx, dy;
+    if (dw > 700.0f) dw = 700.0f;
     int lines = body ? wrapped_lines(FONT_REGULAR, 19, dw - 160, body) : 0;
     float dh = 150.0f + (float)lines * 27.0f;
     uint32_t color = which == ICON_ERROR ? C_RED : which == ICON_CHECK ? C_GREEN : C_ACCENT;
@@ -1587,7 +2230,8 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
     note=ui_translate(note);
     static const struct hint hints[] = { { "A", "OK" } };
     static const struct hint retry_hints[] = { { "A", "Retry connection" }, { "B", "Back" } };
-    float dw = 780, rh = 34, dx, dy;
+    float dw = W - 2.0f * UI_SAFE_X, rh = 34, dx, dy;
+    if (dw > 780.0f) dw = 780.0f;
     int note_lines = note ? wrapped_lines(FONT_REGULAR, 16, dw - 80, note) : 0;
     float dh = 120 + n * rh + note_lines * 22 + (note ? 20 : 0);
     int i;
@@ -1601,14 +2245,17 @@ void ui_draw_stream_stats(const char *title, const struct ui_stat *stats, int n,
         dh=120+(float)n*rh+(float)note_lines*22+(note?20:0);
         card(dx,dy,dw,dh,4,false);
     } else dialog(dw,dh,&dx,&dy);
-    text(FONT_BOLD, 26, dx + 40, dy + 58, C_TEXT, title);
+    text_fit(FONT_BOLD, 26, dx + 40, dy + 58, dw - 80, C_TEXT, title);
     for (i = 0; i < n; i++) {
         float ry = dy + 100 + i * rh;
+        const char *val_s = !strcmp(stats[i].label,"Host") ? stats[i].value : ui_translate(stats[i].value);
+        float vw = text_w(FONT_BOLD, 17, val_s);
+        float max_lw = dw - 96 - vw;
+        if (max_lw < 100) max_lw = 100;
         if (i > 0)
             cv_fill(&cv, SI(dx + 40), SI(ry - 23), SI(dw - 80), 1, WITH_ALPHA(C_BORDER, 200));
-        text(FONT_REGULAR, 17, dx + 40, ry, C_TEXT_DIM, ui_translate(stats[i].label));
-        text_right(FONT_BOLD, 17, dx + dw - 40, ry, C_TEXT,
-                   !strcmp(stats[i].label,"Host")?stats[i].value:ui_translate(stats[i].value));
+        text_fit(FONT_REGULAR, 17, dx + 40, ry, max_lw, C_TEXT_DIM, ui_translate(stats[i].label));
+        text_right(FONT_BOLD, 17, dx + dw - 40, ry, C_TEXT, val_s);
     }
     if (note)
         wrapped(FONT_REGULAR, 16, dx + 40, dy + 110 + n * rh + 10, dw - 80, 22, C_TEXT_FAINT, ui_translate(note));
@@ -1634,7 +2281,7 @@ static const char *launch_labels[LAUNCH_STATUS_COUNT]={
 void ui_launch_session(const char *profile,int width,int height,int fps,int bitrate_kbps)
 {
     snprintf(launch_profile,sizeof(launch_profile),"%s",profile?profile:"");
-    snprintf(launch_mode,sizeof(launch_mode),"%d x %d  |  %d FPS  |  %d.%d Mbps",width,height,fps,bitrate_kbps/1000,(bitrate_kbps%1000)/100);
+    snprintf(launch_mode,sizeof(launch_mode),"%dx%d @ %d FPS  \xC2\xB7  %d.%d Mbps",width,height,fps,bitrate_kbps/1000,(bitrate_kbps%1000)/100);
 }
 void ui_launch_begin(const struct ui_app *app,uint32_t now,bool motion)
 {
@@ -1665,37 +2312,110 @@ void ui_launch_origin(float *x,float *y,float *w,float *h)
 /* Build a straight-alpha text atlas on the menu thread, once per opening.
  * Canvas compositing normally forces alpha opaque, so glyph masks use this
  * explicit sink. Renderer only samples the finished atlas. */
+static void launch_text_plot(canvas_t *c,int x,int y,uint32_t color,unsigned cov)
+{
+    if(x<0 || x>=c->w || y<0 || y>=c->h)return;
+    unsigned sa=((color>>24)*cov+127u)/255u;
+    if(!sa)return;
+    uint32_t *out=c->px+y*c->w+x;
+    uint32_t dst=*out;
+    unsigned da=dst>>24;
+    if(!da){*out=(sa<<24)|(color&0xFFFFFFu);return;}
+    unsigned inv=255u-sa;
+    unsigned out_a=sa+da*inv/255u;
+    unsigned sr=(color>>16)&0xFFu,sg=(color>>8)&0xFFu,sb=color&0xFFu;
+    unsigned dr=(dst>>16)&0xFFu,dg=(dst>>8)&0xFFu,db=dst&0xFFu;
+    unsigned denom=out_a*255u;
+    unsigned rr=(sr*sa*255u+dr*da*inv)/denom;
+    unsigned rg=(sg*sa*255u+dg*da*inv)/denom;
+    unsigned rb=(sb*sa*255u+db*da*inv)/denom;
+    if(rr>255u)rr=255u;if(rg>255u)rg=255u;if(rb>255u)rb=255u;
+    *out=(out_a<<24)|(rr<<16)|(rg<<8)|rb;
+}
+static void launch_text_circle(canvas_t *c,float cx,float cy,float r,uint32_t color)
+{
+    int x0=(int)floorf(cx-r-1.0f),y0=(int)floorf(cy-r-1.0f);
+    int x1=(int)ceilf(cx+r+1.0f),y1=(int)ceilf(cy+r+1.0f);
+    for(int y=y0;y<=y1;y++)for(int x=x0;x<=x1;x++) {
+        float d=sqrtf(((float)x+0.5f-cx)*((float)x+0.5f-cx)+((float)y+0.5f-cy)*((float)y+0.5f-cy))-r;
+        float cov=0.5f-d;if(cov<=0.0f)continue;if(cov>1.0f)cov=1.0f;
+        launch_text_plot(c,x,y,color,(unsigned)(cov*255.0f+0.5f));
+    }
+}
+static void launch_text_ring(canvas_t *c,float cx,float cy,float r,float thickness,uint32_t color)
+{
+    float half=thickness*0.5f;
+    int x0=(int)floorf(cx-r-half-1.0f),y0=(int)floorf(cy-r-half-1.0f);
+    int x1=(int)ceilf(cx+r+half+1.0f),y1=(int)ceilf(cy+r+half+1.0f);
+    for(int y=y0;y<=y1;y++)for(int x=x0;x<=x1;x++) {
+        float d=fabsf(sqrtf(((float)x+0.5f-cx)*((float)x+0.5f-cx)+((float)y+0.5f-cy)*((float)y+0.5f-cy))-r)-half;
+        float cov=0.5f-d;if(cov<=0.0f)continue;if(cov>1.0f)cov=1.0f;
+        launch_text_plot(c,x,y,color,(unsigned)(cov*255.0f+0.5f));
+    }
+}
+static void launch_text_badge(canvas_t *c,float cx,float cy,const char *letter,uint32_t fill,uint32_t rim)
+{
+    launch_text_circle(c,cx,cy,7.5f,fill);
+    launch_text_ring(c,cx,cy,7.2f,1.0f,rim);
+    int lw=font_text_width(FONT_BOLD,10.5f,letter);
+    font_draw(c,FONT_BOLD,10.5f,(int)(cx-(float)lw*0.5f+0.5f),(int)(cy+3.8f),HEX(0xF6FAFC),letter);
+}
 static void launch_text_glyph(canvas_t *c,int x,int y,const uint8_t *mask,int w,int h,int stride,uint32_t color)
 {
-    for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++) {
-        int dx=x+xx,dy=y+yy;if(dx<0 || dx>=c->w || dy<0 || dy>=c->h)continue;
-        unsigned alpha=mask[yy*stride+xx]*(color>>24)/255;uint32_t *out=c->px+dy*c->w+dx;
-        unsigned old=*out>>24,combined=alpha+old*(255-alpha)/255;
-        if(combined)*out=(combined<<24)|(color&0xffffff);
-    }
+    for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)
+        launch_text_plot(c,x+xx,y+yy,color,mask[yy*stride+xx]);
 }
 void ui_launch_text(uint32_t *pixels,int width,int height)
 {
     if(!pixels || width!=LAUNCH_TEXT_W || height!=LAUNCH_TEXT_H)return;
     canvas_t panel;memset(&panel,0,sizeof(panel));panel.px=pixels;panel.w=width;panel.h=height;cv_unclip(&panel);
     memset(pixels,0,(size_t)width*height*4);font_set_sink(&panel,launch_text_glyph);
-    const char *labels[]={launch_name,launch_profile,launch_mode};
-    for(int i=0;i<3;i++) {
-        int size=i==0?28:launch_crt_note?16:19,face=i==0?FONT_BOLD:FONT_REGULAR;
-        int tw=font_text_width(face,(float)size,labels[i]);if(tw>480)tw=480;
-        font_draw_fit(&panel,face,(float)size,(width-tw)/2,i==0?34:i==1?(launch_crt_note?62:66):(launch_crt_note?78:88),480,i==0?C_TEXT:C_TEXT_DIM,labels[i]);
+    /* Row 0 (0..48): Game title */
+    {
+        int tw=font_text_width(FONT_BOLD,26.0f,launch_name);if(tw>480)tw=480;
+        font_draw_fit(&panel,FONT_BOLD,26.0f,(width-tw)/2,33,480,HEX(0xF2F6F9),launch_name);
     }
+    /* Row 1 (48..96): Understated profile / stream metadata line */
     if(launch_crt_note) {
+        char pill_line[220];
+        if(launch_profile[0] && launch_mode[0])snprintf(pill_line,sizeof(pill_line),"%s  \xC2\xB7  %s",launch_profile,launch_mode);
+        else snprintf(pill_line,sizeof(pill_line),"%s",launch_mode[0]?launch_mode:launch_profile);
+        int tw=font_text_width(FONT_REGULAR,13.0f,pill_line);if(tw>472)tw=472;
+        font_draw_fit(&panel,FONT_REGULAR,13.0f,(width-tw)/2,66,472,HEX(0x9BA9B4),pill_line);
         const char *note="Compatible CRT resolution not detected. Using selected settings.";
-        int tw=font_text_width(FONT_REGULAR,12,note);if(tw>480)tw=480;
-        font_draw_fit(&panel,FONT_REGULAR,12,(width-tw)/2,92,480,C_TEXT_DIM,note);
+        int nw=font_text_width(FONT_REGULAR,11.0f,note);if(nw>480)nw=480;
+        font_draw_fit(&panel,FONT_REGULAR,11.0f,(width-nw)/2,85,480,C_TEXT_DIM,note);
+    } else if(launch_profile[0] || launch_mode[0]) {
+        char pill_line[220];
+        if(launch_profile[0] && launch_mode[0])snprintf(pill_line,sizeof(pill_line),"%s  \xC2\xB7  %s",launch_profile,launch_mode);
+        else snprintf(pill_line,sizeof(pill_line),"%s",launch_mode[0]?launch_mode:launch_profile);
+        int tw=font_text_width(FONT_REGULAR,14.0f,pill_line);if(tw>472)tw=472;
+        font_draw_fit(&panel,FONT_REGULAR,14.0f,(width-tw)/2,77,472,HEX(0x9BA9B4),pill_line);
     }
-    for(int i=0;i<LAUNCH_STATUS_COUNT+3;i++) {
-        const char *label=i<LAUNCH_STATUS_COUNT?launch_labels[i]:i==LAUNCH_STATUS_COUNT?"B: Cancel":i==LAUNCH_STATUS_COUNT+1?"B: Cancel | X: Reveal video":"MoonX360";
-        label=ui_translate(label);int size=i<LAUNCH_STATUS_COUNT?18:i==LAUNCH_STATUS_COUNT+2?24:16;
-        int tw=font_text_width(FONT_REGULAR,(float)size,label);if(tw>480)tw=480;
-        int row=i<LAUNCH_STATUS_COUNT?LAUNCH_STATUS_Y+i*LAUNCH_STATUS_H:i==LAUNCH_STATUS_COUNT+2?LAUNCH_LOGO_Y:LAUNCH_HINT_Y+(i-LAUNCH_STATUS_COUNT)*24;
-        font_draw_fit(&panel,FONT_REGULAR,(float)size,(width-tw)/2,row+(i<LAUNCH_STATUS_COUNT?17:19),480,i==LAUNCH_STATUS_COUNT+2?C_ACCENT:C_TEXT_DIM,label);
+    /* Rows 2..15: Clean status lines in soft green (condense Video ready to Starting application...) */
+    for(int i=0;i<LAUNCH_STATUS_COUNT;i++) {
+        const char *label=ui_translate(i==LAUNCH_READY?launch_labels[LAUNCH_PREPARING]:launch_labels[i]);
+        int tw=font_text_width(FONT_REGULAR,16.0f,label);if(tw>480)tw=480;
+        int row=LAUNCH_STATUS_Y+i*LAUNCH_STATUS_H;
+        font_draw_fit(&panel,FONT_REGULAR,16.0f,(width-tw)/2,row+16,480,HEX(0x7CD674),label);
+    }
+    /* Hint rows (LAUNCH_HINT_Y): discreet integrated (B) Cancel */
+    {
+        const char *cancel_lbl=ui_translate("Cancel");
+        int cw=font_text_width(FONT_REGULAR,14.0f,cancel_lbl);if(cw>240)cw=240;
+        int tot=22+cw;
+        float x0=(float)(width-tot)*0.5f;
+        for(int r=0;r<2;r++) {
+            float cy=(float)LAUNCH_HINT_Y+12.0f+(float)r*24.0f;
+            launch_text_badge(&panel,x0+7.5f,cy,"B",ARGB(200,172,56,56),ARGB(120,224,138,138));
+            font_draw_fit(&panel,FONT_REGULAR,14.0f,(int)(x0+22.0f),(int)(cy+5.0f),240,HEX(0x8E9CA6),cancel_lbl);
+        }
+    }
+    /* Fallback logo row (LAUNCH_LOGO_Y) */
+    {
+        const char *logo_lbl=ui_translate("MoonX360");
+        int tw=font_text_width(FONT_BOLD,24.0f,logo_lbl);if(tw>480)tw=480;
+        font_draw_fit(&panel,FONT_BOLD,24.0f,(width-tw)/2,LAUNCH_LOGO_Y+19,480,C_ACCENT,logo_lbl);
     }
     font_set_sink(&cv,ui_glyph);
 }
@@ -1781,13 +2501,8 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
     cv_fill(&cv,SI(px+16),SI(py),SI(pw-32),SI(3),C_ACCENT);
 
     /* 1. Header: title, subtitle, and mode/language/shift badges */
-    const char *title=sk->title[0]?ui_translate(sk->title):ui_translate("Text Input");
-    text_fit(FONT_BOLD,24,px+24,py+38,pw-290,C_TEXT,title);
-    if(sk->subtitle[0])
-        text_fit(FONT_REGULAR,15,px+24,py+60,pw-290,C_TEXT_DIM,ui_translate(sk->subtitle));
-
     static const char *lang_tags[]={"EN","PT-BR","ES"};
-    const char *page_tag=sk->page==SK_PAGE_NUMERIC?"IPv4":
+    const char *page_tag=sk->page==SK_PAGE_NUMERIC?(sk->mode==SK_MODE_RESOLUTION?"W x H":"IPv4"):
                          sk->page==SK_PAGE_SYMBOLS?"123 / #":
                          sk->page==SK_PAGE_ACCENTS?"\xc3\x81\xc3\x89\xc3\x87":
                          sk->shift==SK_SHIFT_CAPS?"CAPS":
@@ -1798,6 +2513,10 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
     else
         snprintf(badge,sizeof(badge),"%s  |  %s",page_tag,lang_tags[sk->lang%SK_LANG_COUNT]);
     float bw=text_w(FONT_BOLD,14,badge)+22.0f;
+    const char *title=sk->title[0]?ui_translate(sk->title):ui_translate("Text Input");
+    text_fit(FONT_BOLD,24,px+24,py+38,pw-bw-64,C_TEXT,title);
+    if(sk->subtitle[0])
+        text_fit(FONT_REGULAR,15,px+24,py+60,pw-bw-64,C_TEXT_DIM,ui_translate(sk->subtitle));
     rrect(px+pw-24-bw,py+18,bw,28,DS_RADIUS_SM,DS_BG_ELEVATED);
     cv_rrect_outline(&cv,S(px+pw-24-bw),S(py+18),S(bw),S(28),S(DS_RADIUS_SM),S(1),C_BORDER);
     text_center(FONT_BOLD,14,px+pw-24-bw*0.5f,py+37,C_ACCENT,badge);
@@ -1841,7 +2560,7 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
 
     /* 3. Suggestion bar (3 stable slots with real LB/RB icons) */
     float sy=ey+eh+22,sh=42;
-    if(sk->mode!=SK_MODE_PASSWORD && sk->mode!=SK_MODE_IP) {
+    if(sk->mode!=SK_MODE_PASSWORD && sk->page!=SK_PAGE_NUMERIC) {
         ui_button(&cv,"LB",SI(ex),SI(sy+7),SI(34),SI(26));
         ui_button(&cv,"RB",SI(ex+ew-34),SI(sy+7),SI(34),SI(26));
         float slot_gap=10.0f;
@@ -1872,7 +2591,7 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
         for(int r=0;r<SK_NUM_ROWS;r++)for(int c=0;c<SK_NUM_COLS;c++) {
             float kx=gx+(float)c*(kw+gap),ky=gy+(float)r*(kh+gap);
             bool on=sk->zone==SK_ZONE_KEYS && sk->row==r && sk->col==c;
-            const char *lbl=sk_key_label(sk->page,sk->shift,r,c);
+            const char *lbl=sk_numeric_key_label(sk,r,c);
             rrect(kx,ky,kw,kh,DS_RADIUS_MD,on?C_CARD_SEL:DS_BG_ELEVATED);
             cv_rrect_outline(&cv,S(kx),S(ky),S(kw),S(kh),S(DS_RADIUS_MD),S(on?DS_FOCUS_BORDER:1),on?C_ACCENT:C_BORDER);
             if(on)ui_focus_mark(UI_SETTINGS+21,r*SK_NUM_COLS+c);
@@ -1899,8 +2618,10 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
             float mid_x=ex+5.0f*kw+4.5f*gap;
             cv_fill(&cv,SI(mid_x),SI(gy+4),SI(1),SI(kh*3.0f+gap*2.0f-8),WITH_ALPHA(C_ACCENT,120));
         }
-        text_center(FONT_REGULAR,13,px+pw*0.5f,gy+kh*3.0f+gap*2.0f+24,C_TEXT_FAINT,
-                    ui_translate("Right Stick moves cursor  |  Hold X repeats Backspace  |  R3 toggles experimental Dual-Stick"));
+        const char *controls=ui_translate("Right Stick moves cursor  |  Hold X repeats Backspace  |  R3 toggles experimental Dual-Stick");
+        float controls_w=text_w(FONT_REGULAR,13,controls);
+        if(controls_w>ew)controls_w=ew;
+        text_fit(FONT_REGULAR,13,px+(pw-controls_w)*0.5f,gy+kh*3.0f+gap*2.0f+24,controls_w,C_TEXT_FAINT,controls);
     }
 
     /* 5. Footer with real Xbox 360 graphic icons */
@@ -1914,4 +2635,33 @@ void ui_draw_smart_keyboard(const struct sk_state *sk)
         static const struct hint w_hints[]={{"A","Type"},{"X","Delete"},{"Y","Space"},{"LT","Shift"},{"RT","Symbols"},{"Start","Done"},{"B","Cancel"}};
         footer(w_hints,7,NULL);
     }
+}
+
+void ui_surface_begin(const char *section, const char *leaf)
+{
+    begin_frame();
+    header(NULL);
+    tabs();
+    if (section || leaf)
+        breadcrumb(section, leaf);
+}
+
+void ui_surface_end(const struct ui_hint *hints, int count, const char *right)
+{
+    struct hint local[12];
+    int n = count < 0 ? 0 : count > 12 ? 12 : count;
+    for (int i = 0; i < n; i++) {
+        local[i].button = hints[i].button;
+        local[i].label = hints[i].label;
+    }
+    footer(local, n, right);
+}
+
+void ui_surface_metrics(float *out_w, float *out_h, float *out_scale, uint32_t *out_accent, uint32_t *out_sel)
+{
+    if (out_w) *out_w = W;
+    if (out_h) *out_h = H;
+    if (out_scale) *out_scale = s;
+    if (out_accent) *out_accent = C_ACCENT;
+    if (out_sel) *out_sel = C_CARD_SEL;
 }

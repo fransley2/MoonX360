@@ -21,14 +21,16 @@ int main(){
     memset(&s,0,sizeof(s));
     for(int i=0;i<3600;i++){sample(&s,60,0,18000);assert(!decode_deadline_needs_refresh(&s));}
     assert(s.recovery && s.recoveries==1);
-    // Reset only for a persistently growing six-frame backlog, once per episode.
-    for(int i=0;i<32;i++)sample(&s,60,110000+i*100,18000);
+    // Transient 110 ms queue spike stays below DEADLINE_BACKLOG_BUDGETS (9 = 150 ms) and does NOT trigger IDR.
+    for(int i=0;i<32;i++){sample(&s,60,110000+i*100,18000);assert(!decode_deadline_needs_refresh(&s));}
+    // Reset only for a persistently growing nine-frame (>150 ms) backlog, once per episode.
+    for(int i=0;i<32;i++)sample(&s,60,155000+i*100,18000);
     assert(decode_deadline_needs_refresh(&s));assert(!decode_deadline_needs_refresh(&s));
     uint64_t last=s.last_refresh;
     for(int i=0;i<32;i++)sample(&s,60,0,8000);
-    for(int i=0;i<32;i++)sample(&s,60,120000+i*100,18000);
+    for(int i=0;i<32;i++)sample(&s,60,160000+i*100,18000);
     assert(!decode_deadline_needs_refresh(&s) && s.last_refresh==last); // cooldown across episodes
-    for(int i=0;i<600;i++)sample(&s,60,150000+i,18000);
+    for(int i=0;i<600;i++)sample(&s,60,180000+i,18000);
     assert(decode_deadline_needs_refresh(&s));
     for(int i=0;i<20;i++)sample(&s,60,0,8000,true);
     assert(!s.recovery && !decode_deadline_needs_refresh(&s));

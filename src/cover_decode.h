@@ -4,8 +4,8 @@
 #include "../third_party/stb/stb_image.h"
 /* Bound the source before STB allocates full RGBA + converted ARGB buffers.
  * A small encoded file alone does not bound a decompressed PNG/JPEG. */
-#define COVER_ENCODED_MAX (1024u*1024u)
-#define COVER_SOURCE_PIXELS (1024u*1024u)
+#define COVER_ENCODED_MAX (2u*1024u*1024u)
+#define COVER_SOURCE_PIXELS (1600u*1600u)
 static bool cover_decode_allowed(const unsigned char *data,size_t len)
 {
     int w=0,h=0,n=0;

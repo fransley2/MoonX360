@@ -1,0 +1,609 @@
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -47,12 +47,31 @@
+ #include "vdpau_internal.h"
+ #include "libavutil/avassert.h"
+ #include <xtl.h>
++#ifdef _XBOX
++#include <PPCIntrinsics.h>
++#endif
+ #if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+-static uint64_t xbox_h264_profile_ticks(void)
+-{
++static av_always_inline uint64_t xbox_h264_profile_ticks(void)
++{
++#ifdef _XBOX
++    return (uint64_t)__mftb32();
++#else
+     LARGE_INTEGER ticks;
+     QueryPerformanceCounter(&ticks);
+     return (uint64_t)ticks.QuadPart;
++#endif
++}
++static av_always_inline uint64_t xbox_h264_profile_diff(uint64_t start, uint64_t end)
++{
++#ifdef _XBOX
++    return (uint64_t)(uint32_t)((uint32_t)end - (uint32_t)start);
++#else
++    return end - start;
++#endif
++}
++static av_always_inline uint64_t xbox_h264_profile_delta(uint64_t start)
++{
++    return xbox_h264_profile_diff(start, xbox_h264_profile_ticks());
+ }
+ #endif
+ 
+@@ -4183,6 +4202,9 @@
+         for (mb_x = start_x; mb_x < end_x; mb_x++)
+             for (mb_y = end_mb_y - FRAME_MBAFF; mb_y <= end_mb_y; mb_y++) {
+                 int mb_xy, mb_type;
++#ifdef XDK_H264_STAGE_PROFILE
++                uint64_t lf_t0, lf_t1;
++#endif
+                 mb_xy         = h->mb_xy = mb_x + mb_y * h->mb_stride;
+                 h->slice_num  = h->slice_table[mb_xy];
+                 mb_type       = h->cur_pic.f.mb_type[mb_xy];
+@@ -4219,8 +4241,19 @@
+                 if (save_border)
+                     backup_mb_border(h, dest_y, dest_cb, dest_cr, linesize,
+                                      uvlinesize, 0);
+-                if (fill_filter_caches(h, mb_type))
++#ifdef XDK_H264_STAGE_PROFILE
++                lf_t0 = xbox_h264_profile_ticks();
++#endif
++                if (fill_filter_caches(h, mb_type)) {
++#ifdef XDK_H264_STAGE_PROFILE
++                    h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_LF_CACHE] += xbox_h264_profile_delta(lf_t0);
++#endif
+                     continue;
++                }
++#ifdef XDK_H264_STAGE_PROFILE
++                lf_t1 = xbox_h264_profile_ticks();
++                h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_LF_CACHE] += xbox_h264_profile_diff(lf_t0, lf_t1);
++#endif
+                 h->chroma_qp[0] = get_chroma_qp(h, 0, h->cur_pic.f.qscale_table[mb_xy]);
+                 h->chroma_qp[1] = get_chroma_qp(h, 1, h->cur_pic.f.qscale_table[mb_xy]);
+ 
+@@ -4231,6 +4264,9 @@
+                     ff_h264_filter_mb_fast(h, mb_x, mb_y, dest_y, dest_cb,
+                                            dest_cr, linesize, uvlinesize);
+                 }
++#ifdef XDK_H264_STAGE_PROFILE
++                h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_LF_FILTER] += xbox_h264_profile_delta(lf_t1);
++#endif
+             }
+     }
+     h->slice_type   = old_slice_type;
+@@ -4239,7 +4275,7 @@
+     h->chroma_qp[0] = get_chroma_qp(h, 0, h->qscale);
+     h->chroma_qp[1] = get_chroma_qp(h, 1, h->qscale);
+ #ifdef XDK_H264_STAGE_PROFILE
+-    h->xbox_parallel_diagnostic.loopfilter_ticks += xbox_h264_profile_ticks() - profile_start;
++    h->xbox_parallel_diagnostic.loopfilter_ticks += xbox_h264_profile_delta(profile_start);
+     h->xbox_parallel_diagnostic.loopfilter_calls++;
+ #endif
+ }
+@@ -4275,8 +4311,17 @@
+             int need = FFMIN(end + 1, h->mb_width);
+             if (row > batch->first) {
+                 const int target = (row - 1) * h->mb_width + need;
++#ifdef XDK_H264_STAGE_PROFILE
++                if (batch->progress[(row - 1) % ROW_SLOTS][0] < target) {
++                    uint64_t wait_t0 = xbox_h264_profile_ticks();
++                    while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
++                        YieldProcessor();
++                    h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_WAVEFRONT_WAIT] += xbox_h264_profile_delta(wait_t0);
++                }
++#else
+                 while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
+                     YieldProcessor();
++#endif
+                 /* Acquire the upper row's pixels after observing its progress. */
+                 MemoryBarrier();
+             }
+@@ -4377,9 +4422,7 @@
+ {
+     H264Context *h = *(void **)arg;
+     int lf_x_start = h->mb_x;
+-#ifdef XDK_H264_STAGE_PROFILE
+-    unsigned profile_mb_ordinal = 0;
+-#endif
++
+ 
+     h->mb_skip_run = -1;
+ 
+@@ -4404,15 +4447,12 @@
+             // START_TIMER
+             int ret, eos;
+ #ifdef XDK_H264_STAGE_PROFILE
+-            int profile_sample = !(profile_mb_ordinal++ & 31);
+-            uint64_t profile_start = profile_sample ? xbox_h264_profile_ticks() : 0;
++            uint64_t profile_start = xbox_h264_profile_ticks();
+ #endif
+             ret = ff_h264_decode_mb_cabac(h);
+ #ifdef XDK_H264_STAGE_PROFILE
+-            if (profile_sample) {
+-                h->xbox_parallel_diagnostic.entropy_sample_ticks += xbox_h264_profile_ticks() - profile_start;
+-                h->xbox_parallel_diagnostic.entropy_samples++;
+-            }
++            h->xbox_parallel_diagnostic.entropy_sample_ticks += xbox_h264_profile_delta(profile_start);
++            h->xbox_parallel_diagnostic.entropy_samples++;
+ #endif
+             // STOP_TIMER("decode_mb_cabac")
+ 
+@@ -4477,15 +4517,12 @@
+         for (;;) {
+             int ret;
+ #ifdef XDK_H264_STAGE_PROFILE
+-            int profile_sample = !(profile_mb_ordinal++ & 31);
+-            uint64_t profile_start = profile_sample ? xbox_h264_profile_ticks() : 0;
++            uint64_t profile_start = xbox_h264_profile_ticks();
+ #endif
+             ret = ff_h264_decode_mb_cavlc(h);
+ #ifdef XDK_H264_STAGE_PROFILE
+-            if (profile_sample) {
+-                h->xbox_parallel_diagnostic.entropy_sample_ticks += xbox_h264_profile_ticks() - profile_start;
+-                h->xbox_parallel_diagnostic.entropy_samples++;
+-            }
++            h->xbox_parallel_diagnostic.entropy_sample_ticks += xbox_h264_profile_delta(profile_start);
++            h->xbox_parallel_diagnostic.entropy_samples++;
+ #endif
+ 
+             if (ret >= 0)
+@@ -4564,21 +4601,21 @@
+ 
+ static int decode_slice(struct AVCodecContext *avctx, void *arg)
+ {
+-#if XDK_R47D_DISPATCH_PROFILE
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+     H264Context *h = *(H264Context **)arg;
+     FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
++    uint64_t started, ended;
+     int result;
+     trace->slice_cpu[0] = GetCurrentProcessorNumber();
+-    trace->slice_begin[0] = xbox_h264_profile_ticks();
++    started = xbox_h264_profile_ticks();
++    trace->slice_begin[0] = started;
+     result = decode_slice_body(avctx, arg);
+-    trace->slice_end[0] = xbox_h264_profile_ticks();
+-    return result;
+-#elif defined(XDK_H264_STAGE_PROFILE)
+-    H264Context *h = *(void **)arg;
+-    uint64_t started = xbox_h264_profile_ticks();
+-    int result = decode_slice_body(avctx, arg);
+-    h->xbox_parallel_diagnostic.slice_ticks += xbox_h264_profile_ticks() - started;
+-    h->xbox_parallel_diagnostic.slice_calls++;
++    ended = xbox_h264_profile_ticks();
++    trace->slice_end[0] = ended;
++#ifdef XDK_H264_STAGE_PROFILE
++    trace->slice_ticks += xbox_h264_profile_diff(started, ended);
++    trace->slice_calls++;
++#endif
+     return result;
+ #else
+     return decode_slice_body(avctx, arg);
+@@ -4606,15 +4643,40 @@
+         return 0;
+     if (context_count == 1) {
+         h->xbox_parallel_diagnostic.serial_dispatches++;
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++        {
++            uint64_t dispatch_started = xbox_h264_profile_ticks();
++            int ret = decode_slice(avctx, &h);
++            FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
++            uint32_t span = (uint32_t)xbox_h264_profile_diff(trace->slice_begin[0], trace->slice_end[0]);
++            trace->reconstruct_wall += xbox_h264_profile_delta(dispatch_started);
++            trace->deep[FF_H264_DEEP_WORKER_SPAN] += (uint64_t)span;
++            trace->slice_begin[0] = xbox_h264_profile_diff(dispatch_started, trace->slice_begin[0]);
++            trace->slice_end[0] = xbox_h264_profile_diff(dispatch_started, trace->slice_end[0]);
++            trace->slices_profiled = 1;
++            trace->dispatches_profiled++;
++            return ret;
++        }
++#else
+         return decode_slice(avctx, &h);
++#endif
+     } else {
+         unsigned participants = 0, concurrent = 0;
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++        uint64_t dispatch_started;
++        uint64_t filter_started;
++#endif
+         h->xbox_parallel_diagnostic.parallel_dispatches++;
+         if ((unsigned)context_count > h->xbox_parallel_diagnostic.max_dispatch_contexts)
+             h->xbox_parallel_diagnostic.max_dispatch_contexts = context_count;
+         av_assert0(context_count > 0);
+         for (i = 1; i < context_count; i++) {
+             hx                    = h->thread_context[i];
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++            hx->xbox_parallel_diagnostic.slice_begin[0] = 0;
++            hx->xbox_parallel_diagnostic.slice_end[0] = 0;
++            hx->xbox_parallel_diagnostic.slice_cpu[0] = 0;
++#endif
+ #ifdef XDK_H264_STAGE_PROFILE
+             hx->xbox_parallel_diagnostic.slice_ticks = 0;
+             hx->xbox_parallel_diagnostic.loopfilter_ticks = 0;
+@@ -4622,6 +4684,7 @@
+             hx->xbox_parallel_diagnostic.slice_calls = 0;
+             hx->xbox_parallel_diagnostic.loopfilter_calls = 0;
+             hx->xbox_parallel_diagnostic.entropy_samples = 0;
++            memset(hx->xbox_parallel_diagnostic.deep, 0, sizeof(hx->xbox_parallel_diagnostic.deep));
+ #endif
+             if (CONFIG_ERROR_RESILIENCE) {
+                 hx->er.error_count = 0;
+@@ -4645,16 +4708,19 @@
+             for (i = 1; i < context_count; i++)
+                 memcpy(h->thread_context[i]->ref2frm, h->ref2frm, sizeof(h->ref2frm));
+         if (postpone && !ordered_rows) {
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++            dispatch_started = xbox_h264_profile_ticks();
++#endif
+             for (i = 0; i < context_count; i++)
+                 results[i] = decode_slice(avctx, &h->thread_context[i]);
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++            h->xbox_parallel_diagnostic.reconstruct_wall += xbox_h264_profile_delta(dispatch_started);
++#endif
+         } else {
+-#if XDK_R47D_DISPATCH_PROFILE
+-            uint64_t dispatch_started;
+-#endif
+             if (postpone)
+                 for (i = 0; i < context_count; i++)
+                     h->thread_context[i]->deblocking_filter = 0;
+-#if XDK_R47D_DISPATCH_PROFILE
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+             dispatch_started = xbox_h264_profile_ticks();
+ #endif
+             if (postpone && context_count > avctx->thread_count) {
+@@ -4680,27 +4746,41 @@
+                 avctx->execute(avctx, decode_slice, h->thread_context,
+                                results, context_count, sizeof(void *));
+             }
+-#if XDK_R47D_DISPATCH_PROFILE
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+             {
+                 FFH264ParallelDiagnostic *trace = &h->xbox_parallel_diagnostic;
+-                trace->reconstruct_wall += xbox_h264_profile_ticks() - dispatch_started;
+-                if (context_count == 8 || context_count == 16) {
+-                    const int prof_n = FFMIN(context_count, 8);
+-                    trace->dispatches_profiled++;
+-                    for (i = 0; i < prof_n; ++i) {
+-                        const FFH264ParallelDiagnostic *worker =
+-                            &h->thread_context[i]->xbox_parallel_diagnostic;
+-                        trace->slice_begin[i] = worker->slice_begin[0] - dispatch_started;
+-                        trace->slice_end[i] = worker->slice_end[0] - dispatch_started;
+-                        trace->slice_cpu[i] = worker->slice_cpu[0];
+-                    }
++                uint32_t span_begin = 0, span_end = 0;
++                int has_span = 0;
++                const int prof_n = FFMIN(context_count, 16);
++                trace->reconstruct_wall += xbox_h264_profile_delta(dispatch_started);
++#ifdef XDK_H264_STAGE_PROFILE
++                trace->deep[FF_H264_DEEP_DISPATCH_SYNC] += ff_xbox_slice_last_dispatch_sync_ticks(avctx);
++#endif
++                for (i = 0; i < context_count; ++i) {
++                    const FFH264ParallelDiagnostic *worker =
++                        &h->thread_context[i]->xbox_parallel_diagnostic;
++                    uint32_t rel_b = (uint32_t)xbox_h264_profile_diff(dispatch_started, worker->slice_begin[0]);
++                    uint32_t rel_e = (uint32_t)xbox_h264_profile_diff(dispatch_started, worker->slice_end[0]);
++                    if (!has_span || rel_b < span_begin)
++                        span_begin = rel_b;
++                    if (!has_span || rel_e > span_end)
++                        span_end = rel_e;
++                    has_span = 1;
++                }
++                if (has_span && span_end >= span_begin)
++                    trace->deep[FF_H264_DEEP_WORKER_SPAN] += (uint64_t)(span_end - span_begin);
++                trace->dispatches_profiled++;
++                trace->slices_profiled = (uint32_t)prof_n;
++                for (i = 0; i < prof_n; ++i) {
++                    const FFH264ParallelDiagnostic *worker =
++                        &h->thread_context[i]->xbox_parallel_diagnostic;
++                    trace->slice_begin[i] = xbox_h264_profile_diff(dispatch_started, worker->slice_begin[0]);
++                    trace->slice_end[i] = xbox_h264_profile_diff(dispatch_started, worker->slice_end[0]);
++                    trace->slice_cpu[i] = worker->slice_cpu[0];
+                 }
+             }
+ #endif
+             if (postpone) {
+-#if XDK_R47D_DISPATCH_PROFILE
+-                uint64_t filter_started;
+-#endif
+                 for (i = 0; i < context_count; i++) {
+                     hx = h->thread_context[i];
+                     hx->deblocking_filter = saved_filter[i];
+@@ -4709,10 +4789,14 @@
+                 }
+                 if (failed)
+                     return -1;
+-#if XDK_R47D_DISPATCH_PROFILE
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
+                 filter_started = xbox_h264_profile_ticks();
+ #endif
+-                if (!filter_complete_rows(h, context_count))
++                if (filter_complete_rows(h, context_count)) {
++#ifdef XDK_H264_STAGE_PROFILE
++                    h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_DISPATCH_SYNC] += ff_xbox_slice_last_dispatch_sync_ticks(avctx);
++#endif
++                } else
+                 for (i = 0; i < context_count; i++) {
+                     int y, end_x, end_y;
+                     hx = h->thread_context[i];
+@@ -4727,14 +4811,15 @@
+                         loop_filter(hx, 0, end_x);
+                     hx->mb_x = end_x;
+                 }
+-#if XDK_R47D_DISPATCH_PROFILE
+-                h->xbox_parallel_diagnostic.filter_wall += xbox_h264_profile_ticks() - filter_started;
++#if defined(XDK_H264_STAGE_PROFILE) || XDK_R47D_DISPATCH_PROFILE
++                h->xbox_parallel_diagnostic.filter_wall += xbox_h264_profile_delta(filter_started);
+ #endif
+             }
+         }
+         ff_xbox_slice_last_dispatch(avctx, &participants, &concurrent);
+ #ifdef XDK_H264_STAGE_PROFILE
+         for (i = 1; i < context_count; i++) {
++            int j;
+             FFH264ParallelDiagnostic *worker = &h->thread_context[i]->xbox_parallel_diagnostic;
+             h->xbox_parallel_diagnostic.slice_ticks += worker->slice_ticks;
+             h->xbox_parallel_diagnostic.loopfilter_ticks += worker->loopfilter_ticks;
+@@ -4742,6 +4827,10 @@
+             h->xbox_parallel_diagnostic.slice_calls += worker->slice_calls;
+             h->xbox_parallel_diagnostic.loopfilter_calls += worker->loopfilter_calls;
+             h->xbox_parallel_diagnostic.entropy_samples += worker->entropy_samples;
++            for (j = 0; j < FF_H264_DEEP_DISPATCH_SYNC; j++) {
++                h->xbox_parallel_diagnostic.deep[j] += worker->deep[j];
++                worker->deep[j] = 0;
++            }
+             worker->slice_ticks = worker->loopfilter_ticks = worker->entropy_sample_ticks = 0;
+             worker->slice_calls = worker->loopfilter_calls = worker->entropy_samples = 0;
+         }
+--- a/libavcodec/h264_mb_template.c
++++ b/libavcodec/h264_mb_template.c
+@@ -54,6 +54,9 @@
+     void (*idct_add)(uint8_t *dst, int16_t *block, int stride);
+     const int block_h   = 16 >> h->chroma_y_shift;
+     const int chroma422 = CHROMA422;
++#ifdef XDK_H264_STAGE_PROFILE
++    uint64_t prof_t0 = 0, prof_t1 = 0;
++#endif
+ 
+     dest_y  = h->cur_pic.f.data[0] + ((mb_x << PIXEL_SHIFT)     + mb_y * h->linesize)  * 16;
+     dest_cb = h->cur_pic.f.data[1] +  (mb_x << PIXEL_SHIFT) * 8 + mb_y * h->uvlinesize * block_h;
+@@ -153,6 +156,9 @@
+         }
+     } else {
+         if (IS_INTRA(mb_type)) {
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t0 = xbox_h264_profile_ticks();
++#endif
+             if (h->deblocking_filter)
+                 xchg_mb_border(h, dest_y, dest_cb, dest_cr, linesize,
+                                uvlinesize, 1, 0, SIMPLE, PIXEL_SHIFT);
+@@ -169,7 +175,15 @@
+             if (h->deblocking_filter)
+                 xchg_mb_border(h, dest_y, dest_cb, dest_cr, linesize,
+                                uvlinesize, 0, 0, SIMPLE, PIXEL_SHIFT);
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t1 = xbox_h264_profile_ticks();
++            h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_INTRA] += xbox_h264_profile_diff(prof_t0, prof_t1);
++            prof_t0 = prof_t1;
++#endif
+         } else if (is_h264) {
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t0 = xbox_h264_profile_ticks();
++#endif
+             if (chroma422) {
+                 FUNC(hl_motion_422)(h, dest_y, dest_cb, dest_cr,
+                               h->me.qpel_put, h->h264chroma.put_h264_chroma_pixels_tab,
+@@ -183,7 +197,17 @@
+                               h->h264dsp.weight_h264_pixels_tab,
+                               h->h264dsp.biweight_h264_pixels_tab);
+             }
+-        }
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t1 = xbox_h264_profile_ticks();
++            h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_MC] += xbox_h264_profile_diff(prof_t0, prof_t1);
++            prof_t0 = prof_t1;
++#endif
++        }
++#ifdef XDK_H264_STAGE_PROFILE
++        else {
++            prof_t0 = xbox_h264_profile_ticks();
++        }
++#endif
+ 
+         hl_decode_mb_idct_luma(h, mb_type, is_h264, SIMPLE, transform_bypass,
+                                PIXEL_SHIFT, block_offset, linesize, dest_y, 0);
+@@ -258,6 +282,9 @@
+                 }
+             }
+         }
++#ifdef XDK_H264_STAGE_PROFILE
++        h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_IDCT] += xbox_h264_profile_delta(prof_t0);
++#endif
+     }
+ }
+ 
+@@ -279,6 +306,9 @@
+     int *block_offset = &h->block_offset[0];
+     const int transform_bypass = !SIMPLE && (h->qscale == 0 && h->sps.transform_bypass);
+     const int plane_count      = (SIMPLE || !CONFIG_GRAY || !(h->flags & CODEC_FLAG_GRAY)) ? 3 : 1;
++#ifdef XDK_H264_STAGE_PROFILE
++    uint64_t prof_t0 = 0, prof_t1 = 0;
++#endif
+ 
+     for (p = 0; p < plane_count; p++) {
+         dest[p] = h->cur_pic.f.data[p] +
+@@ -337,6 +367,9 @@
+         }
+     } else {
+         if (IS_INTRA(mb_type)) {
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t0 = xbox_h264_profile_ticks();
++#endif
+             if (h->deblocking_filter)
+                 xchg_mb_border(h, dest[0], dest[1], dest[2], linesize,
+                                linesize, 1, 1, SIMPLE, PIXEL_SHIFT);
+@@ -349,18 +382,34 @@
+             if (h->deblocking_filter)
+                 xchg_mb_border(h, dest[0], dest[1], dest[2], linesize,
+                                linesize, 0, 1, SIMPLE, PIXEL_SHIFT);
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t1 = xbox_h264_profile_ticks();
++            h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_INTRA] += xbox_h264_profile_diff(prof_t0, prof_t1);
++            prof_t0 = prof_t1;
++#endif
+         } else {
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t0 = xbox_h264_profile_ticks();
++#endif
+             FUNC(hl_motion_444)(h, dest[0], dest[1], dest[2],
+                       h->me.qpel_put, h->h264chroma.put_h264_chroma_pixels_tab,
+                       h->me.qpel_avg, h->h264chroma.avg_h264_chroma_pixels_tab,
+                       h->h264dsp.weight_h264_pixels_tab,
+                       h->h264dsp.biweight_h264_pixels_tab);
++#ifdef XDK_H264_STAGE_PROFILE
++            prof_t1 = xbox_h264_profile_ticks();
++            h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_MC] += xbox_h264_profile_diff(prof_t0, prof_t1);
++            prof_t0 = prof_t1;
++#endif
+         }
+ 
+         for (p = 0; p < plane_count; p++)
+             hl_decode_mb_idct_luma(h, mb_type, 1, SIMPLE, transform_bypass,
+                                    PIXEL_SHIFT, block_offset, linesize,
+                                    dest[p], p);
++#ifdef XDK_H264_STAGE_PROFILE
++        h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_IDCT] += xbox_h264_profile_delta(prof_t0);
++#endif
+     }
+ }
+ 
+--- a/libavcodec/xb_thread.c
++++ b/libavcodec/xb_thread.c
+@@ -34,6 +34,9 @@
+ 
+ #include <pthread.h>
+ #include <xtl.h>
++#ifdef _XBOX
++#include <PPCIntrinsics.h>
++#endif
+ 
+ #include "avcodec.h"
+ #include "internal.h"
+@@ -43,6 +46,19 @@
+ 
+ typedef int (action_func)(AVCodecContext *c, void *arg);
+ typedef int (action_func2)(AVCodecContext *c, void *arg, int jobnr, int threadnr);
++
++#ifdef XDK_H264_STAGE_PROFILE
++static av_always_inline uint32_t xbox_thread_tb32(void)
++{
++#ifdef _XBOX
++    return __mftb32();
++#else
++    LARGE_INTEGER ticks;
++    QueryPerformanceCounter(&ticks);
++    return (uint32_t)ticks.QuadPart;
++#endif
++}
++#endif
+ 
+ /**
+  * Xbox 360 hardware thread mapping.
+@@ -77,6 +93,11 @@
+     int current_job;
+     unsigned int current_execute;
+     int done;
++#ifdef XDK_H264_STAGE_PROFILE
++    uint32_t sync_worker_tb;
++    int sync_worker_set;
++    uint64_t last_dispatch_sync_ticks;
++#endif
+ } ThreadContext;
+ 
+ /// Max number of frame buffers that can be allocated when using frame threads.
+@@ -188,8 +209,13 @@
+     self_id = c->current_job++;
+     for (;;){
+         while (our_job >= c->job_count) {
+-            if (c->current_job == thread_count + c->job_count)
++            if (c->current_job == thread_count + c->job_count) {
++#ifdef XDK_H264_STAGE_PROFILE
++                c->sync_worker_tb = xbox_thread_tb32();
++                c->sync_worker_set = 1;
++#endif
+                 pthread_cond_signal(&c->last_job_cond);
++            }
+ 
+             while (last_execute == c->current_execute && !c->done)
+                 pthread_cond_wait(&c->current_job_cond, &c->current_job_lock);
+@@ -247,6 +273,10 @@
+ {
+     ThreadContext *c= avctx->thread_opaque;
+     int dummy_ret;
++#ifdef XDK_H264_STAGE_PROFILE
++    uint32_t sync_t0, sync_t1, sync_t2;
++    uint64_t sync_total = 0;
++#endif
+ 
+     if (!(avctx->active_thread_type&FF_THREAD_SLICE) || avctx->thread_count <= 1)
+         return avcodec_default_execute(avctx, func, arg, ret, job_count, job_size);
+@@ -254,6 +284,9 @@
+     if (job_count <= 0)
+         return 0;
+ 
++#ifdef XDK_H264_STAGE_PROFILE
++    sync_t0 = xbox_thread_tb32();
++#endif
+     pthread_mutex_lock(&c->current_job_lock);
+ 
+     c->current_job = avctx->thread_count;
+@@ -269,10 +302,26 @@
+         c->rets = &dummy_ret;
+         c->rets_count = 1;
+     }
++#ifdef XDK_H264_STAGE_PROFILE
++    c->sync_worker_set = 0;
++#endif
+     c->current_execute++;
+     pthread_cond_broadcast(&c->current_job_cond);
++#ifdef XDK_H264_STAGE_PROFILE
++    sync_t1 = xbox_thread_tb32();
++    sync_total += (uint64_t)(uint32_t)(sync_t1 - sync_t0);
++#endif
+ 
+     avcodec_thread_park_workers(c, avctx->thread_count);
++#ifdef XDK_H264_STAGE_PROFILE
++    sync_t2 = xbox_thread_tb32();
++    if (c->sync_worker_set) {
++        int32_t wake_delta = (int32_t)(sync_t2 - c->sync_worker_tb);
++        if (wake_delta > 0)
++            sync_total += (uint64_t)(uint32_t)wake_delta;
++    }
++    c->last_dispatch_sync_ticks = sync_total;
++#endif
+ 
+     return 0;
+ }
+@@ -293,6 +342,18 @@
+     if (participants) *participants = count;
+     if (concurrent) *concurrent = c->peak_active_jobs;
+ }
++
++#ifdef XDK_H264_STAGE_PROFILE
++uint64_t ff_xbox_slice_last_dispatch_sync_ticks(const AVCodecContext *avctx)
++{
++    const ThreadContext *c;
++    if (!avctx || !(avctx->active_thread_type & FF_THREAD_SLICE) ||
++        avctx->thread_count <= 1 || !avctx->thread_opaque)
++        return 0;
++    c = avctx->thread_opaque;
++    return c->last_dispatch_sync_ticks;
++}
++#endif
+ 
+ static int avcodec_thread_execute2(AVCodecContext *avctx, action_func2* func2, void *arg, int *ret, int job_count)
+ {

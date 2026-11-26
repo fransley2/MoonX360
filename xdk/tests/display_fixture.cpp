@@ -6,9 +6,17 @@
 #include "../src/config.h"
 #include "../src/display_policy.h"
 #include "../src/ui_layout_geometry.h"
-static int selected_mode;
-void config_load(config *c){memset(c,0,sizeof(*c));c->display_mode=selected_mode;}
+static int selected_mode,selected_layout,stream_width,stream_height;
+void config_load(config *c){
+    memset(c,0,sizeof(*c));c->display_mode=selected_mode;c->ui_layout=selected_layout;
+    c->width=stream_width;c->height=stream_height;
+}
 typedef uint32_t DWORD;
+typedef long LONG;
+static void InterlockedExchange(volatile LONG *dest,LONG value){*dest=value;}
+static void plat_log(const char *){}
+static bool reject_layout_resize;
+static bool ui_init_layout(int,int,int){return !reject_layout_resize;}
 typedef unsigned UINT;
 #define FAILED(x) ((x)<0)
 #define FALSE 0
@@ -28,16 +36,18 @@ struct D3DPRESENT_PARAMETERS {
     int BackBufferWidth,BackBufferHeight,BackBufferFormat,BackBufferCount,MultiSampleType,
         EnableAutoDepthStencil,SwapEffect,PresentationInterval;
 };
-struct XVIDEO_MODE {DWORD dwDisplayWidth,dwDisplayHeight;int fIsInterlaced;float RefreshRate;};
+struct XVIDEO_MODE {DWORD dwDisplayWidth,dwDisplayHeight;int fIsInterlaced;float RefreshRate;int fIsWideScreen;};
 struct LARGE_INTEGER {int64_t QuadPart;};
 static LARGE_INTEGER gfx_frequency;
 static int backbuffer_width=1280,backbuffer_height=720,display_width=1280,display_height=720,dev_lock;
 static int saved_ui_bb_width=1280,saved_ui_bb_height=720;
 static bool crt_240p_bb_active=false;
-static int layout_width=1280,layout_height=720;
-static XVIDEO_MODE video_mode={1920,1080,0,60.0f};
+static int layout_width=1280,layout_height=720,ui_layout_choice;
+static volatile LONG stream_layout_width;
+static XVIDEO_MODE video_mode={1920,1080,0,60.0f,1};
 static float display_refresh;
-static bool display_is_interlaced,display_mode_known;
+static bool display_is_interlaced,display_mode_known,display_is_widescreen=true;
+static int active_display_mode=0;
 static int ui_safe_area;
 static bool reject_1080,reject_all,reject_quality,half_pixel,reject_crt,reject_smooth,reject_sharp;
 static int d3d_releases,attempts;
@@ -85,10 +95,13 @@ struct ID3DXBuffer {DWORD code;const DWORD *GetBufferPointer(){return &code;}voi
 static ID3DXBuffer *compile(const char *s,const char*) { return (reject_quality && !strcmp(s,"quality")) || (reject_crt && !strcmp(s,"crt")) || (reject_smooth && (!strcmp(s,"smooth") || !strcmp(s,"smooth_crt"))) || (reject_sharp && !strcmp(s,"sharp")) ? NULL : new ID3DXBuffer; }
 /* ACTUAL_INIT */
 /* ACTUAL_RECT */
+/* ACTUAL_LAYOUT */
 /* ACTUAL_CRT_AVAILABLE */
 static void reset() {
     dev=NULL;memset(ps,0,sizeof(ps));widths.clear();attempts=d3d_releases=0;crt_240p_bb_active=false;
-    selected_mode=0;reject_1080=reject_all=reject_quality=half_pixel=reject_crt=reject_smooth=reject_sharp=false;display_mode_known=false;video_mode.fIsInterlaced=0;video_mode.RefreshRate=60.0f;video_mode.dwDisplayWidth=1920;video_mode.dwDisplayHeight=1080;
+    stream_layout_width=0;reject_layout_resize=false;
+    selected_mode=0;selected_layout=UI_LAYOUT_AUTO;stream_width=1280;stream_height=720;video_mode.fIsWideScreen=1;
+    reject_1080=reject_all=reject_quality=half_pixel=reject_crt=reject_smooth=reject_sharp=false;display_mode_known=false;video_mode.fIsInterlaced=0;video_mode.RefreshRate=60.0f;video_mode.dwDisplayWidth=1920;video_mode.dwDisplayHeight=1080;
 }
 int main() {
     reset();assert(gfx_init());assert(attempts==1 && backbuffer_width==1920 && backbuffer_height==1080 && half_pixel);
@@ -103,7 +116,29 @@ int main() {
     assert(gfx_init() && attempts==1 && backbuffer_width==1280);
     reset();selected_mode=1;assert(gfx_init() && backbuffer_width==848 && backbuffer_height==480 && display_width==1920);
     reset();selected_mode=2;assert(gfx_init() && backbuffer_width==1280 && display_width==1920);
-    reset();video_mode.dwDisplayWidth=720;video_mode.dwDisplayHeight=480;assert(gfx_init() && backbuffer_height==480);
+    reset();video_mode.dwDisplayWidth=720;video_mode.dwDisplayHeight=480;assert(gfx_init() && backbuffer_width==848 && backbuffer_height==480);
+    // Auto UI layout follows display configuration, not stream resolution.
+    reset();stream_width=800;stream_height=600;assert(gfx_init() && backbuffer_width==1920 && layout_width==1280 && layout_height==720);
+    reset();stream_width=1280;stream_height=720;video_mode.dwDisplayWidth=720;video_mode.dwDisplayHeight=480;
+    video_mode.fIsWideScreen=0;assert(gfx_init() && backbuffer_width==640 && backbuffer_height==480 && layout_width==960);
+    reset();video_mode.dwDisplayWidth=1024;video_mode.dwDisplayHeight=768;video_mode.fIsWideScreen=0;
+    assert(gfx_init() && backbuffer_width==640 && backbuffer_height==480 && layout_width==960);
+    reset();selected_layout=UI_LAYOUT_1_1;assert(gfx_init() && backbuffer_width==1920 && layout_width==720);
+    ui_configure_layout(UI_LAYOUT_AUTO,800,600);
+    assert(gfx_layout_width()==1280 && backbuffer_width==1920);
+    ui_configure_layout(UI_LAYOUT_4_3,800,600);
+    assert(gfx_layout_width()==960 && backbuffer_width==1920);
+    gfx_draw_layout_rect(dev,GFX_SHADER_RGB,0,0,960,720);
+    assert(drawn[0].x==-0.75f && drawn[0].y==1 && drawn[3].x==0.75f && drawn[3].y==-1);
+    gfx_set_stream_layout(512,512);
+    assert(gfx_layout_width()==960);
+    gfx_set_stream_layout(0,0);
+    assert(gfx_layout_width()==960);
+    gfx_draw_rect_uv(dev,GFX_SHADER_YUV_FAST,0,0,1280,720,0.125f,0.0f,0.875f,1.0f);
+    assert(drawn[0].u==0.125f && drawn[0].v==0.0f && drawn[3].u==0.875f && drawn[3].v==1.0f);
+    reject_layout_resize=true;
+    ui_configure_layout(UI_LAYOUT_16_9,800,600);
+    assert(gfx_layout_width()==960 && ui_layout_choice==UI_LAYOUT_4_3);
     reset();reject_quality=true;assert(gfx_init() && !ps[GFX_SHADER_YUV_QUALITY] && ps[GFX_SHADER_YUV_FAST]);
     reset();video_mode.dwDisplayWidth=640;video_mode.dwDisplayHeight=480;video_mode.fIsInterlaced=1;video_mode.RefreshRate=59.94f;
     selected_mode=4;assert(gfx_init() && gfx_crt_clarity_available() && backbuffer_width==640);

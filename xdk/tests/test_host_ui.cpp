@@ -23,6 +23,20 @@ int main()
 {
     for(int size=0;size<2;size++) {
         int w=size?1280:640,h=size?720:480;assert(ui_init(w,h));ui_draw_enable(true);ui_set_motion(false);ui_set_language(2);
+        if(size==0) {
+            const uint32_t times[]={100,140,280,60};
+            const unsigned minimum[]={64,65,255,255},maximum[]={64,254,255,255};
+            for(int i=0;i<4;i++) {
+                ui_set_motion(i<3);ui_draw_splash("Connecting to the network...",times[i]);
+                int count;const ui_draw_command *commands=ui_draw_commands(&count);
+                bool logo=false;
+                for(int j=0;j<count;j++)if(commands[j].kind==UI_IMAGE && commands[j].iw==128 && commands[j].ih==128) {
+                    unsigned alpha=commands[j].color>>24;
+                    assert(alpha>=minimum[i] && alpha<=maximum[i]);logo=true;
+                }
+                assert(logo);
+            }
+        }
         int aw,ah;ui_art_size(&aw,&ah);std::vector<uint32_t> art[6];
         const unsigned colors[]={0x355A4D,0x405C78,0x765B48,0x62587B,0x426B75,0x637044};
         for(int a=0;a<6;a++){art[a].resize(aw*ah);for(int y=0;y<ah;y++)for(int x=0;x<aw;x++)art[a][y*aw+x]=0xff000000u|colors[a]+((x/24+y/32)%2?0x080808:0);}

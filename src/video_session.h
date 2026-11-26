@@ -7,7 +7,7 @@ static int video_hd_colorspace(int width, int height)
 }
 static int video_session_slices(const struct video_options *opts)
 {
-    if (opts->slice_count == 8 || opts->slice_count == 12 || opts->slice_count == 16)
+    if (opts->slice_count == 4 || opts->slice_count == 8 || opts->slice_count == 12 || opts->slice_count == 16)
         return opts->slice_count;
     return opts->width >= 1920 && opts->height >= 1080 && opts->target_fps >= 60 ? 12 : 8;
 }

@@ -102,11 +102,34 @@ int main(void)
     assert(left==0 && top==0 && right==640 && bottom==480);
     video_fit_rect(1280,720,640,480,&left,&top,&right,&bottom);
     assert(left==0 && top==60 && right==640 && bottom==420);
-    ui_layout_canvas_size(1,&out_w,&out_h);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,800,600)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,1024,768)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,2560,240)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,1280,720)==UI_LAYOUT_16_9);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,720,720)==UI_LAYOUT_1_1);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,1280,1024)==UI_LAYOUT_5_4);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,960,640)==UI_LAYOUT_3_2);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,1280,800)==UI_LAYOUT_16_10);
+    assert(ui_layout_resolve(UI_LAYOUT_AUTO,1680,720)==UI_LAYOUT_21_9);
+    assert(ui_layout_resolve(UI_LAYOUT_16_9,800,600)==UI_LAYOUT_16_9);
+    // Display-driven Auto UI layout must NEVER follow stream resolution.
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,0,1920,1080,true,1920,1080)==UI_LAYOUT_16_9);
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,0,640,480,false,640,480)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,0,720,480,false,640,480)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,4,1920,1080,true,640,480)==UI_LAYOUT_4_3);
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,2,640,480,false,1280,720)==UI_LAYOUT_16_9);
+    assert(ui_layout_resolve_display(UI_LAYOUT_AUTO,0,1280,1024,false,1280,720)==UI_LAYOUT_5_4);
+    assert(ui_layout_resolve_display(UI_LAYOUT_1_1,0,1920,1080,true,1920,1080)==UI_LAYOUT_1_1);
+    ui_layout_canvas_size(UI_LAYOUT_4_3,&out_w,&out_h);
     assert(out_w==960 && out_h==720);
     ui_layout_viewport(out_w,out_h,640,480,&left,&top,&right,&bottom);
     assert(left==0 && top==0 && right==640 && bottom==480);
-    ui_layout_canvas_size(0,&out_w,&out_h);
+    ui_layout_viewport(out_w,out_h,1280,720,&left,&top,&right,&bottom);
+    assert(left==160 && top==0 && right==1120 && bottom==720);
+    ui_layout_canvas_size(UI_LAYOUT_1_1,&out_w,&out_h);
+    ui_layout_viewport(out_w,out_h,640,240,&left,&top,&right,&bottom);
+    assert(left==80 && top==0 && right==560 && bottom==240);
+    ui_layout_canvas_size(UI_LAYOUT_16_9,&out_w,&out_h);
     assert(out_w==1280 && out_h==720);
     ui_layout_viewport(out_w,out_h,640,480,&left,&top,&right,&bottom);
     assert(left==0 && top==60 && right==640 && bottom==420);
@@ -145,7 +168,7 @@ int main(void)
     config reset=c;strcpy(reset.host_uuid,"stable-uuid");reset.mouse_hud=2;reset.stream_menu_style=1;reset.ui_motion=true;
     config before_reset=reset;std::string before_ini=ini;allow_write=false;
     assert(!config_reset_preferences(&reset) && !memcmp(&reset,&before_reset,sizeof(reset)) && ini==before_ini);allow_write=true;
-    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==6000 && !reset.mouse_hud && !reset.stream_menu_style && reset.ui_motion && reset.menu_sounds && reset.menu_volume==18);
+    assert(config_reset_preferences(&reset) && reset.bitrate_kbps==6000 && !reset.mouse_hud && !reset.stream_menu_style && reset.ui_motion && reset.menu_sounds && reset.menu_volume==18 && !reset.gpu_post_deblock);
     assert(!strcmp(reset.host,before_reset.host) && !strcmp(reset.host_uuid,"stable-uuid"));
     for(int hud=0;hud<3;hud++)for(int style=0;style<2;style++){
         reset.mouse_hud=hud;reset.stream_menu_style=style;assert(config_save(&reset));config_load(&loaded);
@@ -185,10 +208,35 @@ int main(void)
         ini=bad;int before=writes;config_load(&c);assert(c.fps==60 && writes==before);
         assert(config_save(&c));config_load(&loaded);assert(loaded.fps==60);
     }
-    for(const char *bad:{"width=0\nheight=720\n", "width=1920\nheight=720\n",
+    for(const char *bad:{"width=0\nheight=720\n", "width=1921\nheight=720\n",
+                         "width=2560\nheight=480\n",
                          "width=2147483647\nheight=1080\n", "width=3840\nheight=2160\n"}) {
         ini=bad;config_load(&c);
         assert(c.width==1280 && c.height==720);
+    }
+    for(const char *resolution:{"320x240","800x600","1024x768","1920x720","2560x240"}) {
+        int w=0,h=0;
+        assert(crt_parse_stream_resolution(resolution,&w,&h));
+        config_select_factory(&c,CONFIG_PROFILE_SMOOTH);
+        config_customize_stream(&c);
+        c.width=w;c.height=h;
+        c.display_mode=3;
+        assert(config_save(&c));config_load(&loaded);
+        assert(loaded.width==w && loaded.height==h && loaded.display_mode==3);
+        assert(loaded.fps==60 && loaded.bitrate_kbps==6000 && config_video_preset(&loaded)==0);
+        struct user_profiles profiles={0};
+        profiles.count=1;
+        strcpy(profiles.items[0].name,"Custom stream");
+        config_profile_capture(&profiles.items[0].options,&loaded);
+        char serialized[4096];
+        assert(config_profiles_serialize(&profiles,serialized,sizeof(serialized))>0);
+        config_defaults(&loaded);
+        assert(config_profiles_apply(&profiles,0,&loaded));
+        assert(loaded.width==w && loaded.height==h && loaded.display_mode==0);
+    }
+    for(const char *bad:{"1025x768","2560x720","1024x768x","99999x240","1x1","1024x","1024"}) {
+        int w=7,h=9;
+        assert(!crt_parse_stream_resolution(bad,&w,&h) && w==7 && h==9);
     }
     for(const char *bad:{"packet_size=0\n", "packet_size=2147483647\n", "packet_size=invalid\n"}) {
         ini=bad;config_load(&c);assert(c.packet_size==1024);
@@ -200,15 +248,15 @@ int main(void)
     assert(config_video_preset(&c) == CONFIG_PROFILE_SMOOTH);
     ini="width=1280\nheight=720\nfps=60\nbitrate=35000\nstream_profile=maximum_quality\n";
     config_load(&c);
-    assert(c.bitrate_kbps==10000 && config_video_preset(&c)==CONFIG_PROFILE_QUALITY);
+    assert(c.bitrate_kbps==12000 && config_video_preset(&c)==CONFIG_PROFILE_QUALITY);
     assert(config_save(&c));config_load(&loaded);
-    assert(loaded.bitrate_kbps==10000 && config_video_preset(&loaded)==CONFIG_PROFILE_QUALITY);
+    assert(loaded.bitrate_kbps==12000 && config_video_preset(&loaded)==CONFIG_PROFILE_QUALITY);
     ini="width=1280\nheight=720\nfps=60\nbitrate=35000\nstream_profile=custom\n";
     config_load(&c);
     assert(c.bitrate_kbps==35000 && config_video_preset(&c)==0);
     ini.clear();config_load(&c);
     assert(!c.fast_decode && c.renderer == 0 && c.vsync && c.slice_count == 0);
-    static const int modes[6][4]={{0,0,0,0},{1280,720,60,6000},{960,540,60,3000},{1280,720,60,10000},{1280,720,30,6000},{1920,1080,30,8000}};
+    static const int modes[6][4]={{0,0,0,0},{1280,720,60,6000},{960,540,60,5000},{1280,720,60,12000},{1280,720,30,6000},{1920,1080,30,10000}};
     for (int preset=1;preset<CONFIG_PROFILE_WIRELESS;preset++) {
         c.fast_decode=false;c.renderer=2;c.vsync=false;c.image_quality=2;c.slice_count=16;
         config expected=c;
@@ -304,7 +352,7 @@ int main(void)
     assert(c.fps==30 && c.bitrate_kbps==30000 && !c.fast_decode && c.stream_profile==0 && c.mdns_discovery);
     ini="stream_profile=balanced\nwidth=854\nheight=480\nfps=60\nbitrate=40000\nmdns_discovery=false\nperformance_overlay=off\n";
     config_load(&c);assert(c.width==854 && c.height==480 && c.bitrate_kbps==40000 && c.stream_profile==0 && !c.mdns_discovery && !c.stats_overlay);
-    ini="stream_profile=performance\nwidth=960\nheight=540\nfps=60\nbitrate=3000\nperformance_overlay=detailed\n";
+    ini="stream_profile=performance\nwidth=960\nheight=540\nfps=60\nbitrate=5000\nperformance_overlay=detailed\n";
     config_load(&c);assert(c.stream_profile==2 && config_overlay_mode(&c)==2);
     assert(config_save(&c));assert(ini.find("stream_profile=performance")!=std::string::npos);
     assert(ini.find("mdns_discovery=true")!=std::string::npos && ini.find("performance_overlay=detailed")!=std::string::npos);
@@ -334,17 +382,47 @@ int main(void)
     ini="language=3\n";config_load(&c);assert(c.language==CONFIG_LANGUAGE_ENGLISH);
     ini="stream_profile=1080_smooth\nwidth=1920\nheight=1080\nfps=60\nbitrate=20000\nfast_decode=0\nimage_quality=2\n";
     config_load(&c);assert(c.fps==60 && c.bitrate_kbps==20000 && !c.fast_decode && c.image_quality==2 && config_video_preset(&c)==0);
-    config_apply_preset(&c,CONFIG_PROFILE_1080_SMOOTH);assert(c.fps==30 && c.bitrate_kbps==8000);
+    config_apply_preset(&c,CONFIG_PROFILE_1080_SMOOTH);assert(c.fps==30 && c.bitrate_kbps==10000);
     assert(!strcmp(config_profile_key(CONFIG_PROFILE_1080_SMOOTH),"1080_smooth"));
-    assert(!strcmp(config_preset_name(CONFIG_PROFILE_1080_SMOOTH),"1080p (Experimental)"));
+    assert(!strcmp(config_preset_name(CONFIG_PROFILE_1080_SMOOTH),"1080p30 (Experimental)"));
     assert(config_save(&c));config_load(&loaded);assert(config_video_preset(&loaded)==CONFIG_PROFILE_1080_SMOOTH);
     ini="stream_profile=smooth\nwidth=1280\nheight=720\nfps=60\nbitrate=18000\n";config_load(&c);assert(c.bitrate_kbps==18000 && config_video_preset(&c)==0);
     config_apply_preset(&c,CONFIG_PROFILE_SMOOTH);assert(c.bitrate_kbps==6000 && c.fps==60);
+    ini="stream_profile=smooth\nwidth=1280\nheight=720\nfps=60\nbitrate=10000\n";config_load(&c);assert(c.bitrate_kbps==10000 && config_video_preset(&c)==0);
+    ini="stream_profile=maximum_quality\nwidth=1280\nheight=720\nfps=60\nbitrate=10000\n";config_load(&c);assert(c.bitrate_kbps==10000 && config_video_preset(&c)==0);
+    ini="stream_profile=1080_smooth\nwidth=1920\nheight=1080\nfps=30\nbitrate=8000\n";config_load(&c);assert(c.bitrate_kbps==8000 && config_video_preset(&c)==0);
+    assert(config_profile_is_legacy(CONFIG_PROFILE_LOW_LATENCY) && !config_profile_is_visible(CONFIG_PROFILE_LOW_LATENCY));
+    assert(!config_is_crt_factory(CONFIG_PROFILE_LOW_LATENCY));
+    ini="width=1280\nheight=720\nfps=60\nbitrate=6000\nvsync=0\n";config_load(&c);
+    assert(c.stream_profile==CONFIG_PROFILE_SMOOTH && config_match_factory(&c)==0 && !c.vsync);
+    ini="stream_profile=low_latency\nwidth=1280\nheight=720\nfps=60\nbitrate=6000\nvsync=0\n";config_load(&c);
+    assert(c.width==1280 && c.height==720 && c.fps==60 && c.bitrate_kbps==6000 && !c.vsync && config_video_preset(&c)==0);
+    config_select_factory(&c,CONFIG_PROFILE_QUALITY);assert(c.bitrate_kbps==12000 && !strcmp(config_preset_name(CONFIG_PROFILE_QUALITY),"High Quality (Experimental)"));
+    c.gpu_post_deblock=1;config_customize_stream(&c);assert(config_match_factory(&c)==0 && config_video_preset(&c)==0);
+    assert(config_save(&c));config_load(&loaded);assert(loaded.gpu_post_deblock==1);
+    config_select_factory(&loaded,CONFIG_PROFILE_SMOOTH);assert(loaded.gpu_post_deblock==0 && config_match_factory(&loaded)==CONFIG_PROFILE_SMOOTH);
     ini="mouse_speed=175\nmouse_acceleration=0\n";config_load(&c);
     assert(c.desktop.speed==175 && !c.desktop.acceleration && !c.desktop_start && c.desktop.keyboard==0);
     ini="desktop_speed=50\nmouse_speed=175\ndesktop_acceleration=1\nmouse_acceleration=0\n";config_load(&c);
     assert(c.desktop.speed==50 && c.desktop.acceleration);
     ini="mouse_speed=175\nmouse_acceleration=0\ndesktop_speed=75\ndesktop_acceleration=1\n";config_load(&c);
     assert(c.desktop.speed==75 && c.desktop.acceleration);
+    assert(c.pc_guide_enabled);
+    c.pc_guide_enabled=false;assert(config_save(&c));config_load(&loaded);assert(!loaded.pc_guide_enabled);
+    assert(c.explorer.view_mode==FE_VIEW_DETAILS && c.explorer.sort_by==FE_SORT_NAME && c.explorer.folders_first);
+    assert(c.explorer.confirm_delete && c.explorer.show_preview_pane && c.explorer.remember_last_dir);
+    c.explorer.view_mode=FE_VIEW_ICONS;c.explorer.sort_by=FE_SORT_SIZE;c.explorer.sort_dir=FE_SORT_DESC;
+    c.explorer.folders_first=false;c.explorer.show_extensions=false;c.explorer.show_hidden=true;
+    c.explorer.show_sizes=false;c.explorer.show_preview_pane=false;c.explorer.confirm_delete=false;
+    c.explorer.remember_last_dir=false;c.explorer.thumbnail_cache=false;
+    strcpy(c.explorer.last_dir,"Hdd1:\\Apps\\");
+    assert(config_save(&c));config_load(&loaded);
+    assert(loaded.explorer.view_mode==FE_VIEW_ICONS && loaded.explorer.sort_by==FE_SORT_SIZE && loaded.explorer.sort_dir==FE_SORT_DESC);
+    assert(!loaded.explorer.folders_first && !loaded.explorer.show_extensions && loaded.explorer.show_hidden);
+    assert(!loaded.explorer.show_sizes && !loaded.explorer.show_preview_pane && !loaded.explorer.confirm_delete);
+    assert(!loaded.explorer.remember_last_dir && !loaded.explorer.thumbnail_cache && !strcmp(loaded.explorer.last_dir,"Hdd1:\\Apps\\"));
+    ini="fe_view=99\nfe_sort_by=-5\nfe_sort_dir=8\n";config_load(&loaded);
+    assert(loaded.explorer.view_mode==FE_VIEW_DETAILS && loaded.explorer.sort_by==FE_SORT_NAME && loaded.explorer.sort_dir==FE_SORT_ASC);
+    assert(config_reset_preferences(&loaded) && loaded.pc_guide_enabled && loaded.explorer.view_mode==FE_VIEW_DETAILS && loaded.explorer.confirm_delete);
     puts("PASS: old INI preservation, new defaults, save/load, bounds, preset isolation and custom values.");
 }

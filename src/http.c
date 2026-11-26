@@ -49,12 +49,14 @@ static bool probe_live(const struct conn *c)
 static bool probe_wait(struct conn *c,bool writing)
 {
     while(probe_live(c)) {
+        int32_t rem=(int32_t)(c->deadline-plat_now_ms());
+        if(rem<=0)return false;
+        int wait_ms=rem<10?rem:10;
         fd_set ready,errors;FD_ZERO(&ready);FD_ZERO(&errors);FD_SET(c->fd,&ready);FD_SET(c->fd,&errors);
-        struct timeval tv;tv.tv_sec=tv.tv_usec=0;
+        struct timeval tv;tv.tv_sec=0;tv.tv_usec=wait_ms*1000;
         int n=select(c->fd+1,writing?NULL:&ready,writing?&ready:NULL,&errors,&tv);
         if(n<0 || FD_ISSET(c->fd,&errors))return false;
         if(n>0)return true;
-        plat_sleep_ms(10);
     }
     return false;
 }
@@ -66,6 +68,7 @@ static bool probe_open(struct conn *c,const char *host,int port,int timeout_ms,v
     struct sockaddr_in sa;memset(&sa,0,sizeof(sa));sa.sin_family=AF_INET;sa.sin_port=htons((unsigned short)port);
     sa.sin_addr.s_addr=inet_addr(host);if(sa.sin_addr.s_addr==INADDR_NONE)return false;
     c->fd=(int)socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);if(c->fd<0)return false;
+    {int nodelay=1;setsockopt(c->fd,IPPROTO_TCP,TCP_NODELAY,(const char*)&nodelay,sizeof(nodelay));}
 #ifdef _XBOX
     u_long nonblocking=1;if(ioctlsocket(c->fd,FIONBIO,&nonblocking))return false;
 #else
@@ -263,36 +266,37 @@ static bool http_get_impl(const char *host, int port, bool https, const char *pa
     struct conn c;
     char *req, *buf, *hdr_end, *body;
     size_t cap = 16384, len = 0, req_len;
-    size_t response_limit=probe?16384:(!strncmp(path,"/appasset",9)?1024*1024+16384:MAX_RESPONSE);
+    size_t response_limit=probe?16384:(!strncmp(path,"/appasset",9)?2*1024*1024+16384:MAX_RESPONSE);
     long content_length = -1;
     bool chunked = false;
+    bool trace = !probe && strncmp(path,"/appasset",9)!=0;
     int n;
 
+    memset(&c, 0, sizeof(c));
+    c.fd = -1;
     memset(out, 0, sizeof(*out));
-    bool opened=probe?probe_open(&c,host,port,timeout_ms,cancel):
-        conn_open(&c, host, port, https, id, timeout_ms,strncmp(path,"/appasset",9)!=0,cancel);
-    if (!opened) {
-        conn_close(&c);
-        return false;
-    }
 
     req_len = strlen(path) + strlen(host) + 128;
     req = (char *)malloc(req_len);
     buf = (char *)malloc(cap + 1);
-    if (req == NULL || buf == NULL)
-        goto fail;
+    if (req == NULL || buf == NULL) {
+        free(req);free(buf);
+        return false;
+    }
     snprintf(req, req_len,
              "GET %s HTTP/1.1\r\nHost: %s:%d\r\nUser-Agent: Moonlight-Xbox360\r\nConnection: close\r\n\r\n",
              path, host, port);
+
+    if (probe?!probe_open(&c,host,port,timeout_ms,cancel):!conn_open(&c, host, port, https, id, timeout_ms,trace,cancel))
+        goto fail;
+
     if (conn_write(&c, req, strlen(req)) < 0)
         goto fail;
 
-    /* Read the whole response; the host closes the connection when done. */
     for (;;) {
         if (len == cap) {
             char *nb;
-            if (cap >= response_limit)
-                goto fail;
+            if(cap>=response_limit)goto fail;
             cap *= 2;
             if(cap>response_limit)cap=response_limit;
             nb = (char *)realloc(buf, cap + 1);
@@ -308,7 +312,6 @@ static bool http_get_impl(const char *host, int port, bool https, const char *pa
         len += (size_t)n;
         buf[len] = '\0';
 
-        /* Stop early once Content-Length bytes have arrived. */
         hdr_end = strstr(buf, "\r\n\r\n");
         if (hdr_end && content_length < 0 && !chunked) {
             const char *cl = find_nocase(buf, "\r\nContent-Length:");

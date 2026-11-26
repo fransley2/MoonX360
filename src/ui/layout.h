@@ -18,7 +18,7 @@
 #define UI_FOCUS_MS 120u
 #define UI_ART_FADE_MS 200u
 #define UI_PAGE_FADE_MS 180u
-#define UI_WALL_FADE_MS 200u
+#define UI_WALL_FADE_MS 380u
 #define UI_QUICK_SLIDE_MS 160u
 #define UI_DIALOG_FADE_MS 150u
 

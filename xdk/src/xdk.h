@@ -8,13 +8,15 @@
 
 /*
  * Hardware thread layout while streaming (three cores, two threads each):
- *   0  main, Moonlight dispatch/network; Balanced: Opus, XAudio2 and input
+ *   0  main, Moonlight dispatch/VideoDec; Balanced: Opus, XAudio2 and input
  *   1,2,4[,3] FFmpeg slice workers after patch_worker_map.py (3 or 4)
- *   5  video presentation; Legacy additionally puts audio/input here
+ *   5  video presentation (Render), VideoRecv (HIGHEST, off HW0/VideoDec),
+ *      and low-latency InputSend; Legacy additionally puts audio/input here
  * Physical pairs are HW0/1, HW2/3, HW4/5 (SDK XSetThreadProcessor).
  * SDK CreateThread inherits the creator processor and starts at NORMAL.
- * Network/VideoDec inherit the connection task's HW0; only VideoRecv is
- * raised to HIGHEST by win_net.c. AudioDec moves to xdk_aux_processor().
+ * VideoDec inherits the connection task's HW0; VideoRecv is pinned to HW5 at
+ * HIGHEST by win_net.c so ~1500+ recvfrom/s never preempts VideoDec or worker 0.
+ * AudioDec moves to xdk_aux_processor().
  * Legacy changes auxiliary placement only; both modes use the patched workers.
  * xdk_audit_thread records H/priority on actual console entry; do not guess H.
  */
@@ -55,11 +57,16 @@ uint64_t gfx_texture_allocation_bytes(D3DTexture *texture);
 bool gfx_crt_clarity_available(void);
 bool gfx_crt_shader_compiled(void);
 bool gfx_display_known(void);
+bool gfx_display_widescreen(void);
+int gfx_resolved_ui_layout(int layout);
 void gfx_ui_viewport(int cw,int ch,int ow,int oh,int *l,int *t,int *r,int *b);
 #define GFX_SHADER_YUV GFX_SHADER_YUV_FAST
+void gfx_draw_rect_uv(D3DDevice *dev, int shader, float x0, float y0, float x1, float y1,
+                      float u0, float v0, float u1, float v1);
 void gfx_draw_rect(D3DDevice *dev, int shader, float x0, float y0, float x1, float y1);
 void gfx_draw_layout_rect(D3DDevice *dev,int shader,float x0,float y0,float x1,float y1);
 int gfx_layout_width(void);
+void gfx_set_stream_layout(int width,int height);
 /* Straight-alpha HUD draw restores all blend states; white-mask conversion is local to HUDs. */
 void gfx_draw_hud_rect(D3DDevice *dev,float x0,float y0,float x1,float y1);
 void gfx_hud_pixels(uint32_t *pixels,int width,int height);
@@ -118,6 +125,10 @@ void cached_video_invalidate_history(void);
 void cached_video_smoothing_snapshot(struct smoothing_diagnostics *out);
 int cached_video_publish(const BYTE *const planes[3], const int pitches[3], struct gfx_copy_cost *cost);
 int cached_video_publish_picture(const BYTE *const planes[3],const int pitches[3],struct gfx_copy_cost *cost,uint64_t picture);
+struct frame_pacing_record;
+void cached_video_set_last_meta(const struct frame_pacing_record *meta);
+bool cached_video_get_slot_meta(int slot, struct frame_pacing_record *out);
+unsigned cached_video_prune_if_stale(int mode, uint64_t now_us, uint32_t max_age_us);
 uint64_t cached_video_picture(int slot);
 uint64_t cached_video_ready_time(int slot);
 uint32_t cached_video_frame_serial(int slot);

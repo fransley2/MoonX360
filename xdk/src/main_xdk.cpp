@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "../../src/config.h"
+#include "../../src/ui_layout_geometry.h"
 #include "../../src/aurora_launch.h"
 #define STORAGE_OS_ERROR() ((unsigned)GetLastError())
 #include "../../src/safe_storage.h"
@@ -36,6 +37,10 @@ static char previous_shutdown[256], previous_phase[256];
 static struct diagnostic_ring connection_trace;
 static CRITICAL_SECTION connection_trace_lock;
 static bool connection_trace_ready;
+
+#ifdef MOONX_XCLOUD_VIDEO
+void xcloud_video_run(const char *path);
+#endif
 
 static void diagnostic_add(const char *line)
 {
@@ -413,7 +418,7 @@ void plat_archive_session_reports(void)
         {"performance-session.txt",true}, {"present-trace.txt",true},
         {"last-log.txt",true}, {"h264-parallel-session.txt",true},
         {"h264-parallel-trace.txt",true}, {"h264-stage-session.txt",false},
-        {"latency-capture.txt",false}, {"frame-cadence.txt",false},
+        {"latency-capture.txt",false}, {"frame-cadence.txt",false}, {"frame-pacing-session.txt",false},
     };
     char *state;size_t state_len=0;
     unsigned slot=1,next=2,count=0;
@@ -536,14 +541,19 @@ static bool network_init(void)
     if (XNetStartup(&xnsp) != 0 || WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
         return false;
 
-    DWORD dhcp_start=GetTickCount();unsigned polls=0;
+    DWORD dhcp_start=GetTickCount(), last_splash=dhcp_start;
+    unsigned polls=0;
     while (GetTickCount() - start < 20000) {
         polls++;
         status = XNetGetTitleXnAddr(&addr);
         if (status != XNET_GET_XNADDR_PENDING && (status & (XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_STATIC)))
             break;
-        splash("Obtaining network address...");
-        Sleep(100);
+        DWORD now=GetTickCount();
+        if (now-last_splash>=16) {
+            last_splash=now;
+            splash("Obtaining network address...");
+        }
+        Sleep(4);
     }
     if (!(status & (XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_STATIC)))
         return false;
@@ -592,14 +602,16 @@ static void write_console_environment(void)
     char text[1536];int n=snprintf(text,sizeof(text),
         "schema=1\nlink_flags=0x%08x\nactive_mask=0x%08x\nwireless_mask=0x%08x\nconsole_link=%s\nhost_path=unknown\n"
         "physical_mode_known=%d\nphysical_width=%u\nphysical_height=%u\nphysical_reported_hz=%.5f\ninterlaced=%d\n"
-        "app_backbuffer=%dx%d\ncrt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\n"
+        "app_backbuffer=%dx%d\nui_canvas=%dx%d\nauto_ui_layout=%s\nphysical_widescreen=%d\n"
+        "crt_output_status=%d\ncrt_shader_created=%d\ncrt_shader_output_eligible=%d\n"
         "t240_detected=%d\nt240_version=%s\nt240_mode=%d\ncrt_240p_available=%d\ncrt_240p_reason=%s\ns240_beacon_magic=0x%08x\n"
         "component_cable_and_TV_model=unverified\n"
         "refresh_scope=XGetVideoMode_report_not_measured_field_cadence\n",
         (unsigned)link,(unsigned)XNET_ETHERNET_LINK_ACTIVE,(unsigned)XNET_ETHERNET_LINK_WIRELESS,
         console_link_name(console_link_classify(link,XNET_ETHERNET_LINK_ACTIVE,XNET_ETHERNET_LINK_WIRELESS)),
         gfx_display_known(),(unsigned)mode.dwDisplayWidth,(unsigned)mode.dwDisplayHeight,mode.RefreshRate,mode.fIsInterlaced!=FALSE,
-        w,h,plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available(),
+        w,h,gfx_layout_width(),UI_LOGICAL_HEIGHT,ui_layout_name(gfx_resolved_ui_layout(UI_LAYOUT_AUTO)),mode.fIsWideScreen!=FALSE,
+        plat_crt_output_status(),gfx_crt_shader_compiled(),gfx_crt_clarity_available(),
         crt.plugin_detected,crt_ver,crt.plugin_mode,crt.retro_240p_available,crt_output_reason_text(crt.reason),
         (unsigned)(beacon?beacon->magic:0u));
     if(n>0 && (size_t)n<sizeof(text))storage_write("console-environment.txt",text,(size_t)n);
@@ -611,6 +623,7 @@ void plat_display_info(char *out,size_t capacity)
     snprintf(out,capacity,ui_translate("Output %dx%d%s %.2f Hz | App %dx%d"),w,h,gfx_display_interlaced()?"i":"p",gfx_display_hz(),rw,rh);
 }
 int plat_display_refresh_x100(void) {float hz=gfx_display_hz();return hz>=20 && hz<=240?(int)(hz*100+0.5f):6000;}
+int plat_resolve_ui_layout(int layout) {return gfx_resolved_ui_layout(layout);}
 bool plat_system_ui_active(void) {return gfx_system_ui_active();}
 bool plat_power_available(void) {return !video_xdk_is_streaming();}
 bool plat_power_action(bool restart)
@@ -690,14 +703,16 @@ void __cdecl main()
     startup_stage("ui_init begin\n");
     direct_trace_stage("[MAIN 09] ui_init begin");
     struct config startup_config;config_load(&startup_config);
-    int ui_width=startup_config.ui_layout?960:UI_LOGICAL_WIDTH;
-    if (!ui_init_layout(ui_width, UI_LOGICAL_HEIGHT, startup_config.ui_layout)) {
+    int startup_layout=gfx_resolved_ui_layout(startup_config.ui_layout);
+    if (!ui_init_layout(gfx_layout_width(), UI_LOGICAL_HEIGHT, startup_layout)) {
         direct_trace_stage("[MAIN FATAL] ui_init failed");
         startup_stage("ui_init failed\n");
         return;
     }
 
     ui_set_language(startup_config.language);
+    ui_set_appearance(startup_config.ui_background, startup_config.ui_accent);
+    ui_set_motion(startup_config.ui_motion);
     startup_stage("network splash begin\n");
     splash("Connecting to the network...");
     startup_stage("network_init begin\n");
@@ -715,6 +730,11 @@ void __cdecl main()
     if (!storage_ready)
         plat_log("Storage: game:\\moonlight isn't writable; settings won't be saved\n");
     if(!direct_launch_ready){splash("Preparing video decoder...");plat_prepare_video();}
+#ifdef MOONX_XCLOUD_VIDEO
+    const char *xcloud_config = "game:\\xcloud-video.ini";
+    if (!direct_launch_ready && GetFileAttributesA(xcloud_config) != INVALID_FILE_ATTRIBUTES)
+        xcloud_video_run(xcloud_config);
+#endif
     /* One-shot native replay for XBDM monitors without controller automation.
      * Only an explicitly deployed marker enables it; ordinary startup is
      * unchanged. Consume the marker before running to prevent restart loops. */

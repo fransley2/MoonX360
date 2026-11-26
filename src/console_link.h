@@ -10,3 +10,12 @@ static const char *console_link_name(int link)
 {
     return link==CONSOLE_LINK_WIRED?"Wired":link==CONSOLE_LINK_WIRELESS?"Wireless":"Unknown";
 }
+#ifndef XDK_WIRED_1392_MIN_KBPS
+#define XDK_WIRED_1392_MIN_KBPS 12000
+#endif
+static int console_link_effective_packet_size(int packet_size, int bitrate_kbps, int link)
+{
+    if (link == CONSOLE_LINK_WIRED && packet_size == 1024 && bitrate_kbps >= XDK_WIRED_1392_MIN_KBPS)
+        return 1392;
+    return packet_size;
+}

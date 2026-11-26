@@ -72,7 +72,9 @@ int main(){
     keys={A_FLAG};game_profile_menu(42);assert(!strcmp(game_bindings.items[0].profile,"factory:2"));assert(keys.empty());
     config current=cfg;config profile=cfg;profile.width=1920;profile.height=1080;profile.fps=60;profile.audio_mode=1;profile.stream_profile=0;
     user_profiles saved={};saved.slot=-1;assert(config_profiles_create(&saved,&profile,"TV"));
-    keys.clear();for(int i=2;i<1+config_visible_factory_profiles(NULL,0);i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);game_profile_menu(42);assert(keys.empty());
+    int vis_ids[CONFIG_PROFILE_COUNT],vis_count=config_visible_factory_profiles(vis_ids,CONFIG_PROFILE_COUNT),cur_row=0;
+    for(int i=0;i<vis_count;i++)if(vis_ids[i]==2){cur_row=1+i;break;}
+    keys.clear();for(int i=cur_row;i<1+vis_count;i++)keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);game_profile_menu(42);assert(keys.empty());
     assert(!strcmp(game_bindings.items[0].profile,"user:TV"));stream(42,"Game");assert(stream_calls==1 && used_width==1920 && used_audio==1 && !memcmp(&cfg,&current,sizeof(cfg)));
     files.erase("profiles-a.tsv");files.erase("profiles-b.tsv");int notices=messages;stream(42,"Game");assert(used_width==current.width && messages==notices+1 && !memcmp(&cfg,&current,sizeof(cfg)));
     puts("PASS: actual controller per-game factory/saved selection, next-launch apply, missing profile fallback and global restoration");

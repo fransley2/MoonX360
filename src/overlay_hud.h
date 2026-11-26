@@ -115,6 +115,7 @@ struct overlay_telemetry {
     uint32_t fec_failed;
     uint32_t queue_overflows;
     uint32_t recent_loss_delta;
+    uint32_t recent_overflow_delta;
 
     /* Upload / Present timing (EMA) */
     bool timing_valid;
@@ -138,7 +139,9 @@ struct overlay_telemetry {
     int alert_kind; /* enum overlay_alert_kind */
     bool alert_filtered;
 
-    /* Footer identity (actual decoded stream only, never requested) */
+    /* Footer identity (actual decoded stream + requested comparison) */
+    int requested_w;
+    int requested_h;
     int actual_w;
     int actual_h;
     float display_hz;
@@ -158,6 +161,7 @@ struct overlay_alert_tracker {
     uint8_t sysgpu_wait_ticks;
     uint8_t sysgpu_clear_ticks;
     uint8_t loss_hold_ticks;
+    uint8_t overflow_hold_ticks;
     uint32_t last_sysgpu_timeouts;
     bool decode_active;
     bool queue_active;
@@ -226,11 +230,16 @@ static inline int overlay_alert_update(struct overlay_alert_tracker *tr, const s
         tr->decode_over_ticks = 0;
     }
 
-    /* 4. Packet loss / overflow hold (2s hold prevents single-tick flicker). */
-    if (t->recent_loss_delta > 0 || t->fec_failed > 0 || t->queue_overflows > 0) {
+    /* 4. Packet loss hold (2s hold prevents single-tick flicker). */
+    if (t->recent_loss_delta > 0) {
         tr->loss_hold_ticks = 2;
     } else if (tr->loss_hold_ticks > 0) {
         tr->loss_hold_ticks--;
+    }
+    if (t->recent_overflow_delta > 0) {
+        tr->overflow_hold_ticks = 2;
+    } else if (tr->overflow_hold_ticks > 0) {
+        tr->overflow_hold_ticks--;
     }
 
     /* 5. Queue backlog (sustained 2s, hysteresis clear at <= 1 frame & < 80% budget). */
@@ -254,7 +263,7 @@ static inline int overlay_alert_update(struct overlay_alert_tracker *tr, const s
     if (tr->sysgpu_active) return OVERLAY_ALERT_SYSGPU_WAIT;
     if (tr->decode_active) return OVERLAY_ALERT_DECODE_OVERLOAD;
     if (tr->loss_hold_ticks > 0) return OVERLAY_ALERT_PACKET_LOSS;
-    if (tr->queue_active) return OVERLAY_ALERT_QUEUE_BACKLOG;
+    if (tr->queue_active || tr->overflow_hold_ticks > 0) return OVERLAY_ALERT_QUEUE_BACKLOG;
     if (t->in_recovery && !no_video) return OVERLAY_ALERT_RECOVERY;
     if (t->network_stale && t->network_valid) return OVERLAY_ALERT_STALE;
     return OVERLAY_ALERT_NONE;
@@ -272,9 +281,9 @@ static inline int overlay_effective_alert_kind(const struct overlay_telemetry *t
     if (!t->decode_stale && t->avg_decode_us > 0 && t->budget_ms > 0.0 &&
         (!t->fps_valid || t->fps_decoded >= 1.0) && (t->avg_decode_us / 1000.0) > t->budget_ms)
         return OVERLAY_ALERT_DECODE_OVERLOAD;
-    if (t->recent_loss_delta > 0 || t->fec_failed > 0 || t->queue_overflows > 0)
+    if (t->recent_loss_delta > 0)
         return OVERLAY_ALERT_PACKET_LOSS;
-    if (t->video_queue >= 3 || (t->queue_age_valid && t->budget_ms > 0.0 && t->queue_age_us > (uint32_t)(t->budget_ms * 1000.0)))
+    if (t->recent_overflow_delta > 0 || t->video_queue >= 3 || (t->queue_age_valid && t->budget_ms > 0.0 && t->queue_age_us > (uint32_t)(t->budget_ms * 1000.0)))
         return OVERLAY_ALERT_QUEUE_BACKLOG;
     if (t->in_recovery) return OVERLAY_ALERT_RECOVERY;
     if (t->network_stale && t->network_valid) return OVERLAY_ALERT_STALE;
@@ -369,9 +378,9 @@ static inline uint32_t overlay_queue_color(const struct overlay_telemetry *t)
 
 static inline uint32_t overlay_loss_color(const struct overlay_telemetry *t)
 {
-    if (t->decode_errors > 0 || t->fec_failed > 0 || t->queue_overflows > 0 || t->recent_loss_delta > 0)
+    if (t->decode_errors > 0 || t->recent_loss_delta > 0)
         return DS_STATUS_ERROR;
-    if (t->dropped > 0 || t->rtp_lost > 0 || t->frame_gaps > 0)
+    if (t->dropped > 0 || t->rtp_lost > 0 || t->frame_gaps > 0 || t->fec_failed > 0 || t->queue_overflows > 0)
         return DS_STATUS_WARN;
     return DS_TEXT_PRIMARY;
 }
@@ -673,7 +682,11 @@ static inline void overlay_render_panel(canvas_t *c, const struct overlay_teleme
             int fy = cursor_y + 20;
             char footer[96];
             const char *backend = t->backend_name[0] ? t->backend_name : "FFmpeg";
-            if (t->actual_w > 0 && t->actual_h > 0)
+            if (t->actual_w > 0 && t->actual_h > 0 && t->requested_w > 0 && t->requested_h > 0 &&
+                (t->requested_w != t->actual_w || t->requested_h != t->actual_h))
+                snprintf(footer, sizeof(footer), "Req %dx%d->%dx%d | %s",
+                         t->requested_w, t->requested_h, t->actual_w, t->actual_h, backend);
+            else if (t->actual_w > 0 && t->actual_h > 0)
                 snprintf(footer, sizeof(footer), "%dx%d  |  %s", t->actual_w, t->actual_h, backend);
             else
                 snprintf(footer, sizeof(footer), "%s", backend);
@@ -766,7 +779,11 @@ static inline void overlay_render_panel(canvas_t *c, const struct overlay_teleme
         int fy = cursor_y + 14;
         char footer[96];
         const char *backend = t->backend_name[0] ? t->backend_name : "FFmpeg";
-        if (t->actual_w > 0 && t->actual_h > 0)
+        if (t->actual_w > 0 && t->actual_h > 0 && t->requested_w > 0 && t->requested_h > 0 &&
+            (t->requested_w != t->actual_w || t->requested_h != t->actual_h))
+            snprintf(footer, sizeof(footer), "Req %dx%d->%dx%d | %s",
+                     t->requested_w, t->requested_h, t->actual_w, t->actual_h, backend);
+        else if (t->actual_w > 0 && t->actual_h > 0)
             snprintf(footer, sizeof(footer), "%dx%d  |  %s", t->actual_w, t->actual_h, backend);
         else
             snprintf(footer, sizeof(footer), "%s", backend);
@@ -989,7 +1006,15 @@ static inline void overlay_render_panel(canvas_t *c, const struct overlay_teleme
         int fy = cursor_y + (crt ? 19 : 14);
         char footer[128];
         const char *backend = t->backend_name[0] ? t->backend_name : "FFmpeg";
-        if (t->actual_w > 0 && t->actual_h > 0 && t->display_hz >= 20.0f)
+        if (t->actual_w > 0 && t->actual_h > 0 && t->requested_w > 0 && t->requested_h > 0 &&
+            (t->requested_w != t->actual_w || t->requested_h != t->actual_h) && t->display_hz >= 20.0f)
+            snprintf(footer, sizeof(footer), "Req %dx%d->%dx%d | %s | %.0f Hz",
+                     t->requested_w, t->requested_h, t->actual_w, t->actual_h, backend, t->display_hz);
+        else if (t->actual_w > 0 && t->actual_h > 0 && t->requested_w > 0 && t->requested_h > 0 &&
+                 (t->requested_w != t->actual_w || t->requested_h != t->actual_h))
+            snprintf(footer, sizeof(footer), "Req %dx%d->%dx%d | %s",
+                     t->requested_w, t->requested_h, t->actual_w, t->actual_h, backend);
+        else if (t->actual_w > 0 && t->actual_h > 0 && t->display_hz >= 20.0f)
             snprintf(footer, sizeof(footer), "%dx%d  |  %s  |  %.0f Hz", t->actual_w, t->actual_h, backend, t->display_hz);
         else if (t->actual_w > 0 && t->actual_h > 0)
             snprintf(footer, sizeof(footer), "%dx%d  |  %s", t->actual_w, t->actual_h, backend);

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -9,10 +10,10 @@ struct mouse_event {int action,button;};
 static std::vector<key_event> keys;
 static std::vector<mouse_event> clicks;
 static std::string text;
-static int movement,vertical,horizontal,text_result;
+static int movement,mouse_calls,move_dx_sum,move_dy_sum,vertical,horizontal,text_result;
 int LiSendKeyboardEvent(short key,char action,char mods){key_event e={key,action,(unsigned char)mods};keys.push_back(e);return 0;}
 int LiSendMouseButtonEvent(char action,int button){mouse_event e={action,button};clicks.push_back(e);return 0;}
-int LiSendMouseMoveEvent(short x,short y){movement+=abs(x)+abs(y);return 0;}
+int LiSendMouseMoveEvent(short x,short y){movement+=abs(x)+abs(y);mouse_calls++;move_dx_sum+=x;move_dy_sum+=y;return 0;}
 int LiSendScrollEvent(signed char){return 0;}
 int LiSendHighResScrollEvent(short amount){vertical+=amount;return 0;}
 int LiSendHighResHScrollEvent(short amount){horizontal+=amount;return 0;}
@@ -86,5 +87,40 @@ int main(){
     d.held[0]=true;pads[2].present=false;pads[3].present=true;
     desktop_select_owner(&d,pads);assert(d.owner==3 && !d.held[0] && d.neutral);
     pads[3].present=false;desktop_select_owner(&d,pads);assert(d.owner==-1);
-    puts("PASS: Desktop mouse/drag/deadzone/precision/boost/two-axis scrolling, paired OSK/modifiers, edge shortcuts, reserved Back chords, UTF-8 accents/symbols/caps/cancel, toolbar, disconnect and mode neutralization, mapping conflicts and Quick Menu.");
+    // Radial deadzone preserves shallow diagonals instead of snapping to cardinal axes.
+    d=fresh();d.neutral=false;memset(&p,0,sizeof(p));p.present=true;
+    move_dx_sum=move_dy_sum=0;p.lx=30000;p.ly=3000;
+    for(int i=0;i<50;i++)step(d,p,0);
+    assert(move_dx_sum>0 && move_dy_sum<0);
+    // Circular magnitude avoids ~1.41x diagonal speed boost when acceleration is off.
+    d=fresh();d.neutral=false;d.options.acceleration=0;memset(&p,0,sizeof(p));p.present=true;
+    move_dx_sum=move_dy_sum=0;p.lx=32767;p.ly=0;
+    for(int i=0;i<100;i++)step(d,p,0);
+    double horiz_dist=fabs((double)move_dx_sum);
+    d=fresh();d.neutral=false;d.options.acceleration=0;memset(&p,0,sizeof(p));p.present=true;
+    move_dx_sum=move_dy_sum=0;p.lx=32767;p.ly=32767;
+    for(int i=0;i<100;i++)step(d,p,0);
+    double diag_dist=sqrt((double)move_dx_sum*move_dx_sum+(double)move_dy_sum*move_dy_sum);
+    assert(diag_dist>=horiz_dist*0.95 && diag_dist<=horiz_dist*1.05);
+    // Progressive curve is positive and gentler at moderate deflection than linear scaling.
+    d=fresh();d.neutral=false;d.options.acceleration=0;memset(&p,0,sizeof(p));p.present=true;
+    move_dx_sum=move_dy_sum=0;p.lx=16000;p.ly=0;
+    for(int i=0;i<100;i++)step(d,p,0);
+    assert(move_dx_sum>0 && (double)move_dx_sum<horiz_dist*0.35);
+    // 1 ms polling paces mouse moves to ~125 Hz and flushes remainder cleanly on stop.
+    d=fresh();d.neutral=false;d.options.acceleration=0;memset(&p,0,sizeof(p));p.present=true;
+    mouse_calls=0;move_dx_sum=0;p.lx=32767;
+    for(int i=0;i<100;i++){tick+=1;desktop_step(&d,&p,tick,input_exit_mask(0));}
+    assert(mouse_calls<=16 && move_dx_sum>60);
+    p.lx=0;tick+=1;desktop_step(&d,&p,tick,input_exit_mask(0));
+    assert(d.pending_dx==0 && !d.motion_clock_valid);
+    // Clicking flushes pending pointer delta before emitting button press.
+    d=fresh();d.neutral=false;d.options.acceleration=0;memset(&p,0,sizeof(p));p.present=true;
+    p.lx=32767;tick+=2;desktop_step(&d,&p,tick,input_exit_mask(0)); /* immediate first send */
+    int calls_before=mouse_calls;
+    for(int i=0;i<3;i++){tick+=1;desktop_step(&d,&p,tick,input_exit_mask(0));}
+    assert(mouse_calls==calls_before && d.pending_dx>=2);
+    p.buttons=A_FLAG;tick+=1;desktop_step(&d,&p,tick,input_exit_mask(0));
+    assert(mouse_calls==calls_before+1 && d.pending_dx<=1 && d.held[0]);
+    puts("PASS: Desktop mouse/drag/deadzone/precision/boost/two-axis scrolling, paired OSK/modifiers, edge shortcuts, reserved Back chords, UTF-8 accents/symbols/caps/cancel, toolbar, disconnect and mode neutralization, mapping conflicts, radial/curved pacing and Quick Menu.");
 }

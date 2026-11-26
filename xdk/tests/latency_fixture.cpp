@@ -7,6 +7,7 @@
 #include "../src/video_picture.h"
 #include "../src/stream_metrics.h"
 #include "../src/overlay_hud.h"
+#include "../src/input_guide.h"
 typedef uint32_t DWORD;
 typedef int32_t LONG;
 typedef void *LPVOID;
@@ -199,6 +200,7 @@ static void sk_remote_apply_prefs(struct sk_remote_session*,int,int){}
 static void sk_remote_close(struct sk_remote_session *rs){rs->active=false;}
 static bool sk_remote_step(struct sk_remote_session*,const struct sk_pad*,uint32_t){return false;}
 static volatile LONG desktop_snapshot,desktop_available=1;
+static volatile LONG pc_guide_enabled=1,pc_guide_hold_ms=INPUT_GUIDE_HOLD_MS;
 static void desktop_suspend(desktop_input *d){d->neutral=true;d->view=0;}
 static void desktop_select_owner(desktop_input*,const pad*){assert(false);}
 static void desktop_command(desktop_input*,int){assert(false);}

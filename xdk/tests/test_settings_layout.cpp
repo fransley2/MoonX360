@@ -46,6 +46,10 @@ int main(void)
     assert(settings_node(SET_CRT_SCALING)==MENU_CRT_PICTURE && settings_node(SET_CRT_CLARITY)==MENU_CRT_PICTURE);
     assert(settings_node(SET_CRT_ASPECT)==MENU_CRT_PICTURE && settings_node(SET_CRT_SCREEN_ADJ)==MENU_CRT_PICTURE);
     assert(settings_node(SET_CRT_OUTPUT_STATUS)==MENU_CRT_PICTURE && settings_node(SET_CRT_RESET)==MENU_CRT_PICTURE);
+    assert(settings_node(SET_GPU_POST_DEBLOCK)==MENU_STREAM_ADJUST && settings_kind(SET_GPU_POST_DEBLOCK)==UI_OPTION_TOGGLE);
+    assert(settings_pages[MENU_CONTROLLER_SHORTCUTS].parent==MENU_CONTROLS && settings_node(SET_PC_GUIDE)==MENU_CONTROLLER_SHORTCUTS);
+    assert(settings_group(SET_PC_GUIDE)==SETTINGS_CONTROLS && settings_kind(SET_PC_GUIDE)==UI_OPTION_TOGGLE);
+    assert(settings_pages[MENU_FILE_EXPLORER].parent==MENU_ADVANCED && settings_pages[MENU_FILE_EXPLORER].category==SETTINGS_DIAGNOSTICS);
     assert(settings_kind(SET_CRT_SCREEN_ADJ)==UI_OPTION_OPEN && settings_kind(SET_CRT_OUTPUT_STATUS)==UI_OPTION_OPEN && settings_kind(SET_CRT_RESET)==UI_OPTION_ACTION);
     puts("PASS: all setting IDs have exactly one destination; all submenu links have one parent; distinct Stream and application settings and interaction types.");
 }

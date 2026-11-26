@@ -3,10 +3,12 @@
 #include <assert.h>
 static unsigned menu_restores;
 static void ui_present(){menu_restores++;}
+static bool ui_focus_tick(uint32_t){return false;}
 #include <stdio.h>
 #include <vector>
 #include "../src/input_session.h"
 #include "../src/input_shortcut.h"
+#include "../src/input_guide.h"
 #include "../src/input_hotplug.h"
 #include "../src/desktop_input.h"
 #include "../src/ui/smart_keyboard_remote.h"

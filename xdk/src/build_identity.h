@@ -5,5 +5,8 @@
 #ifndef XDK_OPTIMIZATION_AGGRESSIVE
 #define XDK_OPTIMIZATION_AGGRESSIVE 0
 #endif
+#ifndef XDK_INPUT_HW_THREAD
+#define XDK_INPUT_HW_THREAD 5
+#endif
 #define XDK_WORKER_MAP_LABEL (XDK_WORKER_MAP_PREVIOUS ? "previous" : "current")
 #define XDK_BUILD_PROFILE_LABEL (XDK_OPTIMIZATION_AGGRESSIVE ? "aggressive" : "compatible")

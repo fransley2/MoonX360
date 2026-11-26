@@ -9,6 +9,9 @@ def function(signature):
     return s[start:end]
 fixture=(root/'xdk/tests/display_fixture.cpp').read_text()
 fixture=fixture.replace('/* ACTUAL_INIT */',function('bool gfx_init('))
-fixture=fixture.replace('/* ACTUAL_RECT */',function('void gfx_draw_rect('))
+fixture=fixture.replace('/* ACTUAL_RECT */',function('void gfx_draw_rect_uv(')+'\n'+function('void gfx_draw_rect('))
+fixture=fixture.replace('/* ACTUAL_LAYOUT */','\n'.join(function(sig) for sig in (
+    'void gfx_ui_viewport(', 'void ui_configure_layout(', 'void gfx_set_stream_layout(',
+    'int gfx_layout_width(', 'void gfx_draw_layout_rect(')))
 fixture=fixture.replace('/* ACTUAL_CRT_AVAILABLE */',function('bool gfx_crt_clarity_available('))
 Path(sys.argv[1]).write_text(fixture)

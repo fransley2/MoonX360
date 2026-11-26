@@ -128,7 +128,7 @@ int main() {
     assert(wide.left==0 && wide.top==60 && wide.right==640 && wide.bottom==420);
     physical_w=1920;physical_h=1080;
     D3DDevice d={};ui_host host={"Gaming PC","192.168.1.3",HOST_PAIRED,NULL,NULL};
-    ui_app apps[20]={};uint32_t art[150*225];for(int i=0;i<150*225;i++)art[i]=HEX(0x66884A);
+    ui_app apps[20]={};uint32_t art[300*450];for(int i=0;i<300*450;i++)art[i]=HEX(0x66884A);
     for(int i=0;i<20;i++) {apps[i].name="Example game";apps[i].art=art;apps[i].generation=1;}
     ui_draw_library(&host,apps,20,0,"All Apps");
     int count;const ui_draw_command *commands=ui_draw_commands(&count);assert(commands&&count>100);
@@ -141,7 +141,7 @@ int main() {
     /* Existing image accounting includes the one embedded brand image as well as art. */
     assert(memory.glyph_bytes==1024*512*4 && memory.button_gpu_bytes==512*32*4 && memory.gpu_covers==2);
     /* The brand must not displace any of the twelve existing cover slots. */
-    static uint32_t distinct_art[12][150*225];
+    static uint32_t distinct_art[12][300*450];
     for(int i=0;i<12;i++)apps[i].art=distinct_art[i];
     gfx_ui_release(&d); // isolate capacity from the earlier shared test image
     ui_set_motion(false);
@@ -154,7 +154,7 @@ int main() {
         assert(cached); // twelve distinct art buffers remain resident alongside brand/buttons
     }
     // Failed replacement retains its victim and only substitutes a placeholder.
-    ui_draw_command incoming={};incoming.kind=UI_IMAGE;incoming.iw=150;incoming.ih=225;incoming.pixels=art;incoming.generation=99;
+    ui_draw_command incoming={};incoming.kind=UI_IMAGE;incoming.iw=300;incoming.ih=450;incoming.pixels=art;incoming.generation=99;
     frame_stamp++;D3DTexture *retained=images[0].texture;unsigned before_failed=uploads;
     fail_create=true;assert(!image(&d,&incoming));fail_create=false;
     assert(images[0].texture==retained);assert(!image(&d,&incoming) && uploads==before_failed);
@@ -236,7 +236,7 @@ int main() {
     ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");
     ui_launch_begin(apps,100,true);
     preview("launch-cover-centered.ppm");pending=false;
-    tick=0;launch_begin(5000,true);assert(launch_offer_art(art,150,225,1));assert(launch_prepare());gfx_release_ui_textures();
+    tick=0;launch_begin(5000,true);assert(launch_offer_art(art,300,450,1));assert(launch_prepare());gfx_release_ui_textures();
     assert(allocations-releases==4 && launch_active());unsigned launch_allocations=allocations;
     unsigned initial_clock=visual.started;D3DTexture *same_text=launch_text;
     assert(launch_refresh_text() && launch_text==same_text && visual.started==initial_clock && allocations==launch_allocations);
@@ -261,14 +261,14 @@ int main() {
     pending=false;launch_begin(5000,true);assert(launch_prepare());unsigned late_allocations=allocations;
     tick+=1200;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
     unsigned movement_start=visual.started;assert(!visual.art);
-    assert(launch_offer_art(art,150,225,12));assert(!launch_offer_art(art,150,225,12));
+    assert(launch_offer_art(art,300,450,12));assert(!launch_offer_art(art,300,450,12));
     tick+=100;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
     assert(visual.art && visual.art_started==tick && visual.started==movement_start);
     launch_visual_sample late;launch_visual_get(&visual,tick,&late);assert(late.art==0 && late.x==514);
     launch_visual_get(&visual,tick+125,&late);assert(late.art==.5f && late.x==514);
     assert(allocations==late_allocations);
     // A transient GPU upload failure retains the previous cover and staging lease.
-    assert(launch_offer_art(art,150,225,13));int retained_current=launch_current;
+    assert(launch_offer_art(art,300,450,13));int retained_current=launch_current;
     unsigned retained_clock=visual.started;pending=false;fail_upload=true;
     owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
     assert(launch_current==retained_current && launch_art_ready && launch_upload_failed);
@@ -276,7 +276,7 @@ int main() {
     assert(launch_current==retained_current && launch_art_ready);
     tick++;pending=false;owner=gfx_begin();gfx_launch_draw(owner,false);gfx_end();
     assert(launch_current!=retained_current && !launch_art_ready && visual.started==retained_clock);
-    launch_end();assert(!launch_offer_art(art,150,225,13));
+    launch_end();assert(!launch_offer_art(art,300,450,13));
     assert(allocations==releases);
     // Stereo fallback keeps one visual lifetime and all resources, while resetting only media readiness.
     ui_draw_enable(true);ui_draw_library(&host,apps,20,0,"All Apps");ui_launch_begin(apps,tick,true);

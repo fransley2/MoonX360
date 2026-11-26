@@ -331,7 +331,15 @@ int main(void)
     sk_remote_close(&rs3);
     assert(!rs3.active);
 
-    printf("PASS: Smart Keyboard all 6 modes, PT-BR/EN/ES autocomplete, UTF-8, held-X repeat, Dual-Stick, 16:9 & 4:3 CRT bounds, and Remote Desktop Mode (Compose/Direct/Chords/Fallback/Layouts).\n");
+    struct sk_state resolution;
+    struct sk_pad confirm = {};confirm.start=true;
+    sk_init(&resolution,SK_MODE_RESOLUTION,SK_LANG_EN,"Resolution",NULL,"1025x768",12,NULL);
+    assert(resolution.page==SK_PAGE_NUMERIC && !resolution.predictions_enabled);
+    assert(!strcmp(sk_numeric_key_label(&resolution,3,0),"x"));
+    assert(sk_step(&resolution,&confirm,t+500)==SK_RESULT_ACTIVE && resolution.error[0]);
+    sk_init(&resolution,SK_MODE_RESOLUTION,SK_LANG_EN,"Resolution",NULL,"2560x240",12,NULL);
+    assert(sk_step(&resolution,&confirm,t+516)==SK_RESULT_ACCEPTED);
+    printf("PASS: Smart Keyboard all 7 modes, PT-BR/EN/ES autocomplete, UTF-8, held-X repeat, Dual-Stick, 16:9 & 4:3 CRT bounds, and Remote Desktop Mode (Compose/Direct/Chords/Fallback/Layouts).\n");
     printf("BENCH: sizeof(sk_state)=%zu B | static_dicts=%zu B | lookup_avg=%.2f us | phrase_keystrokes=7 + 3 suggestions (vs ~210 legacy moves)\n",
            sizeof(struct sk_state), sk_dict_memory_bytes(), lookup_us);
     return 0;

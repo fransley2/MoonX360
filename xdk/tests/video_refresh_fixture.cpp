@@ -19,7 +19,8 @@ static LONG InterlockedExchange(volatile LONG *p,LONG value){LONG old=*p;*p=valu
 static LONG InterlockedIncrement(volatile LONG *p){return ++*p;}
 static DWORD GetTickCount(){return tick;}
 static void LiRequestIdrFrame(){idr_events++;}
-static uint32_t idr_received,idr_decoded,idr_present_calls,decode_no_picture;
+static uint32_t idr_received,idr_decoded,idr_present_calls,decode_no_picture,post_deblock_present_calls;
+static volatile LONG stream_deblock_off;
 static unsigned writes;
 static char saved[768];
 static bool storage_write(const char *name,const void *data,size_t bytes){

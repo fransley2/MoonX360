@@ -18,7 +18,7 @@ static uint32_t tick;static int polls,reads,writes,sleeps;static bool buffered;
 static uint32_t plat_now_ms(){return tick;}
 static int plat_atomic_load(volatile int *p){return *p;}
 static void plat_sleep_ms(unsigned n){sleeps++;tick+=n;}
-static int fake_select(int,fd_set *r,fd_set *w,fd_set *e,const timeval*){polls++;if(r)FD_ZERO(r);if(w)FD_ZERO(w);if(e)FD_ZERO(e);return 0;}
+static int fake_select(int,fd_set *r,fd_set *w,fd_set *e,const timeval *tv){polls++;if(tv)tick+=(uint32_t)(tv->tv_sec*1000+tv->tv_usec/1000);if(r)FD_ZERO(r);if(w)FD_ZERO(w);if(e)FD_ZERO(e);return 0;}
 #define select fake_select
 static bool again=true;
 #define sock_again() again
@@ -46,12 +46,12 @@ int main(){
  socket_result=3;assert(bio_recv(&c,(unsigned char*)data,sizeof(data))==3);socket_result=0;
  assert(bio_recv(&c,(unsigned char*)data,sizeof(data))==0);socket_result=-1;
 
- assert(conn_read(&c,data,sizeof(data))==-1 && tick==100 && reads==1 && sleeps==10 && polls==10);
- tick=0;polls=sleeps=writes=0;assert(conn_write(&c,"x",1)==-1 && tick==100 && writes==1 && polls==10 && sleeps==10);
+ assert(conn_read(&c,data,sizeof(data))==-1 && tick==100 && reads==1 && sleeps==0 && polls==10);
+ tick=0;polls=sleeps=writes=0;assert(conn_write(&c,"x",1)==-1 && tick==100 && writes==1 && polls==10 && sleeps==0);
  tick=0;polls=0;buffered=true;assert(conn_read(&c,data,sizeof(data))==3 && !memcmp(data,"new",3) && !polls && tick==0);
  volatile int cancel=1;c.cancel=&cancel;assert(conn_read(&c,data,sizeof(data))==-1);cancel=0;
  tick=UINT32_MAX-49;c.deadline=50;buffered=false;polls=sleeps=0;
- assert(conn_read(&c,data,sizeof(data))==-1 && tick==50 && sleeps==10);
+ assert(conn_read(&c,data,sizeof(data))==-1 && tick==50 && sleeps==0 && polls==10);
  puts("PASS: actual cover TLS loops honor absolute deadline/cancel/wrap, wait instead of busy-spin and consume buffered TLS immediately");
 }
 '''

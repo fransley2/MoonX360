@@ -234,3 +234,4 @@ int main(void)
 
 bool plat_restart_available(void){return false;}
 bool plat_restart_app(void){return false;}
+int plat_resolve_ui_layout(int layout){return (layout>UI_LAYOUT_AUTO && layout<UI_LAYOUT_COUNT)?layout:UI_LAYOUT_16_9;}

@@ -18,9 +18,12 @@ fixture=r'''
 #include <Limelight.h>
 #include "../src/config.h"
 #include "../src/crt_output.h"
+#include "../src/frame_pacing.h"
 #include "../src/video.h"
 #include "../src/settings_layout.h"
+#include "../src/ui_layout_geometry.h"
 #include "../src/ui/ui.h"
+#include "../src/ui/smart_keyboard.h"
 static int crt_output_status_stub=0;
 static int plat_crt_output_status(void){return crt_output_status_stub;}
 static void plat_crt_output_query(struct crt_output_status *st){
@@ -40,6 +43,7 @@ static bool allow_write=true;static unsigned messages,restarts;
 static unsigned saves,hosts_calls;static int selected_language=-1;
 static int input_menu_pressed(){assert(!keys.empty());int key=keys.front();keys.pop_front();return key;}
 static void plat_sleep_ms(unsigned){}
+static void plat_log(const char*){}
 static int context_page=-1,context_category=-1,depth;
 static std::string ancestry[8];
 struct Draw {std::string title,label,path;int selection,page,category;std::string value;};
@@ -80,6 +84,13 @@ static void save_current_profile(){}
 static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
 static void stream_profile_menu(){assert(context_page==UI_STREAM || context_page==UI_SETTINGS);while(!(wait_button()&B_FLAG)){};}
 static void pointer_settings_menu(){}
+static const char *selected_resolution;
+static bool run_smart_keyboard(enum sk_mode mode,char *out,int capacity,const char *,const char *) {
+    assert(mode==SK_MODE_RESOLUTION);
+    if(!selected_resolution)return false;
+    snprintf(out,capacity,"%s",selected_resolution);
+    return true;
+}
 static void launch_defaults_menu(){while(!(wait_button()&B_FLAG)){};}
 static void ui_memory_menu(){}
 static void network_diagnostics_menu(){}
@@ -93,6 +104,10 @@ static void calibrate_sticks(){}
 static void power_menu(bool){}
 static bool plat_power_available(){return true;}
 static void plat_display_info(char *out,size_t n){snprintf(out,n,"1920x1080p 59.94 Hz");}
+static int plat_resolve_ui_layout(int layout){
+    if(layout>UI_LAYOUT_AUTO && layout<UI_LAYOUT_COUNT)return layout;
+    return (crt_output_status_stub==1 || cfg.display_mode==4)?UI_LAYOUT_4_3:UI_LAYOUT_16_9;
+}
 void ui_set_language(int language){selected_language=language;}
 static unsigned wallpaper_calls;
 static void choose_wallpaper(){wallpaper_calls++;}
@@ -122,6 +137,33 @@ int main(){
     cfg=original;begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();
     assert(cfg.fps==config_cycle_fps(original.fps,1) && cfg.stream_profile==0);
     begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();assert(cfg.bitrate_kbps==original.bitrate_kbps+1000);
+    cfg=original;
+    begin(true);keys={DOWN_FLAG,A_FLAG,A_FLAG,B_FLAG,B_FLAG};finish();
+    assert(!memcmp(&cfg,&original,sizeof(cfg)));
+    selected_resolution="1024x768";
+    begin(true);keys={DOWN_FLAG,A_FLAG,A_FLAG,B_FLAG,B_FLAG};finish();
+    assert(cfg.width==1024 && cfg.height==768 && cfg.fps==original.fps);
+    assert(cfg.bitrate_kbps==original.bitrate_kbps && cfg.display_mode==original.display_mode && cfg.stream_profile==0);
+    selected_resolution=NULL;
+    cfg.width=800;cfg.height=600;cfg.ui_layout=UI_LAYOUT_AUTO;
+    crt_output_status_stub=0;
+    begin();open_category(2);open_category(2);down(1);
+    keys.push_back(LEFT_FLAG);keys.push_back(RIGHT_FLAG);keys.push_back(RIGHT_FLAG);
+    back(3);finish();
+    assert(cfg.ui_layout==UI_LAYOUT_4_3 && cfg.width==800 && cfg.height==600 && cfg.display_mode==original.display_mode);
+    bool saw_auto=false,saw_ultrawide=false;
+    for(const auto &d:draws)if(d.label=="Interface layout") {
+        if(d.value=="Auto (16:9)")saw_auto=true;
+        if(d.value=="21:9")saw_ultrawide=true;
+    }
+    assert(saw_auto && saw_ultrawide);
+    // On a 4:3 CRT, Auto reports Auto (4:3) even when stream resolution is 1280x720.
+    cfg.width=1280;cfg.height=720;cfg.ui_layout=UI_LAYOUT_AUTO;crt_output_status_stub=1;
+    draws.clear();begin();open_category(2);open_category(2);down(1);back(3);finish();
+    bool saw_crt_auto=false;
+    for(const auto &d:draws)if(d.label=="Interface layout" && d.value=="Auto (4:3)")saw_crt_auto=true;
+    assert(saw_crt_auto);
+    crt_output_status_stub=0;
     cfg=original;begin(true);keys={RIGHT_FLAG,B_FLAG};finish();assert(cfg.fps==30 && cfg.width==1920);
     for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_PAGE_COUNT:UI_HOME));}
     cfg=original;begin();down(2);keys.push_back(A_FLAG);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);down(1);keys.push_back(RIGHT_FLAG);back(3);finish();assert(cfg.ui_background==1 && cfg.ui_accent==1);
@@ -143,10 +185,13 @@ int main(){
         if(settings_entries[i].setting>=0 || !settings_child_hidden(settings_entries[i].child))
             video_pos++;
     }
-    // CRT Picture is hidden on non-CRT presets (Smooth) and visible on CRT / CRT Retro (240p).
+    // CRT Picture is accessible on non-CRT presets (Smooth 1280x720) as well as CRT / CRT Retro (240p).
     cfg=original;config_select_factory(&cfg,CONFIG_PROFILE_SMOOTH);
-    begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);back(2);finish();
-    for(auto d:draws)assert(d.title!="CRT Picture");
+    begin(true);keys.push_back(DOWN_FLAG);keys.push_back(A_FLAG);down(video_pos);back(2);finish();
+    bool saw_picture_row=false;
+    for(auto d:draws)if(d.label=="CRT Picture")saw_picture_row=true;
+    assert(saw_picture_row);
+    assert(options.find("GPU post-deblock")==options.end());
 
     config_select_factory(&cfg,CONFIG_PROFILE_CRT_DISPLAY);
     crt_output_status_stub=1;
@@ -177,5 +222,5 @@ int main(){
 }
 
 '''
-code=function('static void cycle_stream_profile(')+'\n'+function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static bool confirm_action(')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void crt_screen_adjustment_menu(')+'\n'+function('static void crt_output_status_menu(')+'\n'+function('static bool settings_child_hidden(')+'\n'+function('static bool settings_item_hidden(')+'\n'+function('static void settings_menu(void)\n{')
+code=function('static void cycle_stream_profile(')+'\n'+function('static bool tab_key(')+'\n'+function('static int wait_button(void)\n{')+'\n'+function('static bool confirm_action(')+'\n'+function('static void overlay_options_menu(void)\n{')+'\n'+function('static void maintenance_menu(int selected)\n{')+'\n'+function('static void appearance_menu(void)\n{')+'\n'+function('static void crt_screen_adjustment_menu(')+'\n'+function('static void crt_output_status_menu(')+'\n'+function('static void edit_custom_stream_resolution(')+'\n'+function('static bool settings_child_hidden(')+'\n'+function('static bool settings_item_hidden(')+'\n'+function('static void settings_menu(void)\n{')
 Path(sys.argv[1]).write_text(fixture.replace('/* CODE */',code))

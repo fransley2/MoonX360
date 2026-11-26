@@ -55,8 +55,22 @@ SLICE_DISPATCH=os.environ.get('XDK_SLICE_DISPATCH','legacy')
 if SLICE_DISPATCH not in ('legacy','batched'):raise SystemExit('XDK_SLICE_DISPATCH must be legacy or batched')
 LOW_LATENCY_INPUT=os.environ.get('XDK_LOW_LATENCY_INPUT','0')
 if LOW_LATENCY_INPUT not in ('0','1'):raise SystemExit('XDK_LOW_LATENCY_INPUT must be 0 or 1')
+INPUT_HW_THREAD=os.environ.get('XDK_INPUT_HW_THREAD','5')
+if INPUT_HW_THREAD not in ('0','3','5'):raise SystemExit('XDK_INPUT_HW_THREAD must be 0, 3, or 5')
+ENABLE_AUTO_LIVE_TEST=os.environ.get('XDK_ENABLE_AUTO_LIVE_TEST','0')
+if ENABLE_AUTO_LIVE_TEST not in ('0','1'):raise SystemExit('XDK_ENABLE_AUTO_LIVE_TEST must be 0 or 1')
+STAGE_PROFILE=os.environ.get('XDK_H264_STAGE_PROFILE','0')
+if STAGE_PROFILE not in ('0','1'):raise SystemExit('XDK_H264_STAGE_PROFILE must be 0 or 1')
 OPTIMIZED_YUV_COPY=os.environ.get('XDK_OPTIMIZED_YUV_COPY','0')
 if OPTIMIZED_YUV_COPY not in ('0','1'):raise SystemExit('XDK_OPTIMIZED_YUV_COPY must be 0 or 1')
+YUV_STREAMING_COPY=os.environ.get('XDK_YUV_STREAMING_COPY','0')
+if YUV_STREAMING_COPY not in ('0','1'):raise SystemExit('XDK_YUV_STREAMING_COPY must be 0 or 1')
+YUV_CONTIGUOUS_PLANES=os.environ.get('XDK_YUV_CONTIGUOUS_PLANES','0')
+if YUV_CONTIGUOUS_PLANES not in ('0','1'):raise SystemExit('XDK_YUV_CONTIGUOUS_PLANES must be 0 or 1')
+INPUT_FAST_KB_SKIP=os.environ.get('XDK_INPUT_FAST_KB_SKIP','0')
+if INPUT_FAST_KB_SKIP not in ('0','1'):raise SystemExit('XDK_INPUT_FAST_KB_SKIP must be 0 or 1')
+WIRED_1392_MIN_KBPS=os.environ.get('XDK_WIRED_1392_MIN_KBPS','12000')
+if not WIRED_1392_MIN_KBPS.isdigit():raise SystemExit('XDK_WIRED_1392_MIN_KBPS must be numeric')
 DIAGNOSTIC_LEGACY_UPLOAD=os.environ.get('XDK_DIAGNOSTIC_LEGACY_UPLOAD','0')
 if DIAGNOSTIC_LEGACY_UPLOAD not in ('0','1'):raise SystemExit('XDK_DIAGNOSTIC_LEGACY_UPLOAD must be 0 or 1')
 ADAPTIVE_FAST_DECODE=os.environ.get('XDK_ADAPTIVE_FAST_DECODE','0')
@@ -71,15 +85,26 @@ IDENTITY_DEFS=['/D','XDK_WORKER_MAP_PREVIOUS='+str(int(WORKER_MAP=='previous')),
                '/D','XDK_SLICE_DISPATCH_BATCHED='+str(int(SLICE_DISPATCH=='batched')),
                '/D','XDK_OPTIMIZATION_AGGRESSIVE='+str(int(PROFILE=='aggressive')),
                '/D','LOW_LATENCY_INPUT='+LOW_LATENCY_INPUT,
+               '/D','XDK_INPUT_HW_THREAD='+INPUT_HW_THREAD,
                '/D','OPTIMIZED_YUV_COPY='+OPTIMIZED_YUV_COPY,
+               '/D','XDK_YUV_STREAMING_COPY='+YUV_STREAMING_COPY,
+               '/D','XDK_YUV_CONTIGUOUS_PLANES='+YUV_CONTIGUOUS_PLANES,
+               '/D','XDK_INPUT_FAST_KB_SKIP='+INPUT_FAST_KB_SKIP,
+               '/D','XDK_WIRED_1392_MIN_KBPS='+WIRED_1392_MIN_KBPS,
                '/D','DIAGNOSTIC_LEGACY_UPLOAD='+DIAGNOSTIC_LEGACY_UPLOAD,
                '/D','ADAPTIVE_FAST_DECODE='+ADAPTIVE_FAST_DECODE,
                '/D','XDK_H264_REFERENCE_MODE='+H264_REFERENCE_MODE,
                '/D','XDK_H264_NO_RFI='+H264_NO_RFI,
-               '/D','XDK_H264_SINGLE_SLICE_REQUEST='+H264_SINGLE_SLICE_REQUEST]
+               '/D','XDK_H264_SINGLE_SLICE_REQUEST='+H264_SINGLE_SLICE_REQUEST,
+               '/D','XDK_ENABLE_AUTO_LIVE_TEST='+ENABLE_AUTO_LIVE_TEST]
 VMX_AB_EXPERIMENT=os.environ.get('XDK_VMX_AB_EXPERIMENT','0')
 if VMX_AB_EXPERIMENT not in ('0','1'):raise SystemExit('XDK_VMX_AB_EXPERIMENT must be 0 or 1')
 IDENTITY_DEFS += ['/D','XDK_VMX_AB_EXPERIMENT='+VMX_AB_EXPERIMENT]
+XCLOUD_VIDEO = os.environ.get("XDK_XCLOUD_VIDEO", "0")
+if XCLOUD_VIDEO not in ("0", "1"):
+    raise SystemExit("XDK_XCLOUD_VIDEO must be 0 or 1")
+if XCLOUD_VIDEO == "1" and os.path.normcase(OUT) == os.path.normcase(os.path.join(XDK_DIR, "build")):
+    raise SystemExit("XDK_XCLOUD_VIDEO requires an isolated XDK_BUILD_DIR")
 MBEDTLS_DEFS = ["/I", os.path.join(MBEDTLS, "include"), "/I", XDK_DIR,
                 "/D", 'MBEDTLS_USER_CONFIG_FILE="mbedtls_config_xdk.h"']
 
@@ -237,7 +262,7 @@ COMPAT = os.path.join(XDK_DIR, "compat")
 
 def target_compat():
     srcs = [os.path.join(COMPAT, f) for f in ("win_sync.c", "win_net.c", "crt.c")]
-    return build_lib("compat", srcs, BASE + ["/TC"])
+    return build_lib("compat", srcs, BASE + IDENTITY_DEFS + ["/TC"])
 
 
 def target_moonlight():
@@ -289,12 +314,19 @@ def target_app():
     C++ like moonlight-common-c, plus the SDK platform layer (xdk/src)."""
     shared = [os.path.join(ROOT, "src", f) for f in
               ("app.c", "config.c", "crypto.c", "http.c", "gamestream.c", "mdns.c", "mdns_net.c", "host_cache.c", "wake_net.c",
-               "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c")]
-    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk", "crt_output_bridge")]
+               "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c", "ui/file_explorer_view.c")]
+    platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk", "crt_output_bridge", "file_explorer_xdk")]
     flags = HOT + IDENTITY_DEFS + ["/FIxdk_compat.h", "/I", os.path.join(MLC, "src"), "/I", os.path.join(OPUS, "include")] + MBEDTLS_DEFS
     srcs = [(s, ["/TP"]) for s in shared + platform]
+    if XCLOUD_VIDEO == "1":
+        experiment = os.path.join(ROOT, "experiments", "xcloud-video", "receiver_xdk.cpp")
+        srcs = [(s, f + (["/D", "MOONX_XCLOUD_VIDEO"] if s == platform[0] else [])) for s, f in srcs]
+        srcs.append((experiment, ["/TP"]))
     # Only the video module sees FFmpeg's headers: FFmpeg's root has its own config.h.
-    srcs.append((os.path.join(SRC, "video_xdk.cpp"), ["/TP", "/I", FFMPEG]))
+    video_flags = ["/TP", "/I", FFMPEG]
+    if STAGE_PROFILE == '1':
+        video_flags.extend(["/D", "XDK_H264_STAGE_PROFILE=1"])
+    srcs.append((os.path.join(SRC, "video_xdk.cpp"), video_flags))
     srcs.append((generate_fonts(), ["/TC"]))
     objs = compile_all("app", srcs, flags, base=ROOT)
     if objs is None:
@@ -328,6 +360,8 @@ def target_xex():
         raise SystemExit('FFmpeg profile/worker patch changed; rebuild with xdk/scripts/build_ffmpeg.py')
     if ffmpeg_build.get('slice_dispatch','legacy')!=SLICE_DISPATCH:
         raise SystemExit('FFmpeg slice dispatch changed; rebuild with xdk/scripts/build_ffmpeg.py')
+    if ffmpeg_build.get('h264_stage_profile',0)!=int(STAGE_PROFILE):
+        raise SystemExit('FFmpeg stage profile changed; rebuild with xdk/scripts/build_ffmpeg.py')
     if SLICE_DISPATCH=='batched':
         sys.path.insert(0,os.path.join(XDK_DIR,'scripts'))
         from slice_dispatch import generate

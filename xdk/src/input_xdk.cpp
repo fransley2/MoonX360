@@ -20,6 +20,7 @@
 
 #include "../../src/input_session.h"
 #include "../../src/input_shortcut.h"
+#include "../../src/input_guide.h"
 #include "../../src/input_hotplug.h"
 #include "../../src/desktop_input.h"
 #include "../../src/ui/smart_keyboard_remote.h"
@@ -28,6 +29,7 @@
 #include "../../src/audio.h"
 #include "../../src/video.h"
 static volatile LONG desktop_snapshot,desktop_available=1;
+static volatile LONG pc_guide_enabled=1,pc_guide_hold_ms=INPUT_GUIDE_HOLD_MS;
 static struct desktop_options desktop_settings;
 static bool desktop_initial;
 static CRITICAL_SECTION remote_kb_lock;
@@ -52,6 +54,7 @@ bool input_smart_keyboard_snapshot(struct sk_remote_session *out,unsigned *revis
     return active;
 }
 void input_configure_desktop(const struct desktop_options *options,bool enabled){desktop_settings=*options;desktop_initial=enabled;}
+void input_configure_guide(bool enabled,uint32_t hold_ms){InterlockedExchange(&pc_guide_enabled,enabled?1:0);InterlockedExchange(&pc_guide_hold_ms,(LONG)(hold_ms?hold_ms:INPUT_GUIDE_HOLD_MS));}
 unsigned input_desktop_snapshot(void){return (unsigned)InterlockedCompareExchange(&desktop_snapshot,0,0);}
 void input_desktop_ui_unavailable(void){InterlockedExchange(&desktop_available,0);}
 static volatile LONG mouse_mode;
@@ -60,6 +63,12 @@ bool input_mouse_active(void) {return InterlockedCompareExchange(&mouse_mode,0,0
 static struct input_settings stream_settings;
 #ifndef LOW_LATENCY_INPUT
 #define LOW_LATENCY_INPUT 0
+#endif
+#ifndef XDK_INPUT_HW_THREAD
+#define XDK_INPUT_HW_THREAD 5
+#endif
+#ifndef XDK_INPUT_FAST_KB_SKIP
+#define XDK_INPUT_FAST_KB_SKIP 0
 #endif
 #if LOW_LATENCY_INPUT
 static DWORD stream_interval_ms=1;
@@ -114,6 +123,7 @@ static DWORD next_probe_ms[MAX_PADS];
 static bool physical_connected[MAX_PADS];
 int input_connected_count(void){int n=0;for(int i=0;i<MAX_PADS;i++)if(physical_connected[i])n++;return n;}
 static bool port_connected[MAX_PADS] = { true, true, true, true };
+static bool port_staggered[MAX_PADS];
 static struct input_hotplug hotplug[MAX_PADS];
 static XINPUT_STATE last_stream_xinput[MAX_PADS];
 static bool have_stream_xinput[MAX_PADS];
@@ -156,7 +166,9 @@ int input_poll(struct pad pads[MAX_PADS])
             physical_connected[i]=false;
             if(input_hotplug_sample(hotplug+i,p,false,now_ms)){mask|=1<<i;continue;}
             if(port_connected[i])input_rumble((unsigned short)i,0,0);
-            port_connected[i]=false;next_probe_ms[i]=now_ms+REPROBE_DISCONNECTED_MS;
+            port_connected[i]=false;
+            if(!port_staggered[i]){port_staggered[i]=true;next_probe_ms[i]=now_ms+REPROBE_DISCONNECTED_MS-(DWORD)(i*20u);}
+            else next_probe_ms[i]=now_ms+REPROBE_DISCONNECTED_MS;
             continue;
         }
         physical_connected[i]=true;
@@ -239,13 +251,12 @@ int input_menu_pressed(void)
     if (dir != held || gap) {
         held = dir;
         held_since = last_repeat = t;
-    } else if (dir && t - held_since > 260 && t - last_repeat > 75) {
+    } else if (dir && t - held_since > 220 && t - last_repeat > 65) {
         pressed |= dir;
         last_repeat = t;
     }
 
     menu_prev = now;
-    if(!pressed && ui_transition_active())ui_present();
     if(pressed&B_FLAG)audio_menu_play(2);
     else if(pressed&(A_FLAG|X_FLAG|Y_FLAG|PLAY_FLAG))audio_menu_play(1);
     else if(pressed&repeatable)audio_menu_play(0);
@@ -256,6 +267,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
 {
     struct pad pads[MAX_PADS];
     struct input_session session;
+    struct input_guide_state pc_guide;input_guide_reset(&pc_guide);
     struct desktop_input desktop;memset(&desktop,0,sizeof(desktop));desktop.options=desktop_settings;desktop.enabled=desktop_initial;desktop.neutral=true;desktop.owner=-1;
     struct input_shortcut shortcut;memset(&shortcut,0,sizeof(shortcut));
     struct remote_input remote;memset(&remote,0,sizeof(remote));
@@ -267,9 +279,9 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
     XINPUT_KEYBOARDSTATE keyboards[MAX_PADS];memset(keyboards,0,sizeof(keyboards));
     DWORD keyboard_probe[MAX_PADS]={0};
     bool keyboard_present[MAX_PADS]={false};
-    for(int i=0;i<MAX_PADS;i++)keyboard_probe[i]=GetTickCount();
+    for(int i=0;i<MAX_PADS;i++)keyboard_probe[i]=GetTickCount()+12u+(DWORD)(i*25u);
     int desktop_pending=0;
-    bool guide_seen=false,launch_neutral=true,kb_session_init=false; /* also swallow the menu Play button if a zero-delay cover already ended */
+    bool guide_seen=false,launch_neutral=true,kb_session_init=false,kb_had_active=false; /* also swallow the menu Play button if a zero-delay cover already ended */
     uint64_t previous_poll=0;
     (void)arg;
     xdk_audit_thread("InputPoll");
@@ -281,6 +293,8 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         bool desktop_was_enabled=desktop.enabled;
         DWORD started = GetTickCount();
         int mask = input_poll(pads);
+        int raw_buttons[MAX_PADS];bool raw_present[MAX_PADS];
+        for(int i=0;i<MAX_PADS;i++){raw_buttons[i]=pads[i].buttons;raw_present[i]=physical_connected[i];}
         video_progress_note(VP_INPUT);
         bool guide=gfx_system_ui_active();
         bool shortcut_consumed[MAX_PADS]={false};
@@ -341,26 +355,35 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(packed!=previous && ((packed|previous)&(QUICK_OPEN|QUICK_STOPPING)) && perf_enabled()) {
             char trace[128];snprintf(trace,sizeof(trace),"[UX] quick input_ms=%u state=%u\n",started,packed);plat_log(trace);
         }
-        bool keys[256]={false};
-        /* Snapshot avoids repeat duplication and releases vanished devices. Bound: four
-         * users, six keys each. State is aggregated before sending to handle shared keys. */
+        bool any_kb_present=false;
         for(DWORD user=0;user<MAX_PADS;user++) {
             if((int)(started-keyboard_probe[user])>=0) {
                 keyboard_present[user]=XInputGetKeyboardState(user,&keyboards[user])==ERROR_SUCCESS;
                 keyboard_probe[user]=started+(keyboard_present[user]?16:100);
             }
-            if(!keyboard_present[user])continue;
-            const XINPUT_KEYBOARDSTATE &keyboard=keyboards[user];
-            for(int k=0;k<XINPUT_MAX_KEYBOARD_STATE;k++) {
-                WORD vk=keyboard.VKCodes[k];
-                /* Sided modifier bits below are authoritative; avoid duplicate generic VKs. */
-                if(vk>0 && vk<256 && vk!=0x10 && vk!=0x11 && vk!=0x12)keys[vk]=true;
-            }
-            const BYTE bits[]={XINPUT_MODIFIER_LSHIFT,XINPUT_MODIFIER_RSHIFT,XINPUT_MODIFIER_LCONTROL,XINPUT_MODIFIER_RCONTROL,XINPUT_MODIFIER_LALT,XINPUT_MODIFIER_RALT,XINPUT_MODIFIER_LGUI,XINPUT_MODIFIER_RGUI};
-            const BYTE vk[]={0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c};
-            for(int k=0;k<8;k++)if(keyboard.bModifiers&bits[k])keys[vk[k]]=true;
+            if(keyboard_present[user])any_kb_present=true;
         }
-        for(int k=0;k<256;k++)any=any || keys[k];
+        bool process_kb = !XDK_INPUT_FAST_KB_SKIP || any_kb_present || kb_had_active;
+        bool keys[256];
+        if(process_kb) {
+            memset(keys,0,sizeof(keys));
+            /* Snapshot avoids repeat duplication and releases vanished devices. Bound: four
+             * users, six keys each. State is aggregated before sending to handle shared keys. */
+            for(DWORD user=0;user<MAX_PADS;user++) {
+                if(!keyboard_present[user])continue;
+                const XINPUT_KEYBOARDSTATE &keyboard=keyboards[user];
+                for(int k=0;k<XINPUT_MAX_KEYBOARD_STATE;k++) {
+                    WORD vk=keyboard.VKCodes[k];
+                    /* Sided modifier bits below are authoritative; avoid duplicate generic VKs. */
+                    if(vk>0 && vk<256 && vk!=0x10 && vk!=0x11 && vk!=0x12)keys[vk]=true;
+                }
+                const BYTE bits[]={XINPUT_MODIFIER_LSHIFT,XINPUT_MODIFIER_RSHIFT,XINPUT_MODIFIER_LCONTROL,XINPUT_MODIFIER_RCONTROL,XINPUT_MODIFIER_LALT,XINPUT_MODIFIER_RALT,XINPUT_MODIFIER_LGUI,XINPUT_MODIFIER_RGUI};
+                const BYTE vk[]={0xa0,0xa1,0xa2,0xa3,0xa4,0xa5,0x5b,0x5c};
+                for(int k=0;k<8;k++)if(keyboard.bModifiers&bits[k])keys[vk[k]]=true;
+            }
+            for(int k=0;k<256;k++)any=any || keys[k];
+            kb_had_active=any_kb_present;
+        }
         if(launch_neutral && !cover_input && !any)launch_neutral=false;
         if(overlay)for(int i=0;i<MAX_PADS;i++)if((pads[i].buttons&overlay_combo)==overlay_combo){remote.suppress[i]=true;bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         if(desktop.enabled && !local && !guide){
@@ -368,11 +391,11 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
                 int ul=ui_get_language();
                 int kl=ul==CONFIG_LANGUAGE_PT_BR?SK_LANG_PT_BR:ul==CONFIG_LANGUAGE_SPANISH?SK_LANG_ES:SK_LANG_EN;
                 struct sk_remote_ops ops={remote_kb_send_utf8,remote_kb_send_vk};
-                sk_remote_open(&remote_kb,SK_TARGET_REMOTE_DESKTOP,kl,&ops);
                 if(!kb_session_init) {
                     sk_remote_apply_prefs(&remote_kb,desktop_settings.kb_style,desktop_settings.kb_mode);
                     kb_session_init=true;
                 }
+                sk_remote_open(&remote_kb,SK_TARGET_REMOTE_DESKTOP,kl,&ops);
                 remote_kb_publish(&remote_kb);
             } else if(desktop.view!=DESK_KEYBOARD && remote_kb_was_view) {
                 sk_remote_close(&remote_kb);
@@ -381,7 +404,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
             remote_kb_was_view=(desktop.view==DESK_KEYBOARD);
             if(desktop.owner>=0){
                 struct pad owner=pads[desktop.owner];if(!physical_connected[desktop.owner])owner.present=false;
-                if(owner.buttons || desktop.view || desktop.neutral || !owner.present)remote_keys(&remote,keys,false);
+                if(process_kb && (owner.buttons || desktop.view || desktop.neutral || !owner.present))remote_keys(&remote,keys,false);
                 if(desktop.view==DESK_KEYBOARD && remote_kb.active) {
                     if(!owner.present) {
                         sk_remote_close(&remote_kb);desktop.view=0;desktop.neutral=true;remote_kb_was_view=false;
@@ -413,7 +436,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
             struct sk_remote_session closed;memset(&closed,0,sizeof(closed));
             remote_kb_publish(&closed);
         }
-        remote_keys(&remote,keys,!guide && !local && !desktop.view && (!desktop.enabled || (desktop.owner>=0 && !desktop.neutral && !quick_pads[desktop.owner].buttons && physical_connected[desktop.owner])) && !overlay);
+        if(process_kb)remote_keys(&remote,keys,!guide && !local && !desktop.view && (!desktop.enabled || (desktop.owner>=0 && !desktop.neutral && !quick_pads[desktop.owner].buttons && physical_connected[desktop.owner])) && !overlay);
         if(desktop_was_enabled && !desktop.enabled)for(int i=0;i<MAX_PADS;i++)remote.suppress[i]=true;
         if(local)for(int i=0;i<MAX_PADS;i++){remote_mouse_release(&remote,i);bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;}
         for(int i=0;i<MAX_PADS;i++) {
@@ -429,6 +452,15 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         if(guide)for(int i=0;i<MAX_PADS;i++) {
             bool present=pads[i].present;memset(pads+i,0,sizeof(pads[i]));pads[i].present=present;
         }
+        bool guide_enabled_now=InterlockedCompareExchange(&pc_guide_enabled,0,0)!=0;
+        uint32_t guide_hold_now=(uint32_t)InterlockedCompareExchange(&pc_guide_hold_ms,0,0);
+        for(int i=0;i<MAX_PADS;i++) {
+            bool guide_blocked=guide || local || block_launch || overlay || shortcut_fired ||
+                InterlockedCompareExchange(&quit_requested,0,0)!=0 || shortcut_consumed[i] ||
+                desktop.enabled || mouse_chord || remote.mouse[i] || remote.suppress[i];
+            input_guide_step(&pc_guide,&pads[i].buttons,i,raw_buttons[i],raw_present[i],
+                guide_blocked,started,guide_enabled_now,guide_hold_now);
+        }
         uint64_t send=perf_enabled()?perf_clock():0;
         input_session_step(&session, pads, mask, GetTickCount(), &stream_settings);
         if(send)perf_record(PERF_INPUT_SEND,perf_clock()-send);
@@ -439,6 +471,7 @@ static DWORD WINAPI input_stream_main(LPVOID arg)
         DWORD elapsed = GetTickCount() - started;
         Sleep(elapsed < stream_interval_ms ? stream_interval_ms - elapsed : 1);
     }
+    input_guide_reset(&pc_guide);
     desktop_release(&desktop);remote_release(&remote);
     {struct sk_remote_session closed;memset(&closed,0,sizeof(closed));remote_kb_publish(&closed);}
     InterlockedExchange(&desktop_snapshot,0);
@@ -454,7 +487,13 @@ void input_stream_start(void)
     if(!remote_kb_lock_ready){InitializeCriticalSection(&remote_kb_lock);remote_kb_lock_ready=true;}
     {struct sk_remote_session closed;memset(&closed,0,sizeof(closed));remote_kb_publish(&closed);}
 #if LOW_LATENCY_INPUT
+#if XDK_INPUT_HW_THREAD == 5
+    plat_log("[INPUT] polling target 1 ms (HW5, prio+1); disconnected reprobe 100 ms\n");
+#elif XDK_INPUT_HW_THREAD == 0
+    plat_log("[INPUT] polling target 1 ms (HW0, prio+1); disconnected reprobe 100 ms\n");
+#else
     plat_log("[INPUT] polling target 1 ms (HW3, prio+1); disconnected reprobe 100 ms\n");
+#endif
 #else
     plat_log(stream_interval_ms==2 ? "[INPUT] polling target 2 ms; disconnected reprobe 100 ms\n" :
              "[INPUT] polling target 4 ms; disconnected reprobe 100 ms\n");
@@ -473,7 +512,7 @@ void input_stream_start(void)
     stream_thread = CreateThread(NULL, 64 * 1024, input_stream_main, NULL, CREATE_SUSPENDED, NULL);
     if (stream_thread) {
 #if LOW_LATENCY_INPUT
-        XSetThreadProcessor(stream_thread, 3);
+        XSetThreadProcessor(stream_thread, XDK_INPUT_HW_THREAD);
         SetThreadPriority(stream_thread, THREAD_PRIORITY_ABOVE_NORMAL);
 #else
         XSetThreadProcessor(stream_thread, xdk_aux_processor());

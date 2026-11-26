@@ -53,32 +53,63 @@ static const char ui_shader[]=
     "float4 rect:register(c3);float4 phase:register(c4);float4 flags:register(c5);"
     "float4 detail:register(c6);float4 text_layout:register(c7);float4 layout:register(c8);"
     "float4 opening(S p):COLOR {"
-    " float2 xy=p.uv*float2(layout.x,720);float3 c=float3(8,11,14)/255;"
+    " float2 xy=p.uv*float2(layout.x,720);"
+    " float3 top_c=float3(12,17,22)/255,bot_c=float3(6,9,12)/255;"
+    " float3 c=lerp(top_c,bot_c,p.uv.y);"
+    " float2 vc=p.uv-0.5;float vig=saturate(1.0-dot(vc,vc)*1.35);"
+    " c*=(0.72+0.28*vig);"
+    " float2 amb=(xy-float2(layout.x*0.5,290))/float2(420,300);"
+    " float aura_bg=exp(-dot(amb,amb)*2.2)*phase.w;"
+    " c+=lerp(float3(0.05,0.08,0.11),detail.yzw*0.12,0.35)*aura_bg;"
     " if(flags.x>0)c=lerp(tex2D(scene,p.uv).rgb,c,phase.w);"
-    " float2 q=(xy-rect.xy)/rect.zw;"
-    " if(all(q>=0)&&all(q<=1)){"
+    " float2 c_half=rect.zw*0.5;float cr=min(12.0,min(c_half.x,c_half.y));"
+    " float2 cq=abs(xy-(rect.xy+c_half))-(c_half-cr);"
+    " float d_cov=length(max(cq,0))+min(max(cq.x,cq.y),0)-cr;"
+    " if(d_cov>0&&d_cov<44){"
+    "  c*=1.0-exp(-d_cov*0.11)*0.52*phase.w;"
+    "  c+=lerp(float3(0.68,0.78,0.86),detail.yzw,0.25)*exp(-d_cov*0.085)*0.13*phase.w;"
+    " }"
+    " float cov_a=saturate(0.5-d_cov);"
+    " if(cov_a>0){"
+    "  float2 q=saturate((xy-rect.xy)/rect.zw);"
     "  float3 fallback=float3(32,39,42)/255;"
     "  float2 logo=float2((xy.x-rect.x-rect.z*.5+256)/512,(xy.y-rect.y-rect.w*.5+24)/48);"
     "  if(all(logo>=0)&&all(logo<=1)){float4 g=tex2D(words,float2(logo.x,(text_layout.w+logo.y*48)/512));fallback=lerp(fallback,g.rgb,g.a);}"
     "  if(flags.w>0){float4 old=tex2D(previous,q);fallback=lerp(fallback,old.rgb,old.a);}"
-    "  float4 art=tex2D(atlas,q);c=lerp(fallback,art.rgb,art.a*phase.z);"
+    "  float4 art=tex2D(atlas,q);float3 card_c=lerp(fallback,art.rgb,art.a*phase.z);"
+    "  float rim=saturate(1.3-abs(d_cov+0.6))*0.28*phase.w;"
+    "  card_c=lerp(card_c,float3(0.86,0.92,0.96),rim);"
+    "  c=lerp(c,card_c,cov_a);"
     " }"
-    " float2 t=(xy-float2(layout.y,470))/float2(512,48);"
+    " float2 t=(xy-float2(layout.y,472))/float2(512,48);"
     " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,t.y*48/512));c=lerp(c,g.rgb,g.a*phase.y);}"
-    " t=(xy-float2(layout.y,520))/float2(512,48);"
-    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(48+t.y*48)/512));c=lerp(c,g.rgb,g.a);}"
-    " t=(xy-float2(layout.y,578))/float2(512,24);"
-    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.x+flags.y*text_layout.y+t.y*text_layout.y)/512));c=lerp(c,g.rgb,g.a);}"
-    " t=(xy-float2(layout.y,634))/float2(512,24);"
-    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.z+detail.x*24+t.y*24)/512));c=lerp(c,g.rgb,g.a);}"
-    " float2 sp=xy-float2(layout.x*0.5,616);"
-    " float ring=saturate(1.6-abs(length(sp)-11.5));"
-    " if(ring>0){"
+    " t=(xy-float2(layout.y,520))/float2(512,text_layout.y);"
+    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.x+flags.y*text_layout.y+t.y*text_layout.y)/512));c=lerp(c,g.rgb,g.a*phase.y);}"
+    " float2 sp=xy-float2(layout.x*0.5,562);"
+    " float dist=abs(length(sp)-10.5);"
+    " if(dist<7.0){"
     "  float ang=frac((layout.w-atan2(sp.y,sp.x))*0.15915494);"
-    "  float tail=saturate(1.0-ang/0.625);float fade=tail*tail;"
-    "  float3 sc=lerp(float3(54,65,72)/255,detail.yzw,fade);"
-    "  c=lerp(c,sc,ring*(0.42+0.58*fade));"
+    "  float tail=saturate(1.0-ang/0.65);float fade=tail*tail;"
+    "  c+=detail.yzw*exp(-dist*0.55)*(0.05+0.16*fade)*phase.y;"
+    "  float ring=saturate(1.65-dist);"
+    "  if(ring>0){"
+    "   float3 sc=lerp(float3(46,56,62)/255,lerp(detail.yzw,float3(0.80,0.96,0.84),fade*0.30),fade);"
+    "   c=lerp(c,sc,ring*(0.38+0.62*fade)*phase.y);"
+    "  }"
     " }"
+    " float2 pill_half=float2(min(270.0,layout.x*0.5-60.0),16.0);"
+    " float2 pq=abs(xy-float2(layout.x*0.5,610))-(pill_half-16.0);"
+    " float d_pill=length(max(pq,0))+min(max(pq.x,pq.y),0)-16.0;"
+    " float pill_a=saturate(0.5-d_pill);"
+    " if(pill_a>0){"
+    "  c=lerp(c,float3(0.08,0.11,0.14),0.36*pill_a*phase.y);"
+    "  float pb=saturate(1.1-abs(d_pill+0.5))*0.14*phase.y;"
+    "  c=lerp(c,float3(0.70,0.78,0.84),pb);"
+    " }"
+    " t=(xy-float2(layout.y,586))/float2(512,48);"
+    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(48+t.y*48)/512));c=lerp(c,g.rgb,g.a*phase.y);}"
+    " t=(xy-float2(layout.y,648))/float2(512,24);"
+    " if(all(t>=0)&&all(t<=1)){float4 g=tex2D(words,float2(t.x,(text_layout.z+detail.x*24+t.y*24)/512));c=lerp(c,g.rgb,g.a*phase.y);}"
     " return float4(c,phase.x);"
     "}"
 ;
@@ -483,7 +514,7 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
     }
     struct launch_visual_sample v;launch_visual_get(&visual,now,&v);
     int canvas_width=ui_canvas()->w,canvas_height=ui_canvas()->h;
-    v.x-=(1280-canvas_width)*0.5f*v.dim; /* center the finished cover in 4:3 */
+    v.x-=(1280-canvas_width)*0.5f*v.dim; /* center the finished cover in the current canvas */
     if(!cover.first && launch_has_video())launch_cover_frame(&cover,(DWORD)InterlockedCompareExchange(&launch_first_ms,0,0));
     if(launch_cancelled())launch_cover_cancel(&cover);
     enum launch_status status=launch_display_status((enum launch_status)InterlockedCompareExchange(&launch_status,0,0),launch_has_video(),launch_cancelled());
@@ -498,7 +529,8 @@ void gfx_launch_draw(D3DDevice *d,bool usable)
     d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
     d->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);d->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);d->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);
     float rect[4]={v.x,v.y,v.w,v.h},phase[4]={alpha/255.0f,v.title,v.art,v.dim};
-    float flags[4]={v.intro && launch_backdrop?1.0f:0.0f,(float)status,launch_segments_tick(&launch_segments,launch_milestone,now),launch_previous?1.0f:0.0f};
+    (void)launch_segments_tick(&launch_segments,launch_milestone,now);
+    float flags[4]={v.intro && launch_backdrop?1.0f:0.0f,(float)status,launch_current>=0?1.0f:0.0f,launch_previous?1.0f:0.0f};
     float detail[4]={launch_has_video() && !launch_cancelled()?1.0f:0.0f,launch_accent[0],launch_accent[1],launch_accent[2]};
     d->SetPixelShaderConstantF(3,rect,1);d->SetPixelShaderConstantF(4,phase,1);d->SetPixelShaderConstantF(5,flags,1);
     d->SetPixelShaderConstantF(6,detail,1);

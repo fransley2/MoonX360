@@ -24,6 +24,7 @@ fixture=r'''
 #include "../src/ui/ui.h"
 #include "../src/session_history.h"
 #include "../src/library_state.h"
+#include "../src/ui_layout_geometry.h"
 #define MAX_APPS 64
 static struct {int id;char name[64],uuid[80];} apps[MAX_APPS];
 static uint32_t *app_art[MAX_APPS],art_generation[MAX_APPS];
@@ -50,6 +51,8 @@ bool storage_write(const char *name,const void *data,size_t length) {assert(stop
 void video_get_stats(video_stats *out) {assert(stopped);*out=stats;}
 void video_get_session_performance(performance_sample *out) {assert(stopped);*out=sample;}
 static void plat_log(const char*) {}
+static void plat_display_info(char *out,size_t n){snprintf(out,n,"1920x1080p 60.00 Hz");}
+static int plat_resolve_ui_layout(int layout){return (layout>UI_LAYOUT_AUTO && layout<UI_LAYOUT_COUNT)?layout:UI_LAYOUT_16_9;}
 static void cl_log(const char*,...) {}
 static int wait_button() {assert(!buttons.empty());int b=buttons.front();buttons.pop_front();return b;}
 static void message(int,const char*,const char*) {messages++;}

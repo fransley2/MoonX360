@@ -22,6 +22,11 @@ void input_configure(int quit_combo, int deadzone)
     stream_settings.quit_combo = quit_combo == 1 ? 1 : 0;
     stream_settings.deadzone = deadzone < 0 ? 0 : deadzone > 30 ? 30 : deadzone;
 }
+void input_configure_guide(bool enabled, uint32_t hold_ms)
+{
+    (void)enabled;
+    (void)hold_ms;
+}
 #define SEND_INTERVAL_US 4000
 
 static struct controller_data_s raw[MAX_PADS];

@@ -1,4 +1,19 @@
 #pragma once
+#include <stdbool.h>
+
+/* SD video may report 720x480 for either aspect. VGA can report native 4:3. */
+static __inline bool display_output_is_4_3(int width,int height,bool widescreen)
+{
+    return width>0 && height>0 && !widescreen && (height<=576 || width*3==height*4);
+}
+static __inline bool display_output_is_5_4(int width,int height,bool widescreen)
+{
+    return width>0 && height>0 && !widescreen && (long long)width*4==(long long)height*5;
+}
+static __inline bool display_output_aspect_is_narrow_4_3(int width,int height,bool widescreen)
+{
+    return width>0 && height>0 && !widescreen && (long long)width*3<=(long long)height*4;
+}
 static void display_render_size(int choice,int physical_w,int physical_h,int *w,int *h)
 {
     if(choice==4){*w=640;*h=480;}

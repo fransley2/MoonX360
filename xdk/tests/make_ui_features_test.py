@@ -111,6 +111,24 @@ int main(){
  assert(ui_init_layout(960,720,1) && W==960 && H==720);
  ui_draw_settings_page("Settings",hostrows,2,0);bounds();
  ui_draw_main(NULL,NULL,0,0,NULL,0);bounds();
+ for(int layout=UI_LAYOUT_4_3;layout<UI_LAYOUT_COUNT;layout++) {
+  int width,height;ui_layout_canvas_size(layout,&width,&height);
+  assert(ui_init_layout(width,height,layout) && W==width && H==height);
+  ui_set_language(CONFIG_LANGUAGE_PT_BR);
+  ui_draw_settings_page("Settings",hostrows,2,0);bounds();
+  ui_draw_main(NULL,NULL,0,0,NULL,0);bounds();
+  sk_state keyboard;sk_init(&keyboard,SK_MODE_RESOLUTION,SK_LANG_PT_BR,"Custom stream resolution",NULL,"800x600",12,NULL);
+  ui_draw_smart_keyboard(&keyboard);bounds();
+  ui_draw_profiles(hostrows,2,0,1);bounds();
+  int octets[4]={192,168,1,10};
+  ui_draw_ip_editor(octets,0);bounds();
+  ui_host ph={"PC","192.168.1.10",HOST_UNPAIRED,NULL,NULL};
+  ui_draw_pair(&ph,"1234",100);bounds();
+  ui_stat stats_rows[2]={{"Requested / decoded","800x600 -> 1280x720"},{"Host","192.168.1.10"}};
+  ui_draw_stream_stats("Stream ended",stats_rows,2,"The app keeps running on the PC.",true);bounds();
+  ui_draw_confirm("Reset CRT Settings?","Restore defaults?","Reset");bounds();
+  if(layout==UI_LAYOUT_1_1)save("ui-layout-square.ppm");
+ }
  assert(ui_init(1280,720));
  const int sizes[][2]={{848,480},{1280,720},{1920,1080},{640,480},{720,576}};
  for(unsigned k=0;k<sizeof(sizes)/sizeof(sizes[0]);k++)for(int language=0;language<CONFIG_LANGUAGE_COUNT;language++){

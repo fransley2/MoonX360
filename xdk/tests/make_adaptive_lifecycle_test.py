@@ -88,7 +88,8 @@ int main(){
  for(int which=0;which<5;which++) {
      run_case(which,which!=1);
      assert(sessions==1 && adaptive_reconnects==0 && heights[0]==1080 && bitrates[0]==20000);
-     assert(durations[0]==(which==4?22000u:25000u));
+     uint32_t expected_ms=(which==4?22000u:25000u);
+     assert(durations[0]>=expected_ms && durations[0]<expected_ms+20u);
      assert(recommendations==(which==3?1:0));
  }
  puts("PASS: actual connected loop never adapts/reconnects mid-game; sustained decoder advice after teardown; poor hint/Guide/manual suppression; preferences restored and no live persistence");

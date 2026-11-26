@@ -31,6 +31,11 @@ static uint64_t now_us() {return 1000;}
 static bool running, renderer_joined, signaled, owned, idle;
 static int waited_fences, expected_fences, released;
 static HANDLE frame_event = (void *)1, render_thread;
+static int vid_w=800,vid_h=600,layout_w,layout_h;
+static void gfx_set_stream_layout(int width,int height) {
+    assert(!render_thread && (width || renderer_joined));
+    layout_w=width;layout_h=height;
+}
 static int mailbox_lock;
 static int slot_pending, slot_rendering;
 static int *codec_ctx, *dec_frame;
@@ -103,8 +108,9 @@ int main(void)
         bool partial = (pass & 1) != 0;
         setup(partial);render_thread=NULL;
         fail_thread=false;video_start();assert(running && render_thread && streaming_start_us==1000);
+        assert(layout_w==vid_w && layout_h==vid_h);
         video_stop();
-        assert(render_thread == NULL && renderer_joined && !running);
+        assert(render_thread == NULL && renderer_joined && !running && !layout_w && !layout_h);
         free_resources();
         assert(released == (partial ? 3 : 6));
         assert(!owned && !codec_ctx && !dec_frame && !pkt_buf);

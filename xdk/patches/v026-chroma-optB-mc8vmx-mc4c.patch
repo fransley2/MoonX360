@@ -1,0 +1,174 @@
+diff --git a/ffmpeg_xbox/h264_vmx.c b/ffmpeg_xbox/h264_vmx.c
+index b041307..89b4237 100644
+--- a/ffmpeg_xbox/h264_vmx.c
++++ b/ffmpeg_xbox/h264_vmx.c
+@@ -90,6 +90,14 @@ static __forceinline void store_words(__vector4 v, uint8_t *dst, const int n)
+         __stvewx(v, dst, 4);
+ }
+ 
++static __forceinline void store_words_sh(__vector4 v, uint8_t *dst, const int n, __vector4 sh)
++{
++    v = __vperm(v, v, sh);
++    __stvewx(v, dst, 0);
++    if (n == 8)
++        __stvewx(v, dst, 4);
++}
++
+ static __forceinline void store_n(__vector4 v, uint8_t *dst, const int n)
+ {
+     if (n == 16) {
+@@ -333,9 +341,11 @@ static __forceinline __vector4 chroma_row(const uint8_t *src, __vector4 xb1, __v
+ static __forceinline void chroma_mc(uint8_t *dst, const uint8_t *src, int stride, int h, int x, int y,
+                                     const int n, const int avg)
+ {
+-    __vector4 ones, z, s1, s2, s3, s6, c32;
++    const int aligned4 = (((UINT_PTR)dst & 3) == 0 && (stride & 15) == 0);
++    __vector4 sh = aligned4 ? __lvsr(dst, 0) : __vzero();
++    __vector4 ones, z, s1, s2, s3, s6, c4, c32;
+     __vector4 xb1, xb2, xb4, yb1, yb2, yb4;
+-    __vector4 h0, h1, r;
++    __vector4 h0, h1, p0, p1, r;
+     int i;
+ 
+     /* Fast path for full-pel chroma motion vectors (x == 0, y == 0). */
+@@ -344,13 +354,105 @@ static __forceinline void chroma_mc(uint8_t *dst, const uint8_t *src, int stride
+             r = LOADU(src);
+             if (avg)
+                 r = __vavgub(r, LOADU(dst));
+-            store_n(r, dst, n);
++            if (aligned4)
++                store_words_sh(r, dst, n, sh);
++            else
++                store_n(r, dst, n);
+             src += stride;
+             dst += stride;
+         }
+         return;
+     }
+ 
++    /* Fast path for 1D horizontal interpolation (y == 0, x != 0): single row read per line. */
++    if (y == 0) {
++        if (x == 4) {
++            for (i = 0; i < h; i++) {
++                p0 = LOADU(src);
++                r = __vavgub(p0, __vsldoi(p0, p0, 1));
++                if (avg)
++                    r = __vavgub(r, LOADU(dst));
++                if (aligned4)
++                    store_words_sh(r, dst, n, sh);
++                else
++                    store_n(r, dst, n);
++                src += stride;
++                dst += stride;
++            }
++            return;
++        }
++        ones = __vspltish(-1);
++        z = __vzero();
++        s1 = __vspltish(1);
++        s2 = __vspltish(2);
++        s3 = __vspltish(3);
++        c4 = __vspltish(4);
++        xb1 = (x & 1) ? ones : z;
++        xb2 = (x & 2) ? ones : z;
++        xb4 = (x & 4) ? ones : z;
++        for (i = 0; i < h; i++) {
++            r = chroma_row(src, xb1, xb2, xb4, s1, s2, s3);
++            r = __vsrah(__vadduhm(r, c4), s3);
++            r = __vpkshus(r, r);
++            if (avg)
++                r = __vavgub(r, LOADU(dst));
++            if (aligned4)
++                store_words_sh(r, dst, n, sh);
++            else
++                store_n(r, dst, n);
++            src += stride;
++            dst += stride;
++        }
++        return;
++    }
++
++    /* Fast path for 1D vertical interpolation (x == 0, y != 0): skip horizontal shift/mul. */
++    if (x == 0) {
++        if (y == 4) {
++            p0 = LOADU(src);
++            for (i = 0; i < h; i++) {
++                src += stride;
++                p1 = LOADU(src);
++                r = __vavgub(p0, p1);
++                if (avg)
++                    r = __vavgub(r, LOADU(dst));
++                if (aligned4)
++                    store_words_sh(r, dst, n, sh);
++                else
++                    store_n(r, dst, n);
++                p0 = p1;
++                dst += stride;
++            }
++            return;
++        }
++        ones = __vspltish(-1);
++        z = __vzero();
++        s1 = __vspltish(1);
++        s2 = __vspltish(2);
++        s3 = __vspltish(3);
++        c4 = __vspltish(4);
++        yb1 = (y & 1) ? ones : z;
++        yb2 = (y & 2) ? ones : z;
++        yb4 = (y & 4) ? ones : z;
++        h0 = __vmrghb(z, LOADU(src));
++        for (i = 0; i < h; i++) {
++            src += stride;
++            h1 = __vmrghb(z, LOADU(src));
++            r = __vadduhm(__vslh(h0, s3), mul_small(__vsubuhm(h1, h0), yb1, yb2, yb4, s1, s2));
++            r = __vsrah(__vadduhm(r, c4), s3);
++            r = __vpkshus(r, r);
++            if (avg)
++                r = __vavgub(r, LOADU(dst));
++            if (aligned4)
++                store_words_sh(r, dst, n, sh);
++            else
++                store_n(r, dst, n);
++            h0 = h1;
++            dst += stride;
++        }
++        return;
++    }
++
+     ones = __vspltish(-1);
+     z = __vzero();
+     s1 = __vspltish(1);
+@@ -375,7 +477,10 @@ static __forceinline void chroma_mc(uint8_t *dst, const uint8_t *src, int stride
+         r = __vpkshus(r, r);
+         if (avg)
+             r = __vavgub(r, LOADU(dst));
+-        store_n(r, dst, n);
++        if (aligned4)
++            store_words_sh(r, dst, n, sh);
++        else
++            store_n(r, dst, n);
+         h0 = h1;
+         dst += stride;
+     }
+@@ -834,16 +939,13 @@ void ff_h264qpel_init_xbox(H264QpelContext *c, int bit_depth)
+ 
+ void ff_h264chroma_init_xbox(H264ChromaContext *c, int bit_depth)
+ {
+-    int s;
+-
+     if (!tested || bit_depth != 8 || !(ff_xbox_vmx_flags & XVMX_CHROMA))
+         return;
+-    for (s = 0; s < 2; s++) {
+-        if (chroma_ok[s][0])
+-            c->put_h264_chroma_pixels_tab[s] = vmx_chroma[s][0];
+-        if (chroma_ok[s][1])
+-            c->avg_h264_chroma_pixels_tab[s] = vmx_chroma[s][1];
+-    }
++    /* Keep mc4 (s == 1) on C scalar while profiling mc8 VMX vs hybrid mc8+mc4. */
++    if (chroma_ok[0][0])
++        c->put_h264_chroma_pixels_tab[0] = vmx_chroma[0][0];
++    if (chroma_ok[0][1])
++        c->avg_h264_chroma_pixels_tab[0] = vmx_chroma[0][1];
+ }
+ 
+ void ff_h264dsp_init_xbox(H264DSPContext *c, const int bit_depth, const int chroma_format_idc)

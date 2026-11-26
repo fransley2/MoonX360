@@ -378,6 +378,41 @@ uint32_t *image_scale_cover(const uint32_t *src, int sw, int sh, int dw, int dh)
     ox = (sw - dw / scale) / 2;
     oy = (sh - dh / scale) / 2;
 
+    if (scale < 0.75f) {
+        int taps = (int)ceilf(1.0f / scale);
+        if (taps < 2) taps = 2;
+        if (taps > 4) taps = 4;
+        float inv_scale = 1.0f / scale;
+        float sub = inv_scale / (float)taps;
+        int total = taps * taps;
+        for (y = 0; y < dh; y++) {
+            float y_base = oy + y * inv_scale;
+            for (x = 0; x < dw; x++) {
+                float x_base = ox + x * inv_scale;
+                uint32_t sum_a = 0, sum_r = 0, sum_g = 0, sum_b = 0;
+                for (int jy = 0; jy < taps; jy++) {
+                    int sy = (int)floorf(y_base + (jy + 0.5f) * sub);
+                    if (sy < 0) sy = 0; else if (sy >= sh) sy = sh - 1;
+                    const uint32_t *row = src + sy * sw;
+                    for (int jx = 0; jx < taps; jx++) {
+                        int sx = (int)floorf(x_base + (jx + 0.5f) * sub);
+                        if (sx < 0) sx = 0; else if (sx >= sw) sx = sw - 1;
+                        uint32_t c = row[sx];
+                        sum_a += (c >> 24) & 255u;
+                        sum_r += (c >> 16) & 255u;
+                        sum_g += (c >> 8)  & 255u;
+                        sum_b += c         & 255u;
+                    }
+                }
+                dst[y * dw + x] = ((sum_a / (uint32_t)total) << 24) |
+                                  ((sum_r / (uint32_t)total) << 16) |
+                                  ((sum_g / (uint32_t)total) << 8)  |
+                                  (sum_b / (uint32_t)total);
+            }
+        }
+        return dst;
+    }
+
     for (y = 0; y < dh; y++) {
         float sy = oy + (y + 0.5f) / scale - 0.5f;
         int y0 = (int)floorf(sy);

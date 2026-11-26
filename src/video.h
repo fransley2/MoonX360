@@ -31,12 +31,16 @@ struct video_options {
     int thread_layout;
     int refresh_interval_ms; /* 0 Off; 125, 250, 1000..60000 ms */
     int packet_size; /* negotiated request, diagnostic identity */
-    int refresh_smoothing,smoothing_strength;
+    int refresh_smoothing,smoothing_strength,gpu_post_deblock;
     bool crt_clarity; /* opt-in spatial interlace filter, hardware/output-gated */
     int crt_scaling; /* enum crt_scaling_filter: 0 Auto, 1 Point, 2 Bilinear, 3 Sharp-Bilinear */
-    int crt_aspect;  /* enum crt_aspect_mode: 0 4:3, 1 Original */
+    int crt_aspect;  /* enum crt_aspect_mode: 0 4:3, 1 Original, 2 16:9, 3 Stretch, 4 Custom */
+    int crt_integer_scale; /* 0 Off, 1 On */
+    int crt_size_x,crt_size_y; /* 80..110% */
+    int crt_overscan; /* 0..10% game image overscan */
     int crt_pos_x,crt_pos_y; /* bounded picture alignment offset (-20..20) */
-    int ui_safe_area; /* 0..10% CRT picture safety margin */
+    int ui_safe_area; /* 0..10% UI-only safety margin */
+    int frame_pacing_mode; /* enum frame_pacing_mode: 0 Baseline .. 5 Refresh Aligned */
     bool crt_retro_240p; /* true only when stream session entered for 240p retro mode */
     bool crt_picture_context; /* true for CRT / CRT Retro / derived CRT stream contexts */
     char host_name[64]; /* selected host label, copied before connection */
@@ -60,7 +64,10 @@ struct video_stats {
     uint32_t avg_publish_us, avg_upload_us, avg_gpu_wait_us;
     uint32_t render_superseded; /* already-decoded pictures replaced before upload */
     int display_w, display_h;
+    int requested_w, requested_h;
     int actual_w, actual_h; /* valid decoded picture, never requested geometry */
+    int src_left, src_top, src_right, src_bottom;
+    int dst_left, dst_top, dst_right, dst_bottom;
     int decode_threads;     /* FFmpeg threads actually active */
     int renderer;           /* renderer actually used */
 };

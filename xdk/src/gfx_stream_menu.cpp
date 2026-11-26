@@ -77,6 +77,45 @@ static void ink(stream_panel *p,int face,float size,int x,int y,int width,uint32
 {
     if(s)font_draw_fit(&p->canvas,face,size,x,y,width,color,ui_translate(s));
 }
+
+struct panel_prompt {
+    const char *button;
+    const char *action;
+    const char *alternate;
+};
+
+static const int PROMPT_ICON_SIZE=24,PROMPT_SEPARATOR_WIDTH=12;
+
+static int prompt_button(canvas_t *c,const char *button,int x,int baseline)
+{
+    const int size=PROMPT_ICON_SIZE;
+    if(!ui_button(c,button,x,baseline-17,size,size))
+        font_draw_fit(c,FONT_BOLD,12,x,baseline,size,C_TEXT,button);
+    return x+size;
+}
+
+static void panel_footer(stream_panel *p,int w,int h,const panel_prompt *prompts,int count)
+{
+    canvas_t *c=&p->canvas;
+    const int baseline=h-15,right=w-22;
+    int x=22;
+    cv_fill(c,18,h-40,w-36,1,C_DIV);
+    for(int i=0;i<count;i++){
+        const panel_prompt &prompt=prompts[i];
+        const char *action=ui_translate(prompt.action);
+        const int width=font_text_width(FONT_REGULAR,12,action);
+        const int icon_width=PROMPT_ICON_SIZE+(prompt.alternate?PROMPT_SEPARATOR_WIDTH+PROMPT_ICON_SIZE:0);
+        if(x+icon_width+5+width>right)break;
+        x=prompt_button(c,prompt.button,x,baseline);
+        if(prompt.alternate){
+            font_draw(c,FONT_REGULAR,12,x+3,baseline,C_SUB,"/");
+            x=prompt_button(c,prompt.alternate,x+PROMPT_SEPARATOR_WIDTH,baseline);
+        }
+        font_draw(c,FONT_REGULAR,12,x+5,baseline,C_SUB,action);
+        x+=5+width+16;
+    }
+}
+
 static void panel_header(stream_panel *p,int w,const char *title,const char *hint)
 {
     canvas_t *c=&p->canvas;
@@ -186,16 +225,17 @@ static void main_page(stream_panel *p,int w,int h,unsigned state,int refresh)
     int exit_top=div_y+8;
     action_row(p,w,exit_top,row_h,QUICK_DISCONNECT,selected==QUICK_DISCONNECT,state,audio,refresh);
     action_row(p,w,exit_top+row_h,row_h,QUICK_CLOSE_APP,selected==QUICK_CLOSE_APP,state,audio,refresh);
-    cv_fill(&p->canvas,18,h-40,w-36,1,C_DIV);
-    const char *footer="A Select    Y Keyboard    B Close";
-    if(selected==QUICK_VOLUME)footer="A Mute    Left/Right Volume    B Close";
-    else if(selected==QUICK_DESKTOP)footer="A Toggle    X Actions    B Close";
-    else if(selected==QUICK_PERFORMANCE){
-        footer=(quick_overlay_mode(state)&3)==3
-            ?"Left/Right Mode    X Page    B Close"
-            :"A / Left/Right Mode    B Close";
-    }
-    ink(p,FONT_REGULAR,12,22,h-15,w-44,C_SUB,footer);
+    static const panel_prompt normal[]={{"A","Select"},{"Y","Keyboard"},{"B","Close"}};
+    static const panel_prompt volume[]={{"A","Mute"},{"Left / Right","Volume"},{"B","Close"}};
+    static const panel_prompt desktop[]={{"A","Toggle"},{"X","Actions"},{"B","Close"}};
+    static const panel_prompt performance[]={{"A","Mode","Left / Right"},{"B","Close"}};
+    static const panel_prompt performance_pages[]={{"Left / Right","Mode"},{"X","Page"},{"B","Close"}};
+    if(selected==QUICK_VOLUME)panel_footer(p,w,h,volume,3);
+    else if(selected==QUICK_DESKTOP)panel_footer(p,w,h,desktop,3);
+    else if(selected==QUICK_PERFORMANCE && (quick_overlay_mode(state)&3)==3)
+        panel_footer(p,w,h,performance_pages,3);
+    else if(selected==QUICK_PERFORMANCE)panel_footer(p,w,h,performance,2);
+    else panel_footer(p,w,h,normal,3);
 }
 static void confirm_page(stream_panel *p,int w,int h)
 {
@@ -207,8 +247,8 @@ static void confirm_page(stream_panel *p,int w,int h)
     font_draw_wrapped(c,FONT_REGULAR,15,32,140,w-64,22,C_BODY,
         ui_translate("Close the running app on your PC and return to MoonX360."));
     ink(p,FONT_REGULAR,13,32,216,w-64,C_SUB,"The host computer stays on.");
-    cv_fill(c,18,h-40,w-36,1,C_DIV);
-    ink(p,FONT_REGULAR,12,22,h-15,w-44,C_SUB,"A Confirm    B Cancel");
+    static const panel_prompt prompts[]={{"A","Confirm"},{"B","Cancel"}};
+    panel_footer(p,w,h,prompts,2);
 }
 static void desktop_page(stream_panel *p,int w,int h,unsigned state)
 {
@@ -231,8 +271,8 @@ static void desktop_page(stream_panel *p,int w,int h,unsigned state)
         }
         ink(p,on?FONT_BOLD:FONT_REGULAR,16,26,y+row_h/2+6,w-52,on?C_TEXT:C_BODY,labels[row]);
     }
-    cv_fill(c,18,h-40,w-36,1,C_DIV);
-    ink(p,FONT_REGULAR,12,22,h-15,w-44,C_SUB,"A Select    B Back");
+    static const panel_prompt prompts[]={{"A","Select"},{"B","Back"}};
+    panel_footer(p,w,h,prompts,2);
 }
 static bool smart_kb_overlay_draw(D3DDevice *d)
 {
@@ -377,9 +417,12 @@ static bool smart_kb_overlay_draw(D3DDevice *d)
         else {if(swapped)swap_panel(p);if(!p->ready){p->failed=true;input_desktop_ui_unavailable();}}
     }
     if(!p->ready)return true;
-    float x=(float)(gfx_layout_width()-w)*0.5f;
-    float y=rs.layout==SK_LAYOUT_FLOATING_TOP?20.0f:(float)(704-h);
-    d->SetTexture(0,p->texture);gfx_draw_layout_rect(d,GFX_SHADER_RGB,x,y,x+w,y+h);d->SetTexture(0,NULL);p->used=true;
+    int layout_w=gfx_layout_width(),max_w=layout_w-32;
+    float scale=w>max_w?max_w/(float)w:1.0f;
+    float draw_w=w*scale,draw_h=h*scale;
+    float x=(layout_w-draw_w)*0.5f;
+    float y=rs.layout==SK_LAYOUT_FLOATING_TOP?20.0f:704.0f-draw_h;
+    d->SetTexture(0,p->texture);gfx_draw_layout_rect(d,GFX_SHADER_RGB,x,y,x+draw_w,y+draw_h);d->SetTexture(0,NULL);p->used=true;
     return true;
 }
 static void desktop_draw(D3DDevice *d,unsigned state)

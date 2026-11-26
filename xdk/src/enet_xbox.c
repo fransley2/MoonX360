@@ -197,9 +197,11 @@ void enet_socket_destroy(ENetSocket socket)
 int enet_socket_send(ENetSocket socket, const ENetAddress *peerAddress, const ENetAddress *localAddress,
                      const ENetBuffer *buffers, size_t bufferCount)
 {
+    char stackBuffer[1536];
     char *sendBuffer;
     size_t sendLength = 0, i;
     int sent;
+    int heapBuffer = 0;
     (void)localAddress;
 
     /* sendto() takes one buffer: gather multi-part packets first. */
@@ -209,9 +211,14 @@ int enet_socket_send(ENetSocket socket, const ENetAddress *peerAddress, const EN
     } else {
         for (i = 0; i < bufferCount; i++)
             sendLength += buffers[i].dataLength;
-        sendBuffer = (char *)malloc(sendLength);
-        if (sendBuffer == NULL)
-            return -1;
+        if (sendLength <= sizeof(stackBuffer)) {
+            sendBuffer = stackBuffer;
+        } else {
+            sendBuffer = (char *)malloc(sendLength);
+            if (sendBuffer == NULL)
+                return -1;
+            heapBuffer = 1;
+        }
         sendLength = 0;
         for (i = 0; i < bufferCount; i++) {
             memcpy(sendBuffer + sendLength, buffers[i].data, buffers[i].dataLength);
@@ -221,7 +228,7 @@ int enet_socket_send(ENetSocket socket, const ENetAddress *peerAddress, const EN
 
     sent = sendto(socket, sendBuffer, (int)sendLength, 0,
                   (const struct sockaddr *)&peerAddress->address, peerAddress->addressLength);
-    if (bufferCount != 1)
+    if (heapBuffer)
         free(sendBuffer);
 
     if (sent == SOCKET_ERROR) {

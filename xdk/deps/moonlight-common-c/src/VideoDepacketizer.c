@@ -61,7 +61,7 @@ typedef struct _LENTRY_INTERNAL {
 
 // Init
 void initializeVideoDepacketizer(int pktSize) {
-    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 15);
+    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 24);
 
     nextFrameNumber = 1;
     startFrameNumber = 0;

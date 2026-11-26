@@ -20,7 +20,7 @@
  * native ARGB thumbnails, raw fallback, one decode allocation on cache reads. */
 #define COVER_DISK_SLOTS 256
 #define COVER_DISK_BUDGET (128u*1024u*1024u)
-#define COVER_DISK_PAYLOAD_MAX (512u*1024u)
+#define COVER_DISK_PAYLOAD_MAX (1024u*1024u)
 #ifndef COVER_DISK_ALLOC
 #define COVER_DISK_ALLOC malloc
 #endif

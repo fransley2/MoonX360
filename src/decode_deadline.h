@@ -15,7 +15,7 @@
 #define DEADLINE_ENTER_FRAMES 2
 #define DEADLINE_MIN_FAST     30
 #define DEADLINE_EXIT_FRAMES  30
-#define DEADLINE_BACKLOG_BUDGETS 6  /* far below common-c's 15-unit bound */
+#define DEADLINE_BACKLOG_BUDGETS 9  /* 150 ms at 60 FPS; well below common-c's 24-unit bound */
 #define DEADLINE_TAIL_WINDOW 16
 #define DEADLINE_TAIL_SLOW_COUNT 3
 

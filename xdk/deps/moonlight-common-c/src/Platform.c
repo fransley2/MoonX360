@@ -7,7 +7,7 @@
 
 // The maximum amount of time before observing an interrupt
 // in PltSleepMsInterruptible().
-#define INTERRUPT_PERIOD_MS 50
+#define INTERRUPT_PERIOD_MS 15
 
 struct thread_context {
     ThreadEntry entry;

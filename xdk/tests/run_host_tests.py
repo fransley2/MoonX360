@@ -90,8 +90,10 @@ jobs = [('app-restart',[OUT/'app-restart.cpp']),('focus-motion',[ROOT/'xdk/tests
         ('texture', [OUT / 'texture.cpp']), ('teardown', [OUT / 'teardown.cpp']),
         ('release', [OUT / 'release.cpp']), ('log', [OUT / 'log.cpp']),
         ('metrics', [ROOT / 'xdk/tests/test_metrics_log.cpp']),
+        ('file-explorer', [ROOT / 'xdk/tests/test_file_explorer.cpp', ROOT / 'src/config.c', *ui, ROOT / 'src/ui/image.c', ROOT / 'src/ui/file_explorer_view.c', OUT / 'fonts.obj']),
         ('stream', [ROOT / 'xdk/tests/test_stream_checks.c']),
         ('input', [ROOT / 'xdk/tests/test_input_session.cpp']),
+        ('pc-guide', [ROOT / 'xdk/tests/test_pc_guide.cpp']),
         ('settings', [ROOT / 'xdk/tests/test_settings_layout.cpp']),
         ('config', [ROOT / 'xdk/tests/test_config.cpp', ROOT / 'src/config.c']),
         ('timing', [ROOT / 'xdk/tests/test_timing.cpp']),
@@ -127,7 +129,9 @@ jobs.append(('performance',[ROOT/'xdk/tests/test_performance.cpp']))
 jobs.append(('performance-runtime',[OUT/'performance-runtime.cpp']))
 jobs.append(('fast-decode-compat',[ROOT/'xdk/tests/test_fast_decode_compat.cpp',ROOT/'src/config.c']))
 jobs.append(('crt-output-bridge',[ROOT/'xdk/tests/test_crt_output_bridge.cpp',ROOT/'src/config.c']))
+jobs.append(('tupapa-aspect-scaling',[ROOT/'xdk/tests/test_tupapa_aspect_scaling.cpp',ROOT/'src/config.c',*ui,OUT/'fonts.obj']))
 jobs.append(('crt-picture-ui',[OUT/'crt-picture-ui.cpp',ROOT/'src/config.c']))
+jobs.append(('frame-pacing-experiments',[ROOT/'xdk/tests/test_frame_pacing_experiments.cpp']))
 for name, sources in jobs:
     if selected and name not in selected:continue
     print('TEST:', name, flush=True)

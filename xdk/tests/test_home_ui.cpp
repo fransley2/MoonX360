@@ -110,7 +110,7 @@ int main(void)
     std::vector<uint32_t> art[4];
     const char *game_names[]={"GTA San Andreas","PCSX2 Big Picture","Steam Big Picture","Desktop"};
     for(int i=0;i<4;i++) {
-        art[i].resize(150*225,0xFF294553);char path[64];snprintf(path,sizeof(path),"preview-cover-%d.argb",i);
+        art[i].resize(300*450,0xFF294553);char path[64];snprintf(path,sizeof(path),"preview-cover-%d.argb",i);
         FILE *f=fopen(path,"rb");if(f){assert(fread(art[i].data(),4,150*200,f)==150*200);fclose(f);}
         recent[i].name=game_names[i];recent[i].art=art[i].data();recent[i].generation=10+i;
         tiles[5+i]={game_names[i],"Recent",ICON_PLAY,true};
@@ -162,7 +162,7 @@ int main(void)
     for(int i=0;i<5;i++)all_tiles[i]=tiles[i];
     for(int i=0;i<8;i++) {
         if(i<4)all_recent[i]=recent[i];
-        else {extra[i-4].resize(150*225,0xFF3B5260);all_recent[i]={extra_names[i-4],extra[i-4].data(),false,false,(uint32_t)(20+i)};}
+        else {extra[i-4].resize(300*450,0xFF3B5260);all_recent[i]={extra_names[i-4],extra[i-4].data(),false,false,(uint32_t)(20+i)};}
         all_tiles[5+i]={all_recent[i].name,NULL,ICON_PLAY,true};
     }
     for(int i=0;i<4;i++)all_tiles[13+i]=tiles[9+i];
@@ -191,43 +191,38 @@ int main(void)
     tiles[4]={"Continue stream","Desktop",ICON_PLAY,true};
     tiles[12]={"Stop app","Desktop",ICON_STOP,true};
     ui_set_appearance(4,0);auto wall_started=std::chrono::steady_clock::now();double max_slice_ms=0;
-    for(int i=0;i<30;i++){
+    {
         auto slice=std::chrono::steady_clock::now();
         bool ready=ui_home_prepare_cover("uuid:PC",recent+1,1000);
         double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-slice).count();
         if(ms>max_slice_ms)max_slice_ms=ms;
-        assert(ready==(i==29));
+        assert(ready);
     }
     printf("Cover wallpaper CPU preparation: %.3f ms total, %.3f ms largest slice (desktop; excludes GPU upload).\n",
         std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-wall_started).count(),max_slice_ms);
     ui_draw_dashboard(&host,tiles,13,6,ip,&dashboard);ui_draw_software();save_preview("series-dashboard-wallpaper.ppm");
     assert(!ui_home_prepare_cover("uuid:PC",recent+1,1200));
     ui_app missing={"Missing",NULL,false,false,0};assert(!ui_home_prepare_cover("uuid:PC",&missing,1250));
-    assert(!ui_home_prepare_cover("uuid:PC",recent+2,1300));
-    ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
-    cmd=ui_draw_commands(&command_count);int before_ready=0;
-    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)before_ready++;
-    assert(before_ready==1); /* Old wallpaper stays complete during preparation. */
     ui_set_motion(true);
-    for(int i=1;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1300)==(i==29));
-    ui_set_motion(true);ui_home_tick(1300);
+    assert(ui_home_prepare_cover("uuid:PC",recent+2,1300));
+    ui_home_tick(1300);
     ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
     cmd=ui_draw_commands(&command_count);int backgrounds=0;
-    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
-    assert(backgrounds==2);ui_home_tick(1500);ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==320 && cmd[i].ih==180)backgrounds++;
+    assert(backgrounds==2);ui_home_tick(1700);ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
     cmd=ui_draw_commands(&command_count);backgrounds=0;
-    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==320 && cmd[i].ih==180)backgrounds++;
     assert(backgrounds==1);
     // A new image arriving without navigation replaces the focused backdrop once.
     ui_set_motion(false);recent[2].generation++;
-    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1600)==(i==29));
+    assert(ui_home_prepare_cover("uuid:PC",recent+2,1600));
     assert(!ui_home_prepare_cover("uuid:PC",recent+2,1600));
     ui_draw_dashboard(&host,tiles,13,7,ip,&dashboard);
     cmd=ui_draw_commands(&command_count);backgrounds=0;
-    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==1280 && cmd[i].ih==720)backgrounds++;
+    for(int i=0;i<command_count;i++)if(cmd[i].kind==UI_IMAGE && cmd[i].iw==320 && cmd[i].ih==180)backgrounds++;
     assert(backgrounds==1); // Reduce Motion never draws the preceding backdrop.
-    assert(!ui_home_prepare_cover("uuid:other",recent+2,1700));ui_home_cancel_prepare();
-    for(int i=0;i<30;i++)assert(ui_home_prepare_cover("uuid:PC",recent+2,1800)==false);
+    assert(ui_home_prepare_cover("uuid:other",recent+2,1700));ui_home_cancel_prepare();
+    assert(!ui_home_prepare_cover("uuid:other",recent+2,1800));
     std::vector<uint32_t> custom(1280*720);
     for(int y=0;y<720;y++)for(int x=0;x<1280;x++)custom[y*1280+x]=(x&1)?0xFFF4A431u:0xFF1768C1u;
     ui_home_set_user_wallpaper(custom.data(),1280,720);ui_set_appearance(3,0);

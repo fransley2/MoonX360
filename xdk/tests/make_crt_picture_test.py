@@ -25,8 +25,10 @@ fixture = r'''
 #include <Limelight.h>
 #include "../src/config.h"
 #include "../src/crt_output.h"
+#include "../src/frame_pacing.h"
 #include "../src/video.h"
 #include "../src/settings_layout.h"
+#include "../src/ui_layout_geometry.h"
 #include "../src/ui/ui.h"
 
 static config cfg;
@@ -74,6 +76,7 @@ static void save_current_profile(){}
 static const char *selected_profile_name(){return config_preset_name(config_video_preset(&cfg));}
 static void stream_profile_menu(){}
 static void pointer_settings_menu(){}
+static void edit_custom_stream_resolution(){assert(false);}
 static void launch_defaults_menu(){}
 static void ui_memory_menu(){}
 static void network_diagnostics_menu(){}
@@ -87,6 +90,10 @@ static void calibrate_sticks(){}
 static void power_menu(bool){}
 static bool plat_power_available(){return true;}
 static void plat_display_info(char *out,size_t n){snprintf(out,n,"640x480i 59.94 Hz");}
+static int plat_resolve_ui_layout(int layout){
+    if(layout>UI_LAYOUT_AUTO && layout<UI_LAYOUT_COUNT)return layout;
+    return (crt_status_val==1 || cfg.display_mode==4)?UI_LAYOUT_4_3:UI_LAYOUT_16_9;
+}
 static int plat_crt_output_status(){return crt_status_val;}
 static void plat_crt_output_query(struct crt_output_status *st){
     memset(st,0,sizeof(*st));
@@ -123,18 +130,23 @@ static int crt_picture_row_in_video(){
 }
 
 int main(){
-    // 1. Non-CRT preset hides CRT Picture from Stream -> Video.
+    // 1. Picture Settings is available on non-CRT presets (Smooth 1280x720) for Fit / 1:1 / Crop to 4:3.
+    crt_status_val=0;
     config_defaults(&cfg); config_select_factory(&cfg, CONFIG_PROFILE_SMOOTH);
-    assert(crt_picture_row_in_video()==-1);
+    int smooth_row=crt_picture_row_in_video(); assert(smooth_row>=0);
     draws.clear(); settings_initial_group=SETTINGS_STREAM;
-    keys={DOWN_FLAG,A_FLAG,B_FLAG,B_FLAG};
+    keys={DOWN_FLAG,A_FLAG};
+    for(int i=0;i<smooth_row;i++) keys.push_back(DOWN_FLAG);
+    keys.push_back(A_FLAG);      // Enter CRT Picture
+    keys.push_back(DOWN_FLAG);   // -> Aspect Ratio (Clarity hidden on 1080p stub)
+    keys.push_back(RIGHT_FLAG);  // Fit to screen -> Pixel-to-pixel (1:1)
+    keys.push_back(RIGHT_FLAG);  // -> Crop to 4:3
+    keys.push_back(B_FLAG); keys.push_back(B_FLAG); keys.push_back(B_FLAG);
     settings_menu();
-    assert(keys.empty());
-    bool saw_crt=false;
-    for(auto &d:draws) for(auto &l:d.labels) if(l=="CRT Picture") saw_crt=true;
-    assert(!saw_crt);
+    assert(keys.empty() && cfg.crt_aspect==CRT_ASPECT_CROP_4_3);
 
     // 2. CRT preset shows CRT Picture; Scaling Filter, Clarity (480i only), Aspect Ratio, Screen Adjustment, Output Status, Reset work end-to-end.
+    crt_status_val=1;
     config_select_factory(&cfg, CONFIG_PROFILE_CRT_DISPLAY);
     int crt_row=crt_picture_row_in_video(); assert(crt_row>=0);
     draws.clear(); settings_initial_group=SETTINGS_STREAM;
@@ -145,7 +157,7 @@ int main(){
     keys.push_back(DOWN_FLAG);   // -> CRT Clarity
     keys.push_back(RIGHT_FLAG);  // Toggle On (480i = 1)
     keys.push_back(DOWN_FLAG);   // -> Aspect Ratio
-    keys.push_back(RIGHT_FLAG);  // 4:3 -> Original
+    keys.push_back(RIGHT_FLAG);  // Fit to screen -> Pixel-to-pixel (1:1)
     keys.push_back(DOWN_FLAG);   // -> Screen Adjustment
     keys.push_back(A_FLAG);      // Open Screen Adjustment
     keys.push_back(RIGHT_FLAG);  // pos_x = +1
@@ -160,7 +172,7 @@ int main(){
     keys.push_back(B_FLAG);      // Exit Stream
     settings_menu();
     assert(keys.empty());
-    assert(cfg.crt_scaling==CRT_SCALE_SHARP_BILINEAR && cfg.crt_clarity && cfg.crt_aspect==CRT_ASPECT_ORIGINAL);
+    assert(cfg.crt_scaling==CRT_SCALE_SHARP_BILINEAR && cfg.crt_clarity && cfg.crt_aspect==CRT_ASPECT_PIXEL_1_1);
     assert(cfg.crt_pos_x==1 && cfg.crt_pos_y==-1 && config_crt_profile(&cfg));
 
     bool saw_output_status=false;
@@ -205,7 +217,63 @@ int main(){
         }
     }
     assert(retro_saw_scaling && !retro_saw_clarity);
-    puts("PASS: CRT Picture submenu context visibility, Scaling Filter, 480i-gated Clarity (hidden in 240p), Aspect Ratio, Screen Adjustment, Output Status and Reset.");
+
+    // 5. CRT Retro 2.0 controls: Integer Scaling, CRT Preset, Aspect modes, and Screen Adjustment H/V size + Game overscan.
+    crt_status_val=1;
+    config_select_factory(&cfg, CONFIG_PROFILE_CRT_DISPLAY);
+    crt_row=crt_picture_row_in_video(); assert(crt_row>=0);
+    draws.clear(); settings_initial_group=SETTINGS_STREAM;
+    keys={DOWN_FLAG, A_FLAG};
+    for(int i=0;i<crt_row;i++) keys.push_back(DOWN_FLAG);
+    keys.push_back(A_FLAG);      // Enter CRT Picture
+    keys.push_back(DOWN_FLAG);   // -> CRT Clarity
+    keys.push_back(DOWN_FLAG);   // -> Aspect Ratio
+    keys.push_back(DOWN_FLAG);   // -> Screen Adjustment
+    keys.push_back(A_FLAG);      // Open Screen Adjustment
+    keys.push_back(DOWN_FLAG);   // -> Vertical position
+    keys.push_back(DOWN_FLAG);   // -> Horizontal size
+    keys.push_back(LEFT_FLAG);   // 100% -> 99%
+    keys.push_back(DOWN_FLAG);   // -> Vertical size
+    keys.push_back(RIGHT_FLAG);  // 100% -> 101%
+    keys.push_back(DOWN_FLAG);   // -> Game overscan
+    keys.push_back(RIGHT_FLAG);  // 0% -> 1%
+    keys.push_back(B_FLAG);      // Exit Screen Adjustment
+    keys.push_back(DOWN_FLAG);   // -> Output Status
+    keys.push_back(DOWN_FLAG);   // -> Reset CRT Settings
+    keys.push_back(DOWN_FLAG);   // -> Integer Scaling
+    keys.push_back(RIGHT_FLAG);  // Toggle Integer Scaling On
+    keys.push_back(DOWN_FLAG);   // -> CRT Preset
+    keys.push_back(RIGHT_FLAG);  // Apply CRT Standard 480 preset
+    keys.push_back(B_FLAG); keys.push_back(B_FLAG); keys.push_back(B_FLAG);
+    settings_menu();
+    assert(keys.empty());
+    assert(config_match_crt_preset(&cfg) == CRT_PRESET_STANDARD_480);
+    assert(cfg.crt_size_x == 100 && cfg.crt_size_y == 100 && cfg.crt_overscan == 0 && !cfg.crt_integer_scale);
+
+    // 6. Unified SET_RES lets Custom users reach 240p resolutions AND exit cleanly back to HD without trapping.
+    config_select_factory(&cfg, CONFIG_PROFILE_SMOOTH); // 1280x720 (idx 8)
+    settings_initial_group=SETTINGS_STREAM;
+    keys={DOWN_FLAG, A_FLAG, LEFT_FLAG, LEFT_FLAG, LEFT_FLAG, LEFT_FLAG, B_FLAG, B_FLAG}; // 1280x720 -> 960x540 -> 854x480 -> 640x480 -> 640x240
+    settings_menu();
+    assert(keys.empty() && cfg.width==640 && cfg.height==240 && cfg.stream_profile==0);
+
+    settings_initial_group=SETTINGS_STREAM;
+    keys={DOWN_FLAG, A_FLAG, LEFT_FLAG, LEFT_FLAG, LEFT_FLAG, LEFT_FLAG, B_FLAG, B_FLAG}; // 640x240 -> 432x240 -> 400x240 -> 320x240 -> 256x240
+    settings_menu();
+    assert(keys.empty() && cfg.width==256 && cfg.height==240);
+
+    settings_initial_group=SETTINGS_STREAM;
+    keys={DOWN_FLAG, A_FLAG, RIGHT_FLAG, RIGHT_FLAG, RIGHT_FLAG, RIGHT_FLAG, RIGHT_FLAG, RIGHT_FLAG, B_FLAG, B_FLAG}; // 256x240 -> ... -> 640x480 -> 854x480
+    settings_menu();
+    assert(keys.empty() && cfg.width==854 && cfg.height==480 && cfg.crt_origin_preset==0);
+
+    config_select_factory(&cfg, CONFIG_PROFILE_CRT_RETRO_240P); // 640x240 (idx 4)
+    settings_initial_group=SETTINGS_STREAM;
+    keys={DOWN_FLAG, A_FLAG, RIGHT_FLAG, RIGHT_FLAG, B_FLAG, B_FLAG}; // 640x240 -> 640x480 -> 854x480
+    settings_menu();
+    assert(keys.empty() && cfg.width==854 && cfg.height==480 && cfg.crt_origin_preset==0);
+
+    puts("PASS: CRT Picture submenu context visibility, Scaling Filter, 480i-gated Clarity (hidden in 240p), Aspect Ratio, Screen Adjustment (v2), Integer Scaling, CRT Presets, Output Status and Reset.");
     return 0;
 }
 '''

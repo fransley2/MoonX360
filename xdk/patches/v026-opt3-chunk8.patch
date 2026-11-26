@@ -1,0 +1,13 @@
+diff --git a/libavcodec/h264.c b/libavcodec/h264.c
+index 5d93760..e451238 100644
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -4253,7 +4253,7 @@ static void loop_filter(H264Context *h, int start_x, int end_x)
+  * even a single scheduled worker can always finish the oldest row. An edge
+  * can touch its left and upper neighbours, so wait for the upper row to
+  * finish one MB beyond each chunk before writing any pixels. */
+-enum { ROW_LIMIT = 128, FILTER_CHUNK = 4, ROW_SLOTS = 32 };
++enum { ROW_LIMIT = 128, FILTER_CHUNK = 8, ROW_SLOTS = 32 };
+ typedef struct RowFilterBatch {
+     H264Context **contexts;
+     int first, end;

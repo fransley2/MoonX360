@@ -1,0 +1,19 @@
+diff --git a/libavcodec/h264.c b/libavcodec/h264.c
+index 5d93760..d3a4c19 100644
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -4275,8 +4275,12 @@ static int filter_rows_job(AVCodecContext *avctx, void *arg, int job, int thread
+             int need = FFMIN(end + 1, h->mb_width);
+             if (row > batch->first) {
+                 const int target = (row - 1) * h->mb_width + need;
+-                while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
+-                    YieldProcessor();
++                if (batch->progress[(row - 1) % ROW_SLOTS][0] < target) {
++                    __SetHWThreadPriorityLow();
++                    while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
++                        YieldProcessor();
++                    __SetHWThreadPriorityMed();
++                }
+                 /* Acquire the upper row's pixels after observing its progress. */
+                 MemoryBarrier();
+             }

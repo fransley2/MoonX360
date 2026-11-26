@@ -83,13 +83,13 @@ int main(){
     assert(config_profiles_create(&selected,&c,"Personal"));assert(config_profiles_apply(&selected,0,&c));
     assert(config_profiles_selected(&selected,&c)==0 && config_save(&c));config_load(&restarted);
     assert(config_profiles_selected(&selected,&restarted)==0);
-    for(int field=0;field<16;field++) {
+    for(int field=0;field<17;field++) {
         config changed=restarted;int *option=NULL;
         switch(field){case 0:changed.width=854;break;case 1:changed.height=480;break;case 2:changed.fps=24;break;
         case 3:changed.bitrate_kbps++;break;case 4:changed.packet_size++;break;case 5:changed.slice_count=8;break;
         case 6:changed.fast_decode=!changed.fast_decode;break;case 7:changed.renderer=1;break;case 8:changed.vsync=!changed.vsync;break;
         case 9:changed.sops=!changed.sops;break;case 10:changed.local_audio=!changed.local_audio;break;case 11:changed.image_quality=2;break;
-        case 12:changed.adaptive_quality=1;break;case 13:changed.thread_layout=0;break;case 14:changed.decode_workers=3;break;case 15:changed.audio_mode=1;break;}
+        case 12:changed.adaptive_quality=1;break;case 13:changed.thread_layout=0;break;case 14:changed.decode_workers=3;break;case 15:changed.audio_mode=1;break;case 16:changed.gpu_post_deblock=!changed.gpu_post_deblock;break;}
         assert(config_profiles_selected(&selected,&changed)==-1);
     }
     // Saved identity wins over a stale/missing factory key; never force Fast on a named profile.
@@ -117,7 +117,7 @@ int main(){
     std::map<std::string,std::string> disk_before=files;
     c.language=2;c.ui_accent=3;c.left_min=17;strcpy(c.host,"kept-host");c.bitrate_kbps=12345;config_customize_stream(&c);
     int vis[CONFIG_PROFILE_COUNT];int vis_count=config_visible_factory_profiles(vis,CONFIG_PROFILE_COUNT);
-    assert(vis_count==8 && vis[vis_count-1]==CONFIG_PROFILE_CRT_RETRO_240P);
+    assert(vis_count==8 && vis[1]==CONFIG_PROFILE_PERFORMANCE && vis[vis_count-1]==CONFIG_PROFILE_CRT_RETRO_240P);
     for(int i=0;i<vis_count+CONFIG_USER_PROFILE_MAX;i++) {
         assert(config_cycle_profile(&choices,&c,1));
         assert(i<vis_count?config_match_factory(&c)==vis[i]:config_profiles_selected(&choices,&c)==i-vis_count);
@@ -141,6 +141,7 @@ int main(){
     assert(config_cycle_profile(&empty,&c,1) && config_match_factory(&c)==CONFIG_PROFILE_SMOOTH);
     config_customize_stream(&c);assert(config_match_factory(&c)==CONFIG_PROFILE_SMOOTH);
     c.vsync=false;assert(!config_match_factory(&c));
+    c.packet_size=1200;assert(!config_match_factory(&c));
     assert(config_cycle_profile(&empty,&c,-1) && config_match_factory(&c)==CONFIG_PROFILE_CRT_RETRO_240P);
     puts("PASS: inline cycle 0/8 saved, full effective matching, invalid entries, canonical factory/global isolation and FPS restart persistence");
     // Failure at every durable write boundary: memory unchanged, intent recovers
@@ -186,6 +187,11 @@ int main(){
     launch_settings restarted_prefs;launch_settings_load(&restarted_prefs);assert(restarted_prefs.count==2 && restarted_prefs.items[1].desktop);
     launch_settings old_prefs=prefs;fail_write=true;assert(!launch_settings_save(&prefs,"uuid-a",42,10,0));assert(old_prefs.count==prefs.count && !memcmp(old_prefs.items,prefs.items,sizeof(prefs.items)));fail_write=false;
     assert(!launch_settings_save(&prefs,"uuid-a",42,11,0));files["launch-settings.tsv"]+="junk";launch_settings_load(&prefs);assert(prefs.read_only);
+    files.clear();config_defaults(&c);c.gpu_post_deblock=1;user_profiles pd_profiles={};pd_profiles.slot=-1;
+    assert(config_profiles_create(&pd_profiles,&c,"PostDeblock"));
+    config_select_factory(&c,CONFIG_PROFILE_SMOOTH);assert(!c.gpu_post_deblock && config_profiles_selected(&pd_profiles,&c)==-1);
+    user_profiles pd_disk={};assert(config_profiles_load(&pd_disk) && config_profiles_apply(&pd_disk,0,&c) && c.gpu_post_deblock==1);
+    assert(config_profiles_selected(&pd_disk,&c)==0);
     puts("PASS: linked rename/delete transaction recovery at every write, persisted personal identity, all owned options invalidate selection, per-host/app opening preferences");
     puts("PASS: profiles CRUD/restart, effective stream options/global isolation, UTF-8/names/duplicates/limits, read/write/partial failures, checksum fallback and unknown-version preservation");
 }

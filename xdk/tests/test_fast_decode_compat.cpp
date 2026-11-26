@@ -55,7 +55,7 @@ int main() {
         if(value==2 || version<5)assert(files["profiles-a.tsv.fastdecode.bak"]==before);
         user_profiles restarted={};assert(config_profiles_load(&restarted));
         assert(restarted.items[0].options.fast_decode==!c.fast_decode);
-        assert(files["profiles-b.tsv"].find("XENON_PROFILES 6 ")==0);
+        assert(files["profiles-b.tsv"].find("XENON_PROFILES 8 ")==0);
         // Subsequent publication must never replace the original backup.
         std::string backup=files["profiles-a.tsv.fastdecode.bak"];
         assert(config_profiles_save(&restarted,&restarted));

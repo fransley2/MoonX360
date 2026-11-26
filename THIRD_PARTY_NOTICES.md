@@ -77,3 +77,35 @@ licensed under GNU AGPLv3, **no AGPLv3 source code was copied into MoonX360**:
 - `ps_yuv_sharp_bilinear_src` in `xdk/src/gfx_xdk.cpp` is an original
   single-pass Direct3D 9 HLSL YUV sharp-bilinear pixel shader written directly
   for MoonX360's 3-plane Y/U/V texture pipeline.
+
+## CRT Retro 2.0, MiSTerCast & Frame Pacing Research References
+
+Technical architecture research for CRT Retro 2.0 (`src/crt_resolutions.h`,
+`src/video_viewport.h`, `src/frame_pacing.h`, `tools/crt_video_modes_probe/`,
+`tools/crt_host_companion/`, and `tools/retro_transport_proto/`) consulted the
+following external repositories strictly for architectural and protocol analysis:
+
+- `iequalshane/MiSTerCast` (<https://github.com/iequalshane/MiSTerCast>) —
+  GitHub repository license metadata: `NONE/UNSPECIFIED` (`Library/MiSTerCastLib/renderer_nogpu.h`
+  carries an individual `BSD-3-Clause` file header).
+- `psakhis/Groovy_MiSTer` (<https://github.com/psakhis/Groovy_MiSTer>) —
+  GNU `GPL-2.0` (only) (`GPL-2.0` is incompatible with combining code directly
+  into a `GPL-3.0` work without `-or-later`).
+- `antonioginer/switchres` (<https://github.com/antonioginer/switchres>) —
+  GitHub repository license metadata: `NONE/UNSPECIFIED`.
+- `libretro/RetroArch` (<https://github.com/libretro/RetroArch>) —
+  GNU `GPL-3.0`.
+
+Clean-room compliance boundary:
+
+- **Zero source code was copied** from `MiSTerCast`, `Groovy_MiSTer`,
+  `switchres`, or `RetroArch` into MoonX360, `tools/crt_host_companion/`, or
+  `tools/retro_transport_proto/`.
+- `tools/crt_host_companion/crt_host_companion.py` uses only Python 3 standard
+  library modules + Win32 `ctypes` display APIs and generates standard
+  configuration snippets; if the user invokes the optional `switchres` command,
+  it runs an externally user-installed `switchres` executable as a subprocess.
+- `tools/retro_transport_proto/retro_proto.h` implements an original
+  clean-room RGB565 converter, 16x16 dirty-tile scanner, hash-table LZ77 codec,
+  and CRC32 UDP framing solely as an offline research benchmark (not linked into
+  MoonX360).

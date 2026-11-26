@@ -12,6 +12,7 @@
 #include "../src/video_smoothing.h"
 #include "../src/video_viewport.h"
 #include "../src/overlay_hud.h"
+#include "../src/frame_pacing.h"
 typedef unsigned char BYTE;
 typedef uint32_t DWORD;
 typedef unsigned UINT;
@@ -49,6 +50,7 @@ static float last_transition[4];
 static unsigned temporal_draws,produce_many;
 static bool crt_available,crt_240p_bb,sharp_bilinear_available=true,bicubic_available,post_deblock_available;
 static LONG stream_deblock_off;
+static uint32_t post_deblock_present_calls,present_blocking_gt4ms,present_iv_count,present_iv_gt25ms,present_iv_gt33_3ms,present_geom_recalcs;
 static bool gfx_crt_clarity_available(){return crt_available;}
 static bool gfx_crt_240p_backbuffer_active(){return crt_240p_bb;}
 static bool gfx_sharp_bilinear_available(){return sharp_bilinear_available;}
@@ -166,6 +168,18 @@ static bool create_legacy_video() { assert(!owned && live.empty());legacy_create
 static void vlog(const char*,...) {}
 static bool gfx_quality_available() { return quality_available; }
 static void gfx_backbuffer_size(int *w,int *h) { *w=crt_240p_bb?640:1280;*h=crt_240p_bb?240:720; }
+#ifndef UI_LOGICAL_HEIGHT
+#define UI_LOGICAL_HEIGHT 720
+#endif
+static int gfx_layout_width(void) { return 1280; }
+const char *config_crt_aspect_name(int) { return "fit"; }
+static struct {
+    bool valid;
+    int vid_w, vid_h, bw, bh, is_240p_bb;
+    int crt_aspect, crt_integer_scale, crt_overscan;
+    int crt_size_x, crt_size_y, crt_pos_x, crt_pos_y;
+    struct video_present_rect rect;
+} present_geom;
 static void gfx_draw_rect(D3DDevice *d,int shader,float,float,float,float) {
     last_shader=shader;
     for(int i=0;i<6;i++){d->last_draw_min[i]=d->sampler_min[i];d->last_draw_mag[i]=d->sampler_mag[i];}
@@ -177,6 +191,9 @@ static void gfx_draw_rect(D3DDevice *d,int shader,float,float,float,float) {
     }
     if(smoothing){assert(last_transition[0]>0 && last_transition[0]<=0.15f);temporal_draws++;}
     d->Draw();
+}
+static void gfx_draw_rect_uv(D3DDevice *d,int shader,float x0,float y0,float x1,float y1,float,float,float,float) {
+    gfx_draw_rect(d,shader,x0,y0,x1,y1);
 }
 static bool gfx_overlay_set(const char*) { return true; }
 static bool gfx_overlay_update(const struct overlay_telemetry*) { return true; }
@@ -195,6 +212,10 @@ static unsigned overlay_prepares;
 static bool overlay_collect(struct overlay_telemetry*){overlay_prepares++;return false;}
 static bool overlay_text(char*,size_t){overlay_prepares++;return false;}
 static void gfx_overlay_mark_used(DWORD) {}
+static struct frame_pacing_state fp_state;
+static CRITICAL_SECTION fp_lock;
+static bool running = true;
+static void Sleep(DWORD) {}
 /* ACTUAL_PUBLISH */
 /* ACTUAL_FALLBACK */
 static bool opening,opening_drawn;

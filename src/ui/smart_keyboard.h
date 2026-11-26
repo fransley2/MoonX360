@@ -6,6 +6,7 @@
  * autocomplete, gamepad navigation with visual-X row alignment, analog deadzone/
  * hysteresis, held-X repeat, and experimental Dual-Stick mode. */
 #include <stdbool.h>
+#include "../crt_resolutions.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,7 +39,8 @@ enum sk_mode {
     SK_MODE_PROFILE,
     SK_MODE_IP,
     SK_MODE_URL,
-    SK_MODE_PASSWORD
+    SK_MODE_PASSWORD,
+    SK_MODE_RESOLUTION
 };
 
 enum sk_page {
@@ -601,7 +603,7 @@ static void sk_init(struct sk_state *sk, enum sk_mode mode, int lang,
     memset(sk, 0, sizeof(*sk));
     sk->mode = mode;
     sk->lang = (lang >= 0 && lang < SK_LANG_COUNT) ? lang : SK_LANG_EN;
-    sk->page = (mode == SK_MODE_IP) ? SK_PAGE_NUMERIC : SK_PAGE_QWERTY;
+    sk->page = (mode == SK_MODE_IP || mode == SK_MODE_RESOLUTION) ? SK_PAGE_NUMERIC : SK_PAGE_QWERTY;
     sk->shift = SK_SHIFT_OFF;
     sk->zone = SK_ZONE_KEYS;
     sk->predictions_enabled = sk_mode_allows_suggestions(mode);
@@ -724,10 +726,17 @@ static int sk_consume_mods(struct sk_state *sk)
     return mods;
 }
 
+static const char *sk_numeric_key_label(const struct sk_state *sk, int row, int col)
+{
+    const char *label = sk_compact_key_label(SK_PAGE_NUMERIC, sk->shift, row, col);
+    return sk->mode == SK_MODE_RESOLUTION && !strcmp(label, ".") ? "x" : label;
+}
+
 static enum sk_result sk_activate_key(struct sk_state *sk, int row, int col)
 {
     if (!sk->full_pc || sk->page == SK_PAGE_NUMERIC) {
-        const char *lbl = sk_compact_key_label(sk->page, sk->shift, row, col);
+        const char *lbl = sk->page == SK_PAGE_NUMERIC ? sk_numeric_key_label(sk, row, col) :
+                          sk_compact_key_label(sk->page, sk->shift, row, col);
         if (sk->page == SK_PAGE_NUMERIC && !strcmp(lbl, "Bksp")) {
             sk_backspace(sk);
             sk->pending_special = SK_KEY_BACK;
@@ -837,6 +846,12 @@ static enum sk_result sk_step(struct sk_state *sk, const struct sk_pad *pad, uin
     }
 
     if (p_start) {
+        int width, height;
+        if (sk->mode == SK_MODE_RESOLUTION && !crt_parse_stream_resolution(sk->text, &width, &height)) {
+            snprintf(sk->error, sizeof(sk->error), "Use even width and height, e.g. 1024x768");
+            sk->prev = *pad;
+            return SK_RESULT_ACTIVE;
+        }
         if (sk->mode == SK_MODE_IP && !sk_valid_ipv4(sk->text)) {
             snprintf(sk->error, sizeof(sk->error), "Invalid IPv4 address (e.g. 192.168.1.10)");
             sk->prev = *pad;
@@ -874,7 +889,7 @@ static enum sk_result sk_step(struct sk_state *sk, const struct sk_pad *pad, uin
         }
     }
 
-    if (p_y && sk->mode != SK_MODE_IP) sk_insert_utf8(sk, " ");
+    if (p_y && sk->page != SK_PAGE_NUMERIC) sk_insert_utf8(sk, " ");
 
     if (sk->dual_stick && sk->page != SK_PAGE_NUMERIC) {
         /* Allow D-Pad precision override in Dual-Stick mode to reach any key effortlessly. */

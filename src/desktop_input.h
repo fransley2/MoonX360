@@ -4,6 +4,8 @@
 #include "desktop_options.h"
 #include "desktop_keyboard_layout.h"
 #include <stdlib.h>
+#include <math.h>
+#define DESKTOP_MOUSE_SEND_INTERVAL_MS 8u
 enum { DESK_TOGGLE=1,DESK_SHOW_TOOLBAR,DESK_SHOW_KEYBOARD,DESK_OSK,DESK_TOUCH,DESK_SWITCH,DESK_EXPLORER };
 struct desktop_input {
     struct desktop_options options;
@@ -11,8 +13,10 @@ struct desktop_input {
     bool held[3];
     int owner,previous,view,selected,keyboard_page;
     bool caps,text_error;
-    uint32_t clock;
+    uint32_t clock,motion_clock,scroll_clock;
+    bool motion_clock_valid,scroll_clock_valid;
     int move_x,move_y,wheel_x,wheel_y;
+    int pending_dx,pending_dy,pending_sx,pending_sy;
 };
 static const int desktop_buttons[DESKTOP_BINDINGS]={A_FLAG,B_FLAG,X_FLAG,Y_FLAG,UP_FLAG,DOWN_FLAG,
  LEFT_FLAG,RIGHT_FLAG,LB_FLAG,RB_FLAG,PLAY_FLAG,BACK_FLAG};
@@ -29,10 +33,36 @@ static void desktop_chord(int key,int mods) {
     if(mods&MODIFIER_CTRL)LiSendKeyboardEvent(0xa2,KEY_ACTION_UP,(char)(mods&MODIFIER_META));
     if(mods&MODIFIER_META)LiSendKeyboardEvent(0x5b,KEY_ACTION_UP,MODIFIER_EXTENDED);
 }
+static short desktop_clamp_short(int v) {
+    if(v>32767)return 32767;
+    if(v<-32767)return -32767;
+    return (short)v;
+}
+static void desktop_flush_mouse(struct desktop_input *d,uint32_t now) {
+    if(d->pending_dx || d->pending_dy) {
+        LiSendMouseMoveEvent(desktop_clamp_short(d->pending_dx),desktop_clamp_short(d->pending_dy));
+        d->pending_dx=d->pending_dy=0;
+        d->motion_clock=now;d->motion_clock_valid=true;
+    }
+}
+static void desktop_flush_scroll(struct desktop_input *d,uint32_t now) {
+    if(d->pending_sx) {
+        LiSendHighResHScrollEvent(desktop_clamp_short(d->pending_sx));
+        d->pending_sx=0;
+        d->scroll_clock=now;d->scroll_clock_valid=true;
+    }
+    if(d->pending_sy) {
+        LiSendHighResScrollEvent(desktop_clamp_short(d->pending_sy));
+        d->pending_sy=0;
+        d->scroll_clock=now;d->scroll_clock_valid=true;
+    }
+}
 static void desktop_release(struct desktop_input *d) {
     const int buttons[]={BUTTON_LEFT,BUTTON_RIGHT,BUTTON_MIDDLE};
     for(int i=0;i<3;i++){if(d->held[i])LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE,buttons[i]);d->held[i]=false;}
     d->move_x=d->move_y=d->wheel_x=d->wheel_y=0;
+    d->pending_dx=d->pending_dy=d->pending_sx=d->pending_sy=0;
+    d->motion_clock_valid=d->scroll_clock_valid=false;
 }
 static void desktop_suspend(struct desktop_input *d) {
     desktop_release(d);d->neutral=true;d->view=0;d->previous=0;d->back_used=true;
@@ -101,11 +131,35 @@ static void desktop_action(struct desktop_input *d,int action) {
     case DA_ENTER:desktop_chord(0x0d,0);break;case DA_ESCAPE:desktop_chord(0x1b,0);break;
     }
 }
+static void desktop_stick_vector(int16_t raw_x,int16_t raw_y,int deadzone_pct,bool invert_y,
+                                 int *out_x,int *out_y,int *out_mag) {
+    double fx=raw_x<0?(double)raw_x/32768.0:(double)raw_x/32767.0;
+    double fy=raw_y<0?(double)raw_y/32768.0:(double)raw_y/32767.0;
+    if(invert_y)fy=-fy;
+    if(deadzone_pct<0)deadzone_pct=0;
+    if(deadzone_pct>30)deadzone_pct=30;
+    double dz=(double)deadzone_pct/100.0;
+    double r=sqrt(fx*fx+fy*fy);
+    if(r<=dz || r<=1e-9) {
+        *out_x=0;*out_y=0;
+        if(out_mag)*out_mag=0;
+        return;
+    }
+    double clamped=r>1.0?1.0:r;
+    double norm=(clamped-dz)/(1.0-dz);
+    /* Smooth progressive curve: fine low-speed precision, full 1.0 speed at edge. */
+    double curved=norm*(0.35+0.65*norm);
+    double scale=(curved/r)*32767.0;
+    double vx=fx*scale,vy=fy*scale;
+    *out_x=(int)(vx>=0.0?vx+0.5:vx-0.5);
+    *out_y=(int)(vy>=0.0?vy+0.5:vy-0.5);
+    if(out_mag)*out_mag=(int)(norm*32767.0+0.5);
+}
 static int desktop_motion(int axis,int speed,unsigned elapsed,int *remainder) {
-    /* 800 pixels/sec at full scale and 100%. int bounds: 32768*400*20. */
+    /* 800 pixels/sec at full scale and 100%. Use int64_t to avoid overflow with accel + RT boost. */
     if(!axis){*remainder=0;return 0;}
-    int amount=axis*speed*(int)elapsed+*remainder;
-    int result=amount/4096000;*remainder=amount%4096000;return result;
+    int64_t amount=(int64_t)axis*(int64_t)speed*(int64_t)elapsed+(int64_t)*remainder;
+    int result=(int)(amount/4096000);*remainder=(int)(amount%4096000);return result;
 }
 static bool desktop_step(struct desktop_input *d,struct pad *p,uint32_t now,int exit_mask) {
     unsigned elapsed=now-d->clock;d->clock=now;if(elapsed>20)elapsed=20;
@@ -166,16 +220,30 @@ static bool desktop_step(struct desktop_input *d,struct pad *p,uint32_t now,int 
         if(d->view || d->neutral)return true;
     }
     const int mouse_buttons[]={BUTTON_LEFT,BUTTON_RIGHT,BUTTON_MIDDLE};
-    for(int i=0;i<3;i++){if(clicks[i]!=d->held[i])LiSendMouseButtonEvent(clicks[i]?BUTTON_ACTION_PRESS:BUTTON_ACTION_RELEASE,mouse_buttons[i]);d->held[i]=clicks[i];}
-    int x=input_axis(p->lx,d->options.deadzone),y=-input_axis(p->ly,d->options.deadzone);
+    for(int i=0;i<3;i++){
+        if(clicks[i]!=d->held[i]){
+            desktop_flush_mouse(d,now);
+            LiSendMouseButtonEvent(clicks[i]?BUTTON_ACTION_PRESS:BUTTON_ACTION_RELEASE,mouse_buttons[i]);
+        }
+        d->held[i]=clicks[i];
+    }
+    int x=0,y=0,magnitude=0;
+    desktop_stick_vector(p->lx,p->ly,d->options.deadzone,true,&x,&y,&magnitude);
     int speed=d->options.speed;
-    if(d->options.acceleration){int magnitude=abs(x)>abs(y)?abs(x):abs(y);speed+=speed*magnitude/32768;}
+    if(d->options.acceleration)speed+=speed*magnitude/32768;
     if(p->lt>30)speed=speed*d->options.precision/100;
     else if(p->rt>30)speed=speed*(255+p->rt)/255;
-    int dx=desktop_motion(x,speed,elapsed,&d->move_x),dy=desktop_motion(y,speed,elapsed,&d->move_y);
-    if(dx || dy)LiSendMouseMoveEvent((short)dx,(short)dy);
-    int sx=desktop_motion(input_axis(p->rx,d->options.deadzone),d->options.scroll_speed,elapsed,&d->wheel_x);
-    int sy=desktop_motion(input_axis(p->ry,d->options.deadzone),d->options.scroll_speed,elapsed,&d->wheel_y);
-    if(sx)LiSendHighResHScrollEvent((short)sx);if(sy)LiSendHighResScrollEvent((short)sy);
+    d->pending_dx+=desktop_motion(x,speed,elapsed,&d->move_x);
+    d->pending_dy+=desktop_motion(y,speed,elapsed,&d->move_y);
+    if(!x && !y){desktop_flush_mouse(d,now);d->motion_clock_valid=false;}
+    else if((d->pending_dx || d->pending_dy) && (!d->motion_clock_valid || (uint32_t)(now-d->motion_clock)>=DESKTOP_MOUSE_SEND_INTERVAL_MS))
+        desktop_flush_mouse(d,now);
+    int rx=0,ry=0;
+    desktop_stick_vector(p->rx,p->ry,d->options.deadzone,false,&rx,&ry,NULL);
+    d->pending_sx+=desktop_motion(rx,d->options.scroll_speed,elapsed,&d->wheel_x);
+    d->pending_sy+=desktop_motion(ry,d->options.scroll_speed,elapsed,&d->wheel_y);
+    if(!rx && !ry){desktop_flush_scroll(d,now);d->scroll_clock_valid=false;}
+    else if((d->pending_sx || d->pending_sy) && (!d->scroll_clock_valid || (uint32_t)(now-d->scroll_clock)>=DESKTOP_MOUSE_SEND_INTERVAL_MS))
+        desktop_flush_scroll(d,now);
     return true;
 }

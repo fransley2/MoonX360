@@ -6,4 +6,4 @@ Makefile text eol=lf
 *.ttf binary
 *.png binary
 assets/brand/MoonX360.svg -text
-*.patch text eol=lf whitespace=-blank-at-eol
+*.patch whitespace=-blank-at-eol

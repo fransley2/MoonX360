@@ -3,7 +3,7 @@
 
 #define RTSP_CONNECT_TIMEOUT_SEC 10
 #define RTSP_RECEIVE_TIMEOUT_SEC 15
-#define RTSP_RETRY_DELAY_MS 500
+#define RTSP_RETRY_DELAY_MS 100
 #define MAX_RTSP_RESPONSE_SIZE (1024 * 1024)
 
 static int currentSeqNumber;

@@ -78,6 +78,7 @@ void plat_run_benchmark(void);
 /* Physical mode is owned by the console dashboard, not the stream resolution. */
 void plat_display_info(char *out,size_t capacity);
 int plat_display_refresh_x100(void);
+int plat_resolve_ui_layout(int layout);
 bool plat_power_available(void);
 bool plat_system_ui_active(void);
 bool plat_power_action(bool restart);

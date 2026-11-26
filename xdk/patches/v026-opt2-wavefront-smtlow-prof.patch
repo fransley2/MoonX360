@@ -1,0 +1,26 @@
+diff --git a/libavcodec/h264.c b/libavcodec/h264.c
+index 2e27123..970e464 100644
+--- a/libavcodec/h264.c
++++ b/libavcodec/h264.c
+@@ -4314,13 +4314,19 @@ static int filter_rows_job(AVCodecContext *avctx, void *arg, int job, int thread
+ #ifdef XDK_H264_STAGE_PROFILE
+                 if (batch->progress[(row - 1) % ROW_SLOTS][0] < target) {
+                     uint64_t wait_t0 = xbox_h264_profile_ticks();
++                    __SetHWThreadPriorityLow();
+                     while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
+                         YieldProcessor();
++                    __SetHWThreadPriorityMed();
+                     h->xbox_parallel_diagnostic.deep[FF_H264_DEEP_WAVEFRONT_WAIT] += xbox_h264_profile_delta(wait_t0);
+                 }
+ #else
+-                while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
+-                    YieldProcessor();
++                if (batch->progress[(row - 1) % ROW_SLOTS][0] < target) {
++                    __SetHWThreadPriorityLow();
++                    while (batch->progress[(row - 1) % ROW_SLOTS][0] < target)
++                        YieldProcessor();
++                    __SetHWThreadPriorityMed();
++                }
+ #endif
+                 /* Acquire the upper row's pixels after observing its progress. */
+                 MemoryBarrier();
