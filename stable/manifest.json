@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "product": "moonx360",
+  "version": "0.2.6",
+  "build_id": 100,
+  "channel": "stable",
+  "min_launcher_version": 1,
+  "payload_size": 6729728,
+  "sha256": "28c03eb1009b94145aac79fa5fade5a5e6515eb8e4afc8fc695bb7a3df14dbfd",
+  "url": "https://github.com/fransley2/MoonX360/releases/download/v0.2.6/moonx360.xex",
+  "notes": {
+    "en": "Official v0.2.6 release: E5b+E7+E8+E9 performance optimizations, 13-patch FFmpeg H.264 decoder, single-file default.xex, and native signed auto-update with rollback.",
+    "pt-BR": "Lancamento oficial v0.2.6: otimizacoes E5b+E7+E8+E9, decodificador FFmpeg H.264 com 13 patches, default.xex em arquivo unico e atualizacao automatica assinada com reversao.",
+    "es": "Lanzamiento oficial v0.2.6: optimizaciones E5b+E7+E8+E9, decodificador FFmpeg H.264 con 13 parches, default.xex en archivo unico y actualizacion automatica firmada con reversion."
+  }
+}
