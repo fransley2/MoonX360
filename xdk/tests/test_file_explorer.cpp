@@ -211,7 +211,7 @@ int main(void)
         assert(!fe_path_is_protected("Hdd1:\\Apps\\MoonX360\\Shortcuts\\game.xex"));
     }
 
-    /* 2. Build isolated filesystem sandbox outside workspace sync locks. */
+    /* 2. Build isolated filesystem sandbox outside OneDrive sync locks. */
     char tmp[FE_PATH_MAX];
     DWORD tlen = GetTempPathA(sizeof(tmp), tmp);
     assert(tlen > 0 && tlen < sizeof(tmp));

@@ -109,6 +109,7 @@ struct ui_dashboard {
     int resume_id;
     const struct ui_app *featured; /* running app or latest valid play history */
     int featured_id;
+    const char *update_badge; /* compact Home badge when an update is available or ready */
 };
 void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *items,int n,int sel,
     const char *console_ip,const struct ui_dashboard *dashboard);
@@ -178,3 +179,24 @@ void ui_surface_metrics(float *out_w, float *out_h, float *out_scale, uint32_t *
 /* MoonX360 Smart Virtual Keyboard (16:9 & 4:3 CRT, Design System integrated). */
 struct sk_state;
 void ui_draw_smart_keyboard(const struct sk_state *sk);
+
+/* Native App Updates screen (Settings -> General -> App Updates). */
+struct ui_update_view {
+    int state;              /* enum update_state */
+    int channel;            /* 0 Stable, 1 Beta */
+    bool auto_check;
+    bool has_previous;
+    bool rollback_pending;
+    bool migration_mode;
+    const char *installed_version;
+    int installed_build;
+    const char *available_version;
+    int available_build;
+    const char *status_text;
+    const char *notes;
+    uint64_t download_total;
+    uint64_t download_done;
+    uint32_t speed_bps;
+    int progress_pct;
+};
+void ui_draw_app_updates(const struct ui_update_view *view, int sel, uint32_t now_ms);

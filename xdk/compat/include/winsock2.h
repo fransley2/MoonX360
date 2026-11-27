@@ -97,6 +97,7 @@ typedef struct pollfd {
  * XNET_STARTUP_BYPASS_SECURITY).
  */
 SOCKET WSAAPI xdk_socket(int af, int type, int protocol);
+SOCKET WSAAPI xdk_socket_wan(int af, int type, int protocol);
 #define socket(af, type, protocol) xdk_socket(af, type, protocol)
 
 /* Limit oversized UDP receive buffers without identifying sockets by size. */

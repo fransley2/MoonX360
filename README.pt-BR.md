@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fransley2/MoonX360/releases"><img src="https://img.shields.io/github/v/release/fransley2/MoonX360?include_prereleases&style=for-the-badge&labelColor=142128&color=79C63D" alt="Última Versão"></a>
+  <a href="https://github.com/fransley2/MoonX360/releases"><img src="https://img.shields.io/github/v/release/fransley2/MoonX360?style=for-the-badge&labelColor=142128&color=79C63D" alt="Última Versão"></a>
   <a href="https://github.com/fransley2/MoonX360/releases"><img src="https://img.shields.io/github/downloads/fransley2/MoonX360/total?style=for-the-badge&labelColor=142128&color=79C63D" alt="Total de Downloads"></a>
   <a href="https://github.com/fransley2/MoonX360/stargazers"><img src="https://img.shields.io/github/stars/fransley2/MoonX360?style=for-the-badge&logo=github&labelColor=142128&color=79C63D" alt="Estrelas no GitHub"></a>
   <img src="https://img.shields.io/badge/Xbox%20360-RGH%20%C2%B7%20JTAG-79C63D?style=for-the-badge&logo=xbox&logoColor=white&labelColor=142128" alt="Xbox 360">
@@ -34,16 +34,14 @@ O **MoonX360** é um cliente nativo de **streaming Moonlight para Xbox 360**. Se
 
 ---
 
-## Novidades da v0.2.6-rc1
+## Novidades da v0.2.6
 
-> [!NOTE]
-> A versão `v0.2.6-rc1` foi publicada como **Pre-release** enquanto a verificação final de reconexão ao vivo do executável reconstruído `Final-release` é concluída. A versão estável anterior continua sendo a **`v0.2.5`**.
-
-- **Controles mais responsivos sob carga pesada** — A thread de leitura XInput (`1 ms`) foi fixada no núcleo de hardware `0` do Xenon, reduzindo em ~80% o jitter de agendamento de entrada em P95 durante sessões 720p60 exigentes.
-- **Ritmo de quadros aprimorado e menor latência de apresentação** — O modo `Latest Frame Wins` agora vem ativado por padrão, reduzindo o tempo Admit-to-VBlank P95 em ~13% com zero quadros descartados em três sessões de validação de 120 segundos.
-- **Upload de texturas de vídeo mais rápido** — Transferências contíguas de planos YUV com pré-busca de cache (`__dcbt` / `__dcbz128`) reduzem o tempo de upload em ~20,5% e atenuam picos de decodificação.
-- **Manuseio mais eficiente de pacotes Ethernet cabeados** — Usa automaticamente pacotes UDP de `1392 bytes` em rede cabeada a partir de `4 Mbps`, preservando pacotes de `768 bytes` para Wi-Fi.
-- **Maior consistência no decodificador H.264** — Adiciona otimizações de loop-filter luma/chroma e compensação de movimento chroma VMX1D sobre o pipeline `batch16`, reduzindo o decode P95 em regime estável em ~4%.
+- **Controles mais responsivos sob carga pesada** — A thread de leitura XInput (`1 ms`) foi fixada no núcleo de hardware `0` do Xenon (`E7`), reduzindo em ~80% o jitter de agendamento de entrada em P95 durante sessões 720p60 exigentes.
+- **Ritmo de quadros aprimorado e menor latência de apresentação** — O modo `Latest Frame Wins` (`E9`) agora vem ativado por padrão, reduzindo o tempo Admit-to-VBlank P95 em ~13% com zero quadros descartados em três sessões de validação de 120 segundos.
+- **Upload de texturas de vídeo mais rápido** — Transferências contíguas de planos YUV com pré-busca de cache (`E5b`, `__dcbt` / `__dcbz128`) reduzem o tempo de upload em ~20,5% e atenuam picos de decodificação.
+- **Manuseio mais eficiente de pacotes Ethernet cabeados** — Usa automaticamente pacotes UDP de `1392 bytes` em rede cabeada a partir de `4 Mbps` (`E8`), preservando pacotes de `768 bytes` para Wi-Fi.
+- **Maior consistência no decodificador H.264** — Adiciona otimizações de loop-filter luma/chroma e compensação de movimento chroma VMX1D (`v026-rc2`) sobre o pipeline `batch16`, reduzindo o decode P95 em regime estável em ~4%.
+- **`default.xex` em arquivo único e Atualização Automática assinada** — Distribuição simplificada em um único `default.xex` permanente (**Configurações → Geral → Atualizações do app**) com verificação Ed25519 + SHA-256, HTTPS TLS 1.2 validado, canais **Estável** / **Beta**, reversão automática em falhas, recuperação via `LB + RB + Back` e preservação integral da pasta `moonlight/`.
 - **Correções de encerramento de conexão** — O `src/http.c` volta a enviar `Connection: close` e fecha imediatamente o socket TLS, evitando conexões ociosas que travavam a porta `47984` do Apollo / Vibepollo / Sunshine.
 - **Dashboard estilo Xbox Series, Modo Desktop suave e Smart Keyboard** — Telas Início, Biblioteca, Computadores e Configurações redesenhadas com capas `2:3`, indicadores giratórios, mouse analógico com zona morta radial a `125 Hz`, teclado virtual completo de 5 linhas, botão **PC Guide** (`Start + LB`), **Explorador de Arquivos 2.0** e **CRT Retro 2.0**.
 
@@ -62,7 +60,7 @@ Medições em **Xbox 360 físico** (`1280×720 @ 60 FPS`, **Apollo**, H.264, `CA
 - **~59,5 FPS apresentados** em `720p60` nativo (`59,51` de média incluindo inicialização)
 - **0 quadros descartados, 0 erros de decodificação e 0 falhas de áudio** nas três sessões finais de validação (`Final-r1..r3`)
 
-| Métrica | Baseline | Otimizado (`v0.2.6-rc1`) |
+| Métrica | Baseline | Otimizado (`v0.2.6`) |
 |---|---:|---:|
 | Média de decode *(janela estável 45s)* | `13,22 ms` | **`12,94 ms`** |
 | Decode P95 *(janela estável 45s)* | `14,95 ms` | **`14,37 ms`** |
@@ -211,13 +209,13 @@ Veja detalhes completos e como enviar relatos de hardware em [docs/COMPATIBILITY
 Instale o [**Apollo**](https://github.com/ClassicOldSong/Apollo) ou [**Sunshine**](https://github.com/LizardByte/Sunshine) no PC, ative a codificação **H.264** e instale o driver **ViGEmBus** no Windows se solicitado para emulação de controle Xbox 360.
 
 ### Passo 2 — Instale o MoonX360
-Baixe **`MoonX360-v0.2.6-rc1.zip`** (ou o **`default.xex`** avulso) e **`SHA256SUMS.txt`** em [**GitHub Releases**](https://github.com/fransley2/MoonX360/releases), confira o hash SHA-256, copie a pasta `MoonX360` (`default.xex` e os arquivos opcionais `MoonX360Shortcut\` e `AuroraScripts\`) para `Hdd1:\Apps\MoonX360\` ou USB e abra o **`default.xex`** pelo Aurora, FSD ou XeXMenu.
+Baixe **`MoonX360-v0.2.6.zip`** (ou o **`default.xex`** único) e **`SHA256SUMS.txt`** em [**GitHub Releases**](https://github.com/fransley2/MoonX360/releases), confira o hash SHA-256, copie o **`default.xex`** (e os opcionais `MoonX360Shortcut\` e `AuroraScripts\`) para `Hdd1:\Apps\MoonX360\` ou USB e abra o **`default.xex`** pelo Aurora, FSD ou XeXMenu. Na primeira execução, o `default.xex` extrai e verifica automaticamente o runtime interno em `updates\runtime\`.
 
 ### Passo 3 — Pareie e jogue
 Abra **Computadores**, selecione o PC encontrado (ou adicione o IP manualmente), escolha **Parear com o host** e digite o PIN de 4 dígitos na interface Web do host no PC. Abra **Biblioteca** e aperte **A** em qualquer jogo ou **Desktop**.
 
 > [!TIP]
-> **Atualizando sem perder dados:** Mantenha a pasta **`moonlight/`** existente ao lado do `default.xex`. Ela guarda `moonlight.ini`, `hosts.tsv`, perfis e certificados (`client.pem` / `key.pem`). Nunca compartilhe esses arquivos publicamente.
+> **Atualizando e migração única:** Mantenha a pasta **`moonlight/`** existente ao lado do `default.xex`. Ela guarda `moonlight.ini`, `hosts.tsv`, perfis e certificados (`client.pem` / `key.pem`). Ao migrar da `v0.2.5` ou anterior, copie o novo **`default.xex`** único (remova qualquer `moonx360.xex` solto antigo, se houver); versões futuras compatíveis atualizam diretamente em **Configurações → Geral → Atualizações do app** (canais **Estável** padrão ou **Beta**, verificação Ed25519 + SHA-256 e reversão automática). Veja [docs/UPDATES.md](docs/UPDATES.md) e [docs/RELEASE.md](docs/RELEASE.md). Nunca compartilhe `client.pem` ou `key.pem` publicamente.
 
 ---
 
@@ -324,9 +322,8 @@ Guias completos: [docs/FAQ.md](docs/FAQ.md) · [docs/TROUBLESHOOTING.md](docs/TR
 - **Orçamento de CPU:** `720p60` roda com folga em `6–10 Mbps`; `12 Mbps` (`High Quality`) e `1080p30` são experimentais.
 - **Captura WGC no Host:** Janelas em segundo plano no Windows podem reduzir FPS capturado mesmo com `0` descartes no Xbox.
 - **CRT 240p:** Exige saída `480i/60 Hz` e plugin externo `t240.xex`.
-- **Status Pre-release (`v0.2.6-rc1`):** O conjunto de otimizações (`E5b+E7+E8+E9`) passou em 3 sessões de 120s e o `Final-release/default.xex` iniciou normalmente em console físico, mas o teste automatizado pós-rebuild de reconexão ao vivo ficou bloqueado por um socket TLS travado no `ApolloService`.
 
-**Roadmap:** Concluir a verificação ao vivo final da `v0.2.6`, ampliar relatos de hardware em consoles Fat/Trinity/BadUpdate e continuar pesquisas separadas de decodificação assistida por GPU (não disponível nesta versão).
+**Roadmap:** Ampliar relatos de hardware em consoles Fat/Trinity/BadUpdate e continuar pesquisas separadas de decodificação assistida por GPU (não disponível nesta versão).
 
 ---
 

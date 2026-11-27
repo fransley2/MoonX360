@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "description": "Example 4-layer CRT Retro host profiles for Sunshine/Apollo + RetroArch + MoonX360",
+  "profiles": {
+    "crt_standard_480": {
+      "hz": 60,
+      "super_resolution": false,
+      "game": { "width": 640, "height": 480 },
+      "capture": { "width": 640, "height": 480 },
+      "stream": { "width": 640, "height": 480 },
+      "xbox_output": { "width": 640, "height": 480 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 0
+      },
+      "notes": "Baseline 480p/480i compatible CRT streaming mode."
+    },
+    "crt_retro_640x240": {
+      "hz": 60,
+      "super_resolution": false,
+      "game": { "width": 320, "height": 240 },
+      "capture": { "width": 640, "height": 240 },
+      "stream": { "width": 640, "height": 240 },
+      "xbox_output": { "width": 640, "height": 240 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 0
+      },
+      "notes": "Matches MoonX360 validated 640x240 backbuffer + t240.xex 240p scanout."
+    },
+    "crt_320x240": {
+      "hz": 60,
+      "super_resolution": false,
+      "game": { "width": 320, "height": 240 },
+      "capture": { "width": 320, "height": 240 },
+      "stream": { "width": 320, "height": 240 },
+      "xbox_output": { "width": 640, "height": 240 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 0
+      },
+      "notes": "Community 320x240 stream mapped 2x horizontally into 640x240 console scanout."
+    },
+    "crt_256x240": {
+      "hz": 60,
+      "super_resolution": false,
+      "game": { "width": 256, "height": 240 },
+      "capture": { "width": 256, "height": 240 },
+      "stream": { "width": 256, "height": 240 },
+      "xbox_output": { "width": 640, "height": 240 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 0
+      },
+      "notes": "NES/SNES 256x240 stream; Xenos outputs into 640x240/640x480 with pillarbox or 4:3 DAR."
+    },
+    "crt_400x240": {
+      "hz": 60,
+      "super_resolution": false,
+      "game": { "width": 400, "height": 240 },
+      "capture": { "width": 400, "height": 240 },
+      "stream": { "width": 400, "height": 240 },
+      "xbox_output": { "width": 640, "height": 240 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 0
+      },
+      "notes": "CPS/NeoGeo style wide 240p stream inside 640x240 output."
+    },
+    "crt_super_1920x240": {
+      "hz": 60,
+      "super_resolution": true,
+      "game": { "width": 256, "height": 240 },
+      "capture": { "width": 1920, "height": 240 },
+      "stream": { "width": 1920, "height": 240 },
+      "xbox_output": { "width": 640, "height": 240 },
+      "retroarch": {
+        "integer_scale": true,
+        "aspect_ratio_index": 22,
+        "smooth": false,
+        "crt_switch_resolution": 2
+      },
+      "notes": "Experimental host super-resolution capture. Output downscales on Xenos unless host CRT SwitchRes is local."
+    }
+  }
+}

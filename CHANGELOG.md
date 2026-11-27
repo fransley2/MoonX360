@@ -2,7 +2,13 @@
 
 All notable changes to **MoonX360** are documented in this file.
 
-## [v0.2.6-rc1] — 2026-11-26 (Pre-release)
+## [v0.2.6] — 2026-11-27
+
+### Single-File Distribution & Native Signed Auto-Update
+- **Single-File Permanent Launcher (`default.xex`)**: `default.xex` (`0x4D583336`, independent of FFmpeg/D3D9) embeds the SHA-256-verified production `moonx360.xex` payload (`MOONXAPP`), extracts it once into `updates\runtime\moonx360.xex`, remounts `\??\game:` to the installation root on both HDD and USB, releases launcher memory across `XLaunchNewImage`, preserves Aurora Direct Launch `XSetLaunchData`, and produces zero duplicate entries in Aurora's library scan.
+- **Cryptographically Signed OTA Client (`src/update/`)**: Mandatory Ed25519 manifest signature verification via Monocypher 4.0.3 (`BSD-2-Clause OR CC0-1.0`), streaming SHA-256 verification via mbedTLS 2.16.12, validated HTTPS TLS 1.2 (`MBEDTLS_SSL_VERIFY_REQUIRED` + embedded CA roots + `xdk_socket_wan` `0x5801`), bounded chunked `Range` downloads, redirect allowlists, and monotonic `build_id` anti-rollback/replay protection.
+- **Recoverable Journal, Automatic Rollback & App Updates UI**: Tracks state in `updates/journal.json` (`staged`, `swapping`, `trial`, `good`, `rollback`, `manual_rollback`), automatically restores `moonx360.previous.bin` and `moonlight.ini.pre-update` if a trial fails healthy boot confirmation, preserves `moonlight/` configs and pairing certificates, supports `LB + RB + Back` startup recovery and in-app rollback, **Stable** / **Beta** channels, auto-hiding Home update badge (`8s`), localized release notes (EN / PT-BR / ES), and resilient offline startup.
+- **Release & Signing Tooling (`tools/` & `docs/`)**: Added `version.json`, `src/version_info.h`, `generate_update_key.py`, `generate_update_manifest.py`, `sign_update_manifest.py`, `generate_tls_roots.py`, `package_release.py`, `build_update_test_kit.py`, [docs/UPDATES.md](docs/UPDATES.md), and [docs/RELEASE.md](docs/RELEASE.md).
 
 ### Highlights & Performance
 - **Contiguous YUV Texture Upload (`E5b`, `XDK_YUV_CONTIGUOUS_PLANES=1`)**: Added `__dcbt` prefetch, `__dcbz128` cache-zeroing, and contiguous `XMemCpy` plane transfers for `CPU_CACHED_TEXTURE`, reducing YUV upload time by ~20.5% (`1.14 → 0.91 ms` avg, `1.22 → 1.01 ms` P95) and lowering peak full-session decode spikes (`17.67 → 16.66 ms` max).

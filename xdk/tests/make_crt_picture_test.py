@@ -24,6 +24,7 @@ fixture = r'''
 #include <vector>
 #include <Limelight.h>
 #include "../src/config.h"
+#include "../src/version_info.h"
 #include "../src/crt_output.h"
 #include "../src/frame_pacing.h"
 #include "../src/video.h"

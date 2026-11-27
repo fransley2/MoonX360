@@ -108,6 +108,24 @@ if XCLOUD_VIDEO == "1" and os.path.normcase(OUT) == os.path.normcase(os.path.joi
 MBEDTLS_DEFS = ["/I", os.path.join(MBEDTLS, "include"), "/I", XDK_DIR,
                 "/D", 'MBEDTLS_USER_CONFIG_FILE="mbedtls_config_xdk.h"']
 
+with open(os.path.join(ROOT, "version.json"), encoding="utf-8") as _vf:
+    _VINFO = json.load(_vf)
+MOONX_VERSION = os.environ.get("MOONX_VERSION", str(_VINFO["version"]))
+MOONX_BUILD_ID = os.environ.get("MOONX_BUILD_ID", str(_VINFO["build_id"]))
+MOONX_LAUNCHER_VERSION = os.environ.get("MOONX_LAUNCHER_VERSION", str(_VINFO["launcher_version"]))
+if not MOONX_BUILD_ID.isdigit() or not MOONX_LAUNCHER_VERSION.isdigit():
+    raise SystemExit("MOONX_BUILD_ID and MOONX_LAUNCHER_VERSION must be positive integers")
+UPDATE_DEFS = [
+    "/D", f'MOONX_VERSION="{MOONX_VERSION}"',
+    "/D", f"MOONX_BUILD_ID={MOONX_BUILD_ID}",
+    "/D", f"MOONX_LAUNCHER_VERSION={MOONX_LAUNCHER_VERSION}",
+]
+_TEST_CFG = os.environ.get("MOONX_UPDATE_TEST_CONFIG", "").strip()
+if _TEST_CFG:
+    UPDATE_DEFS += ["/D", f'MOONX_UPDATE_TEST_CONFIG="{os.path.abspath(_TEST_CFG).replace(chr(92), "/")}"']
+if os.environ.get("MOONX_UPDATE_TEST_FAIL_BOOT", "0") == "1":
+    UPDATE_DEFS += ["/D", "MOONX_UPDATE_TEST_FAIL_BOOT=1"]
+
 
 def run(cmd, cwd=None):
     r = subprocess.run(cmd, env=ENV, capture_output=True, text=True, errors="replace", cwd=cwd)
@@ -139,7 +157,11 @@ def compile_one(job):
                 "src/xdk.h", "mbedtls_config_xdk.h", "ffmpeg_xbox/xbox_dsp.h")]
     headers += glob.glob(os.path.join(ROOT, "src", "*.h"))
     headers += glob.glob(os.path.join(ROOT, "src", "ui", "*.h"))
+    headers += glob.glob(os.path.join(ROOT, "src", "update", "*.h"))
+    headers += glob.glob(os.path.join(ROOT, "third_party", "monocypher", "*.h"))
     headers += glob.glob(os.path.join(XDK_DIR, "src", "*.h"))
+    if _TEST_CFG and os.path.exists(_TEST_CFG):
+        headers.append(os.path.abspath(_TEST_CFG))
     signature = json.dumps([TOOLS["cl"], flags, ENV["INCLUDE"],
                             [(p, os.path.getmtime(p)) for p in headers]])
     previous = None
@@ -314,9 +336,12 @@ def target_app():
     C++ like moonlight-common-c, plus the SDK platform layer (xdk/src)."""
     shared = [os.path.join(ROOT, "src", f) for f in
               ("app.c", "config.c", "crypto.c", "http.c", "gamestream.c", "mdns.c", "mdns_net.c", "host_cache.c", "wake_net.c",
-               "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c", "ui/file_explorer_view.c")]
+               "ui/canvas.c", "ui/font.c", "ui/draw.c", "ui/ui.c", "ui/image.c", "ui/file_explorer_view.c",
+               "update/update_crypto.c", "update/update_manifest.c", "update/update_journal.c",
+               "update/update_http.c", "update/update_service.c", "update/update_tls_roots.c")]
+    shared += [os.path.join(ROOT, "third_party", "monocypher", f) for f in ("monocypher.c", "monocypher-ed25519.c")]
     platform = [os.path.join(SRC, f + ".cpp") for f in ("main_xdk", "gfx_xdk", "gfx_ui", "audio_xdk", "input_xdk", "video_cached", "gfx_stream_menu", "performance_xdk", "aurora_shortcuts_xdk", "crt_output_bridge", "file_explorer_xdk")]
-    flags = HOT + IDENTITY_DEFS + ["/FIxdk_compat.h", "/I", os.path.join(MLC, "src"), "/I", os.path.join(OPUS, "include")] + MBEDTLS_DEFS
+    flags = HOT + IDENTITY_DEFS + UPDATE_DEFS + ["/FIxdk_compat.h", "/I", os.path.join(MLC, "src"), "/I", os.path.join(OPUS, "include")] + MBEDTLS_DEFS
     srcs = [(s, ["/TP"]) for s in shared + platform]
     if XCLOUD_VIDEO == "1":
         experiment = os.path.join(ROOT, "experiments", "xcloud-video", "receiver_xdk.cpp")
@@ -384,7 +409,7 @@ def target_xex():
         if not os.path.exists(lib):
             raise SystemExit(f"missing {os.path.relpath(lib, ROOT)}: build its target first")
     exe = os.path.join(OUT, "MoonX360.exe")
-    xex = os.path.join(OUT, "default.xex")
+    xex = os.path.join(OUT, "moonx360.xex")
     rsp = exe + ".rsp"
     with open(rsp, "w") as f:
         f.write("\n".join(f'"{o}"' for o in objs + libs + SDK_LIBS))
@@ -428,10 +453,11 @@ def target_xex():
     with open(spa, "rb") as expected, open(extracted, "rb") as actual:
         if expected.read() != actual.read():
             raise SystemExit("MoonX360 dashboard SPA did not survive XEX embedding")
+    import shutil
     install_dir=os.path.join(OUT,"MoonX360")
     os.makedirs(install_dir,exist_ok=True)
-    import shutil
-    shutil.copy2(xex,os.path.join(install_dir,"default.xex"))
+    # Only the single-file bootstrap (default.xex) belongs in the user-facing install root;
+    # moonx360.xex remains at OUT\moonx360.xex for embedding and standalone GitHub OTA downloads.
     # Ship the Aurora utility with the install tree. The XEX alone has one
     # static display title; per-item names are applied inside Aurora.
     script_src=os.path.join(XDK_DIR,"aurora","MoonX360Sync","Main.lua")
@@ -504,6 +530,98 @@ def target_shortcut_xex(variant="normal"):
     return xex
 
 
+def target_launcher():
+    """Builds the permanent single-file XEX launcher (default.xex) with embedded moonx360.xex."""
+    import hashlib
+    import shutil
+    app_xex = os.path.join(OUT, "moonx360.xex")
+    if not os.path.isfile(app_xex):
+        if target_xex() is None:
+            return None
+    with open(app_xex, "rb") as f:
+        app_bytes = f.read()
+    app_size = len(app_bytes)
+    app_sha256 = hashlib.sha256(app_bytes).hexdigest()
+
+    sources = [
+        os.path.join(SRC, "launcher_xdk.cpp"),
+        os.path.join(ROOT, "src", "update", "update_crypto.c"),
+        os.path.join(ROOT, "src", "update", "update_manifest.c"),
+        os.path.join(ROOT, "src", "update", "update_journal.c"),
+        os.path.join(ROOT, "third_party", "monocypher", "monocypher.c"),
+        os.path.join(ROOT, "third_party", "monocypher", "monocypher-ed25519.c"),
+        os.path.join(MBEDTLS, "library", "sha256.c"),
+        os.path.join(MBEDTLS, "library", "platform_util.c"),
+    ]
+    # Note: sha256.c and platform_util.c are C89-safe with /TC; launcher & update modules use /TP.
+    embed_defs = [
+        "/D", f"MOONX_EMBEDDED_PAYLOAD_SIZE={app_size}ULL",
+        "/D", f'MOONX_EMBEDDED_PAYLOAD_SHA256="{app_sha256}"',
+    ]
+    flags = BASE + UPDATE_DEFS + MBEDTLS_DEFS + embed_defs
+    jobs = [(s, ["/TC"]) if s.startswith(MBEDTLS) else (s, ["/TP", "/FIxdk_compat.h"]) for s in sources]
+    objs = compile_all("launcher", jobs, flags, base=ROOT)
+    if objs is None:
+        return None
+    crt_obj = os.path.join(OUT, "compat", "crt.obj")
+    if not os.path.exists(crt_obj):
+        if target_compat() is None:
+            return None
+    exe = os.path.join(OUT, "MoonX360Launcher.exe")
+    xex = os.path.join(OUT, "default.xex")
+    rsp = exe + ".rsp"
+    with open(rsp, "w") as f:
+        f.write("\n".join(f'"{o}"' for o in objs + [crt_obj, "xapilib.lib", "xboxkrnl.lib", "xinput2.lib"]))
+    rc, out = run([TOOLS["link"], "/nologo", "/XEX:NO", "/OUT:MoonX360Launcher.exe", "/OPT:REF", "/OPT:ICF",
+                   "/STACK:262144", "/MAP:MoonX360Launcher.map", "@" + rsp] +
+                  (["/DEBUG"] if CONFIGURATION == "Debug" else []), cwd=OUT)
+    with open(exe + ".link.log", "w", encoding="utf-8") as f:
+        f.write("exit=" + str(rc) + "\n" + out)
+    if rc != 0:
+        print(out)
+        return None
+    sanitize_rsds_pdb(exe)
+    spa = os.path.join(OUT, "MoonX360.spa")
+    if not os.path.isfile(spa):
+        rc, out = run([os.path.join(XEDK, "bin", "win32", "spac.exe"), "-nologo", "-noh",
+                       "-o", spa, os.path.join(XDK_DIR, "MoonX360.xlast")])
+        if rc != 0 or "error" in out.lower() or not os.path.isfile(spa):
+            print(out)
+            return None
+    config = ET.parse(os.path.join(XDK_DIR, "xex.xml"))
+    ET.SubElement(config.getroot(), "section", name="4D583336", file=spa, memory="RO")
+    ET.SubElement(config.getroot(), "section", name="MOONXAPP", file=app_xex, memory="RO")
+    config_path = os.path.join(OUT, "MoonX360Launcher.xex.xml")
+    config.write(config_path, encoding="utf-8", xml_declaration=True)
+    rc, out = run([TOOLS["imagexex"], "/nologo", "/config:" + config_path, "/out:" + xex, exe])
+    with open(xex + ".imagexex.log", "w", encoding="utf-8") as f:
+        f.write("exit=" + str(rc) + "\n" + out)
+    if rc != 0:
+        print(out)
+        return None
+    extracted = os.path.join(OUT, "MoonX360Launcher-embedded.spa")
+    rc, out = run([TOOLS["imagexex"], "/dump", "/sectionname:4D583336", "/sectionfile:" + extracted, xex])
+    if rc != 0 or not os.path.isfile(extracted):
+        print(out)
+        return None
+    with open(spa, "rb") as expected, open(extracted, "rb") as actual:
+        if expected.read() != actual.read():
+            raise SystemExit("MoonX360 launcher SPA did not survive XEX embedding")
+    extracted_app = os.path.join(OUT, "MoonX360Launcher-embedded-app.xex")
+    rc, out = run([TOOLS["imagexex"], "/dump", "/sectionname:MOONXAPP", "/sectionfile:" + extracted_app, xex])
+    if rc != 0 or not os.path.isfile(extracted_app):
+        print(out)
+        return None
+    with open(extracted_app, "rb") as actual_app:
+        if actual_app.read() != app_bytes:
+            raise SystemExit("Embedded moonx360.xex payload did not survive XEX embedding")
+    install_dir = os.path.join(OUT, "MoonX360")
+    os.makedirs(install_dir, exist_ok=True)
+    shutil.copy2(xex, os.path.join(install_dir, "default.xex"))
+    print(f"  -> {os.path.relpath(xex, ROOT)} ({os.path.getsize(xex) // 1024} KB)")
+    return xex
+
+
 TARGETS = {
     "mbedtls": target_mbedtls,
     "opus": target_opus,
@@ -511,6 +629,7 @@ TARGETS = {
     "moonlight": target_moonlight,
     "app": target_app,
     "xex": target_xex,
+    "launcher": target_launcher,
     "shortcut_xex": target_shortcut_xex,
     "shortcut_diagnostic": lambda: target_shortcut_xex("diagnostic"),
     "shortcut_main_only": lambda: target_shortcut_xex("main_only"),

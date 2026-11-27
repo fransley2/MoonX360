@@ -1,9 +1,8 @@
 # Set up MoonX360
 
-1. **Prepare your PC:** Install [Apollo](https://github.com/ClassicOldSong/Apollo) or [Sunshine](https://github.com/LizardByte/Sunshine), enable **H.264** streaming, and install **ViGEmBus** on Windows if prompted for virtual Xbox 360 controller support.
-2. **Install MoonX360:** Download the latest package from [GitHub Releases](https://github.com/fransley2/MoonX360/releases), verify `SHA256SUMS.txt`, extract the `MoonX360` folder (`default.xex` plus optional `MoonX360Shortcut\` and `AuroraScripts\`) to `Hdd1:\Apps\MoonX360\` or USB storage, and launch `default.xex` via Aurora, FSD, or XeXMenu.
-3. **Pair and play:** Open **Computers**, select your discovered PC (or add its LAN IP manually), choose **Pair with host**, enter the 4-digit PIN on the PC host Web UI, then open **Library** and press **A** to stream.
+1. Run Sunshine or a compatible GameStream host on your PC and enable H.264 encoding.
+2. Copy the executable from the [release](https://github.com/fransley2/MoonX360/releases) to a writable folder on the Xbox 360 HDD or USB storage.
+3. Launch **default.xex** from Aurora. Open **Computers** to add a host manually if discovery does not find it.
+4. Select the PC, choose **Pair with host**, and enter the displayed PIN at the host. Select a game from **Library**.
 
-**Updating:** Keep your existing `moonlight\` folder next to `default.xex` to preserve saved hosts (`hosts.tsv`), settings (`moonlight.ini`), profiles, and pairing certificates (`client.pem` / `key.pem`). Never share `moonlight\` or pairing keys publicly.
-
-See also: [Controls](CONTROLS.md) · [CRT Setup](CRT.md) · [Troubleshooting](TROUBLESHOOTING.md) · [Aurora Shortcuts](AURORA_DIRECT_LAUNCH.md) · [Build from Source](BUILD.md)
+Keep the **moonlight** data folder when updating. Use [Aurora shortcuts](AURORA_DIRECT_LAUNCH.md) to launch a host app directly from Aurora. See the [build guide](BUILD.md) for source builds.

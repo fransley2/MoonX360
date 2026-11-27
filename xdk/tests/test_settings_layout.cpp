@@ -20,7 +20,8 @@ int main(void)
     for(int node=MENU_PCS;node<MENU_COUNT;node++)assert(children[node]==1);
     assert(settings_node(SET_PRESET)==MENU_STREAM && settings_node(SET_USER_PROFILES)==-1);
     int stream_rows=0,settings_rows=0;for(int i=0;i<SETTINGS_ENTRY_COUNT;i++){if(settings_entries[i].page==MENU_STREAM)stream_rows++;if(settings_entries[i].page==MENU_SETTINGS)settings_rows++;}
-    assert(stream_rows==4 && settings_rows==5);
+    assert(stream_rows==4 && settings_rows==6);
+    assert(settings_pages[MENU_GENERAL].parent==MENU_SETTINGS && settings_pages[MENU_APP_UPDATES].parent==MENU_GENERAL);
     assert(settings_pages[MENU_STREAM_ADJUST].parent==MENU_STREAM && settings_pages[MENU_AUDIO].parent==MENU_STREAM);
     assert(settings_pages[MENU_DECODER].parent==MENU_STREAM_ADJUST && settings_pages[MENU_NETWORK].parent==MENU_STREAM_ADJUST);
     const int stream[]={SET_RES,SET_FPS,SET_BITRATE,SET_ADAPTIVE,SET_VSYNC,SET_IMAGE_QUALITY,SET_RENDERER};

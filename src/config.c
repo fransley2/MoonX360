@@ -46,6 +46,8 @@ void config_defaults(struct config *c)
     snprintf(c->aurora_main_xex,sizeof(c->aurora_main_xex),"Hdd1:\\Apps\\MoonX360\\default.xex");
     c->left_max = c->right_max = 100;
     c->frame_pacing_mode = FRAME_PACING_LATEST_WINS;
+    c->update_channel = 0;
+    c->auto_update_check = true;
 }
 
 static void trim(char *s)
@@ -258,6 +260,8 @@ void config_load(struct config *c)
         else if (!strcmp(line, "fe_confirm_delete")) c->explorer.confirm_delete = atoi(eq + 1) != 0;
         else if (!strcmp(line, "fe_remember_last_dir")) c->explorer.remember_last_dir = atoi(eq + 1) != 0;
         else if (!strcmp(line, "fe_thumbnail_cache")) c->explorer.thumbnail_cache = atoi(eq + 1) != 0;
+        else if (!strcmp(line, "update_channel")) c->update_channel = !strcmp(eq + 1, "beta") ? 1 : 0;
+        else if (!strcmp(line, "auto_update_check")) c->auto_update_check = atoi(eq + 1) != 0;
         else if (!strcmp(line, "fe_last_dir")) {
             char d[160];
             if (aurora_path_normalize(d, sizeof(d), eq + 1, 0))
@@ -370,13 +374,15 @@ size_t config_serialize(const struct config *c,char *buf,size_t capacity)
         "crt_integer_scale=%d\ncrt_size_x=%d\ncrt_size_y=%d\ncrt_overscan=%d\nframe_pacing_mode=%d\n"
         "fe_view=%d\nfe_sort_by=%d\nfe_sort_dir=%d\nfe_folders_first=%d\nfe_show_extensions=%d\n"
         "fe_show_hidden=%d\nfe_show_sizes=%d\nfe_show_preview=%d\nfe_confirm_delete=%d\n"
-        "fe_remember_last_dir=%d\nfe_thumbnail_cache=%d\nfe_last_dir=%s\n",
+        "fe_remember_last_dir=%d\nfe_thumbnail_cache=%d\nfe_last_dir=%s\n"
+        "update_channel=%s\nauto_update_check=%d\n",
         c->crt_integer_scale,c->crt_size_x,c->crt_size_y,c->crt_overscan,c->frame_pacing_mode,
         c->explorer.view_mode,c->explorer.sort_by,c->explorer.sort_dir,
         c->explorer.folders_first?1:0,c->explorer.show_extensions?1:0,
         c->explorer.show_hidden?1:0,c->explorer.show_sizes?1:0,
         c->explorer.show_preview_pane?1:0,c->explorer.confirm_delete?1:0,
-        c->explorer.remember_last_dir?1:0,c->explorer.thumbnail_cache?1:0,c->explorer.last_dir);
+        c->explorer.remember_last_dir?1:0,c->explorer.thumbnail_cache?1:0,c->explorer.last_dir,
+        c->update_channel==1?"beta":"stable",c->auto_update_check?1:0);
     if(added<0 || (size_t)added>=capacity-n)return 0;n+=added;
     return (size_t)n;
 }

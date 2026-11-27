@@ -30,11 +30,14 @@
 #include "config.h"
 #include "ui_layout_geometry.h"
 #include "aurora_launch.h"
+#include "version_info.h"
+#include "ui/design_system.h"
 #ifdef _XBOX
 #include "aurora_shortcuts.h"
 #include "aurora_paths.h"
 #include "app_catalog.h"
 #include "file_explorer_app.h"
+#include "update/update_service.h"
 #endif
 #include "app_list_cache.h"
 #include "app_identity.h"
@@ -1057,6 +1060,7 @@ static void cycle_stream_profile(int direction)
 #ifdef _XBOX
 static void file_explorer_hub_menu(void);
 #endif
+
 static void settings_menu(void);
 static bool profile_editor_active,profile_editor_save;
 static bool confirm_action(const char *title,const char *text,const char *action)
@@ -1411,6 +1415,163 @@ static bool settings_item_hidden(int id)
     return false;
 }
 
+#ifdef _XBOX
+static bool update_confirm_prompt(const char *title, const char *body, const char *confirm_label)
+{
+    for (;;) {
+        ui_draw_confirm(title, body, confirm_label);
+        ui_present();
+        int k = wait_button();
+        if (k & B_FLAG) return false;
+        if (k & A_FLAG) return true;
+    }
+}
+
+static void app_updates_menu(void)
+{
+    int sel = 0;
+    uint32_t last_rev = 0;
+    struct update_status st;
+    update_service_get_status(&st);
+    last_rev = st.revision;
+    if (st.restored_notice) {
+        ui_toast_show(UI_TOAST_WARN, "Previous version restored.", plat_now_ms(), 3500u);
+        update_service_clear_restored_notice();
+        update_service_get_status(&st);
+        last_rev = st.revision;
+    }
+
+    for (;;) {
+        if (navigation_pending >= 0) break;
+        uint32_t now = plat_now_ms();
+        update_service_poll(&st, &last_rev);
+
+        int row_count = 0;
+        enum { ACT_PRIMARY, ACT_CHANNEL, ACT_AUTO, ACT_ROLLBACK } actions[6];
+        if (st.state == UPD_READY || st.state == UPD_AVAILABLE ||
+            st.state == UPD_DOWNLOADING || st.state == UPD_VERIFYING) {
+            actions[row_count++] = ACT_PRIMARY;
+        } else {
+            actions[row_count++] = ACT_PRIMARY;
+        }
+        if (st.state != UPD_DOWNLOADING && st.state != UPD_VERIFYING) {
+            actions[row_count++] = ACT_CHANNEL;
+            actions[row_count++] = ACT_AUTO;
+            if (st.has_previous && !st.rollback_pending)
+                actions[row_count++] = ACT_ROLLBACK;
+        }
+        if (sel >= row_count) sel = row_count - 1;
+        if (sel < 0) sel = 0;
+
+        struct ui_update_view view;
+        memset(&view, 0, sizeof(view));
+        view.state = (int)st.state;
+        view.channel = st.channel;
+        view.auto_check = st.auto_check;
+        view.has_previous = st.has_previous;
+        view.rollback_pending = st.rollback_pending;
+        view.migration_mode = st.migration_mode;
+        view.installed_version = st.installed_version;
+        view.installed_build = st.installed_build;
+        view.available_version = st.available_version;
+        view.available_build = st.available_build;
+        view.status_text = st.status_key;
+        if (st.available_build > 0) {
+            view.notes = cfg.language == CONFIG_LANGUAGE_PT_BR ? st.notes_pt_br :
+                         cfg.language == CONFIG_LANGUAGE_SPANISH ? st.notes_es : st.notes_en;
+        }
+        view.download_total = st.download_total;
+        view.download_done = st.download_done;
+        view.speed_bps = st.speed_bps;
+        view.progress_pct = st.progress_pct;
+
+        ui_draw_app_updates(&view, sel, now);
+        ui_present();
+
+        int key = input_menu_pressed();
+        if (!key) {
+            plat_sleep_ms((st.state == UPD_CHECKING || st.state == UPD_DOWNLOADING || st.state == UPD_VERIFYING) ? 16 : 24);
+            continue;
+        }
+        if (tab_key(key, UI_SETTINGS)) break;
+        if (key & UP_FLAG) { sel = (sel + row_count - 1) % row_count; continue; }
+        if (key & DOWN_FLAG) { sel = (sel + 1) % row_count; continue; }
+
+        if (key & B_FLAG) {
+            if (st.state == UPD_DOWNLOADING || st.state == UPD_VERIFYING) {
+                update_service_cancel_download();
+                continue;
+            }
+            break;
+        }
+
+        if ((key & X_FLAG) && st.state != UPD_DOWNLOADING && st.state != UPD_VERIFYING) {
+            update_service_check_now();
+            continue;
+        }
+
+        if (actions[sel] == ACT_CHANNEL && (key & (LEFT_FLAG | RIGHT_FLAG | A_FLAG))) {
+            int next_ch = st.channel == 0 ? 1 : 0;
+            if (next_ch == 1 && !update_confirm_prompt("Switch to Beta channel?",
+                    "Beta releases may contain experimental fixes. Only opt in if you want to test upcoming updates.", "Enable Beta")) {
+                continue;
+            }
+            cfg.update_channel = next_ch;
+            config_save(&cfg);
+            update_service_set_channel(cfg.update_channel);
+            update_service_check_now();
+            continue;
+        }
+
+        if (actions[sel] == ACT_AUTO && (key & (LEFT_FLAG | RIGHT_FLAG | A_FLAG))) {
+            cfg.auto_update_check = !cfg.auto_update_check;
+            config_save(&cfg);
+            update_service_set_auto_check(cfg.auto_update_check);
+            continue;
+        }
+
+        if (!(key & A_FLAG)) continue;
+
+        if (actions[sel] == ACT_PRIMARY) {
+            if (st.state == UPD_DOWNLOADING || st.state == UPD_VERIFYING) {
+                update_service_cancel_download();
+            } else if (st.state == UPD_READY) {
+                if (update_confirm_prompt("Restart MoonX360?",
+                        "MoonX360 will reopen through the launcher to apply the prepared update. Your settings are preserved.",
+                        "Restart now")) {
+                    config_save(&cfg);
+                    if (!plat_restart_app())
+                        message(ICON_ERROR, "Restart unavailable", "Could not reopen the launcher executable.");
+                }
+            } else if (st.state == UPD_AVAILABLE) {
+                if (update_confirm_prompt("Download update?",
+                        "Download and verify the signed update package now? You can cancel anytime with B.",
+                        "Download update")) {
+                    update_service_start_download();
+                }
+            } else {
+                update_service_check_now();
+            }
+        } else if (actions[sel] == ACT_ROLLBACK) {
+            if (update_confirm_prompt("Restore previous version?",
+                    "MoonX360 will restore the previous verified executable on restart. Your moonlight settings are preserved.",
+                    "Restore")) {
+                char err[64];
+                if (update_service_request_rollback(err, sizeof(err))) {
+                    if (update_confirm_prompt("Restart MoonX360?",
+                            "Restart now to restore the previous version?", "Restart now")) {
+                        config_save(&cfg);
+                        plat_restart_app();
+                    }
+                } else {
+                    message(ICON_ERROR, "Restore unavailable", "Could not schedule rollback to previous version.");
+                }
+            }
+        }
+    }
+}
+#endif
+
 static void settings_menu(void)
 {
     bool stream_page=settings_initial_group==SETTINGS_STREAM;
@@ -1675,7 +1836,7 @@ static void settings_menu(void)
             case MENU_HOSTS:hosts_menu(UI_SETTINGS);break;
             case MENU_HOST_DETAILS:host_details();break;
             case MENU_CONNECTION_TEST:refresh_server();if(!server_ok)recover_host_ui();break;
-            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v0.2.6","MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
+            case MENU_ABOUT_INFO:message(ICON_INFO,"MoonX360 v" MOONX_VERSION,"MoonX360 / Xbox 360. Based on Xenonlight and Moonlight (GPLv3). Components: FFmpeg, mbedTLS, Monocypher, Opus, ENet, nanors and stb. Inter Regular/Semibold: SIL Open Font License. Full licenses are included in the release package and source tree.");break;
             case MENU_APPEARANCE:appearance_menu();break;
             case MENU_STREAM_UI:overlay_options_menu();break;
             case MENU_RESTART_APP:maintenance_menu(1);break;
@@ -1684,6 +1845,7 @@ static void settings_menu(void)
             case MENU_AURORA:aurora_integration_menu();break;
             case MENU_ARTWORK_CACHE:artwork_cache_menu();break;
             case MENU_FILE_EXPLORER:file_explorer_hub_menu();break;
+            case MENU_APP_UPDATES:app_updates_menu();break;
 #endif
             default:tokens[child]=branch;page=child;continue;
             }
@@ -3147,6 +3309,9 @@ static void stream(int app_id, const char *app_title)
     if(!prepare_retro_240p_session()){cfg=requested;return;}
     adaptive_reconnects=0;
     video_reconnects=0;
+#ifdef _XBOX
+    update_service_set_streaming(true);
+#endif
     char stable_title[64];history_text(stable_title,sizeof(stable_title),selected_title);
     while (stream_session(app_id, stable_title)) {
 #ifdef _XBOX
@@ -3154,6 +3319,9 @@ static void stream(int app_id, const char *app_title)
 #endif
         /* Fully stopped transport; the next attempt owns its entire launch UI. */
     }
+#ifdef _XBOX
+    update_service_set_streaming(false);
+#endif
     cfg=requested; /* adaptation never overwrites the saved/manual preference */
     if(!aurora_direct_active)remember_played_art(app_id);
 #ifdef _XBOX
@@ -5014,6 +5182,11 @@ static void main_menu(void)
     struct ui_host h=host_view();char mode[100]="";struct ui_dashboard dashboard;memset(&dashboard,0,sizeof(dashboard));
 #ifdef _XBOX
     int last_pads=-1;time_t last_minute=-1;uint32_t status_checked=0;
+    uint32_t home_entered_ms=plat_now_ms();unsigned home_frames_rendered=0;bool boot_notified=false;
+    uint32_t upd_rev=0;struct update_status upd_st;update_service_get_status(&upd_st);
+    bool upd_toast_avail=false, upd_toast_restored=false;
+    uint32_t upd_badge_until_ms=0;
+    int upd_badge_seen_state=0, upd_badge_seen_build=-1;
 #endif
     for(;;) {
         if(app_exit_pending)return;
@@ -5038,6 +5211,36 @@ static void main_menu(void)
         if(now-status_checked>=1000){status_checked=now;
             int pads=input_connected_count();time_t minute=time(NULL)/60;
             if(pads!=last_pads || minute!=last_minute){last_pads=pads;last_minute=minute;data_dirty=true;}}
+        if(update_service_poll(&upd_st,&upd_rev)) {
+            const char *next_badge=upd_st.state==UPD_READY?"Update ready":
+                                   upd_st.state==UPD_AVAILABLE?"Update available":NULL;
+            if(!next_badge) {
+                if(dashboard.update_badge){dashboard.update_badge=NULL;data_dirty=true;}
+                upd_badge_until_ms=0;
+            } else if((int)upd_st.state!=upd_badge_seen_state || upd_st.available_build!=upd_badge_seen_build) {
+                upd_badge_seen_state=(int)upd_st.state;
+                upd_badge_seen_build=upd_st.available_build;
+                dashboard.update_badge=next_badge;
+                upd_badge_until_ms=now+8000u;
+                data_dirty=true;
+            }
+            if(upd_st.restored_notice && !upd_toast_restored) {
+                upd_toast_restored=true;
+                ui_toast_show(UI_TOAST_WARN,"Previous version restored.",now,4000u);
+                update_service_clear_restored_notice();
+                anim_dirty=true;
+            } else if(upd_st.state==UPD_AVAILABLE && !upd_toast_avail) {
+                upd_toast_avail=true;
+                ui_toast_show(UI_TOAST_INFO,"Update available.",now,3200u);
+                anim_dirty=true;
+            }
+        }
+        if(dashboard.update_badge && upd_badge_until_ms && (int32_t)(now-upd_badge_until_ms)>=0) {
+            dashboard.update_badge=NULL;
+            upd_badge_until_ms=0;
+            data_dirty=true;
+        }
+        if(ui_toast_tick(now))anim_dirty=true;
 #endif
         if(ui_home_tick(now))anim_dirty=true;
         if(data_dirty) {
@@ -5135,7 +5338,20 @@ static void main_menu(void)
             ui_draw_dashboard(&h,items,n,sel,plat_console_ip(),&dashboard);ui_focus_tick(now);ui_present();
             data_dirty=false;anim_dirty=false;seen_art=art_version;drew=true;
             if(stream_return_home) {plat_shutdown_stage("Returned to Moonlight home screen\n");stream_return_home=false;}
+#ifdef _XBOX
+            home_frames_rendered++;
+            if(!boot_notified && home_frames_rendered>=1u && (uint32_t)(now-home_entered_ms)>=3000u) {
+                boot_notified=true;
+                update_service_notify_healthy();
+            }
+#endif
         }
+#ifdef _XBOX
+        else if(!boot_notified && home_frames_rendered>=1u && (uint32_t)(now-home_entered_ms)>=3000u) {
+            boot_notified=true;
+            update_service_notify_healthy();
+        }
+#endif
         if(cfg.ui_background==4 && (uint32_t)(now-focus_changed_ms)>=120u) {
             const struct ui_app *wall_app=sel>=DASH_RECENT && sel<DASH_RECENT+recent_count?
                 recent+sel-DASH_RECENT:sel==DASH_NAV && featured_id?&featured:NULL;
@@ -5388,6 +5604,7 @@ void app_main(void)
 #endif
 
 #ifdef _XBOX
+    update_service_init("game:\\",cfg.update_channel,cfg.auto_update_check);
     audio_menu_configure(cfg.menu_sounds,cfg.menu_volume);
     if (ui_motion_enabled()) {
         while (ui_splash_elapsed(plat_now_ms()) < 1460u) {
@@ -5411,6 +5628,7 @@ void app_main(void)
     main_menu();
     stop_art_loader(&art_worker);ui_cover_dispose(&art_cache);
 #ifdef _XBOX
+    update_service_shutdown();
     audio_menu_shutdown();
     if(app_exit_pending) {
         if(!config_save(&cfg))plat_log("[APP] Settings save failed before dashboard exit\n");

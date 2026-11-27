@@ -1,6 +1,6 @@
 """Read-only XBDM collection from one verified Aurora MoonX360 variant folder.
 
-Example: python xdk/scripts/collect_xbox_variant_reports.py 192.0.2.10
+Example: python xdk/scripts/collect_xbox_variant_reports.py 192.168.15.10
   "G - stage profile" evidencias/G-20261106T220000Z
 
 No credentials, pairing files, capture video, or configuration are fetched.

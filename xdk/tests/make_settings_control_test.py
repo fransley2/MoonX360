@@ -17,6 +17,7 @@ fixture=r'''
 #include <set>
 #include <Limelight.h>
 #include "../src/config.h"
+#include "../src/version_info.h"
 #include "../src/crt_output.h"
 #include "../src/frame_pacing.h"
 #include "../src/video.h"
@@ -131,8 +132,8 @@ int main(){
     config_defaults(&cfg);config_apply_preset(&cfg,CONFIG_PROFILE_STANDARD);
     config original=cfg;begin();keys={B_FLAG};finish();assert(!memcmp(&cfg,&original,sizeof(cfg)));
     assert(draws.front().title=="Settings");
-    const int destinations[]={MENU_PCS,MENU_CONTROLS,MENU_APPEARANCE_SCREEN,MENU_ADVANCED,MENU_SYSTEM};
-    for(int c=0;c<5;c++){begin();down(c);keys.push_back(A_FLAG);back(2);finish();assert(draws.front().title=="Settings");bool found=false;for(auto d:draws)if(d.title==settings_pages[destinations[c]].title)found=true;assert(found);}
+    const int destinations[]={MENU_PCS,MENU_CONTROLS,MENU_APPEARANCE_SCREEN,MENU_ADVANCED,MENU_SYSTEM,MENU_GENERAL};
+    for(int c=0;c<6;c++){begin();down(c);keys.push_back(A_FLAG);back(2);finish();assert(draws.front().title=="Settings");bool found=false;for(auto d:draws)if(d.title==settings_pages[destinations[c]].title)found=true;assert(found);}
     // Distinct four-row Stream root, direct profile selection, Video and Audio.
     cfg=original;begin(true);keys={DOWN_FLAG,A_FLAG,DOWN_FLAG,RIGHT_FLAG,B_FLAG,B_FLAG};finish();
     assert(cfg.fps==config_cycle_fps(original.fps,1) && cfg.stream_profile==0);
@@ -165,7 +166,7 @@ int main(){
     assert(saw_crt_auto);
     crt_output_status_stub=0;
     cfg=original;begin(true);keys={RIGHT_FLAG,B_FLAG};finish();assert(cfg.fps==30 && cfg.width==1920);
-    for(int c=0;c<5;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_PAGE_COUNT:UI_HOME));}
+    for(int c=0;c<6;c++)for(int key:{LB_FLAG,RB_FLAG}){begin();down(c);keys.push_back(A_FLAG);keys.push_back(key);finish();assert(navigation_pending==(key==LB_FLAG?UI_PAGE_COUNT:UI_HOME));}
     cfg=original;begin();down(2);keys.push_back(A_FLAG);keys.push_back(A_FLAG);keys.push_back(RIGHT_FLAG);down(1);keys.push_back(RIGHT_FLAG);back(3);finish();assert(cfg.ui_background==1 && cfg.ui_accent==1);
     keys={UP_FLAG,A_FLAG,B_FLAG};appearance_menu();assert(keys.empty() && wallpaper_calls==1);
     keys={UP_FLAG,LEFT_FLAG,RIGHT_FLAG,B_FLAG};appearance_menu();assert(keys.empty() && wallpaper_calls==1);

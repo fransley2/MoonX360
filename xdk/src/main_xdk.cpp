@@ -543,7 +543,9 @@ static bool network_init(void)
 
     DWORD dhcp_start=GetTickCount(), last_splash=dhcp_start;
     unsigned polls=0;
-    while (GetTickCount() - start < 20000) {
+    DWORD link_now = XNetGetEthernetLinkStatus();
+    DWORD wait_limit = (link_now & XNET_ETHERNET_LINK_ACTIVE) ? 15000u : 2000u;
+    while (GetTickCount() - start < wait_limit) {
         polls++;
         status = XNetGetTitleXnAddr(&addr);
         if (status != XNET_GET_XNADDR_PENDING && (status & (XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_STATIC)))
@@ -555,8 +557,11 @@ static bool network_init(void)
         }
         Sleep(4);
     }
-    if (!(status & (XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_STATIC)))
+    if (!(status & (XNET_GET_XNADDR_DHCP | XNET_GET_XNADDR_STATIC))) {
+        snprintf(console_ip, sizeof(console_ip), "Offline");
+        plat_log("[NET] No DHCP/Static IP yet; continuing in offline mode\n");
         return false;
+    }
     char timing[160];snprintf(timing,sizeof(timing),"[NET] XNetGetTitleXnAddr/DHCP: %u ms (%u polls, flags=%lx)\n",GetTickCount()-dhcp_start,polls,status);plat_log(timing);
     snprintf(timing,sizeof(timing),"[NET] XNet ready: %u ms\n",GetTickCount()-start);plat_log(timing);
     snprintf(console_ip, sizeof(console_ip), "%u.%u.%u.%u", addr.ina.S_un.S_un_b.s_b1, addr.ina.S_un.S_un_b.s_b2,
@@ -659,8 +664,90 @@ static int balanced_threads=1;
 void xdk_set_thread_layout(int balanced) {balanced_threads=balanced!=0;}
 int xdk_aux_processor(void) {return balanced_threads?0:HW_THREAD_RENDER;}
 
+struct xdk_kstr { USHORT Length, MaximumLength; CHAR *Buffer; };
+struct xdk_obj_attr { HANDLE RootDirectory; struct xdk_kstr *ObjectName; ULONG Attributes; };
+extern "C" LONG ObCreateSymbolicLink(struct xdk_kstr *link, struct xdk_kstr *device);
+extern "C" LONG ObDeleteSymbolicLink(struct xdk_kstr *link);
+extern "C" LONG NtOpenSymbolicLinkObject(HANDLE *Handle, struct xdk_obj_attr *ObjAttr);
+extern "C" LONG NtQuerySymbolicLinkObject(HANDLE Handle, struct xdk_kstr *LinkTarget, ULONG *ReturnedLength);
+extern "C" LONG NtClose(HANDLE Handle);
+
+static void ensure_install_root_game_mount(void)
+{
+    /* When moonx360.xex executes from game:\updates\runtime\, XLaunchNewImage
+     * mounts game: at updates\runtime\. Rebind \??\game: back to the install root
+     * so game:\moonlight\, game:\updates\, and game:\default.xex resolve identically. */
+    DWORD root_attr = GetFileAttributesA("game:\\default.xex");
+    if (root_attr != INVALID_FILE_ATTRIBUTES && !(root_attr & FILE_ATTRIBUTE_DIRECTORY))
+        return;
+
+    char root_dev[320];
+    char cur_dev[320];
+    root_dev[0] = '\0';
+    cur_dev[0] = '\0';
+
+    char link_buf[] = "\\??\\game:";
+    struct xdk_kstr link = { (USHORT)strlen(link_buf), (USHORT)(strlen(link_buf) + 1), link_buf };
+    struct xdk_obj_attr oa = { NULL, &link, 0x40u };
+    HANDLE h = NULL;
+    if (NtOpenSymbolicLinkObject(&h, &oa) == 0 && h) {
+        struct xdk_kstr cur = { 0, (USHORT)(sizeof(cur_dev) - 1), cur_dev };
+        ULONG ret_len = 0;
+        LONG q_st = NtQuerySymbolicLinkObject(h, &cur, &ret_len);
+        NtClose(h);
+        if (q_st == 0 && cur.Length > 0 && cur.Length < sizeof(cur_dev)) {
+            cur_dev[cur.Length] = '\0';
+            size_t clen = strlen(cur_dev);
+            while (clen > 0 && cur_dev[clen - 1] == '\\')
+                cur_dev[--clen] = '\0';
+            if (_strnicmp(cur_dev, "\\Device\\", 8) == 0) {
+                const char suffix[] = "\\updates\\runtime";
+                size_t slen = sizeof(suffix) - 1;
+                if (clen > slen && _stricmp(cur_dev + clen - slen, suffix) == 0) {
+                    size_t rlen = clen - slen;
+                    memcpy(root_dev, cur_dev, rlen);
+                    root_dev[rlen] = '\0';
+                }
+            } else {
+                cur_dev[0] = '\0';
+            }
+        }
+    }
+
+    if (!root_dev[0]) {
+        FILE *rf = fopen("game:\\root.path", "rb");
+        if (rf) {
+            size_t nr = fread(root_dev, 1, sizeof(root_dev) - 1, rf);
+            root_dev[nr] = '\0';
+            fclose(rf);
+            while (nr > 0 && (root_dev[nr - 1] == '\r' || root_dev[nr - 1] == '\n' ||
+                              root_dev[nr - 1] == ' ' || root_dev[nr - 1] == '\\')) {
+                root_dev[--nr] = '\0';
+            }
+            if (_strnicmp(root_dev, "\\Device\\", 8) != 0)
+                root_dev[0] = '\0';
+            else if (!cur_dev[0])
+                snprintf(cur_dev, sizeof(cur_dev), "%s\\updates\\runtime", root_dev);
+        }
+    }
+
+    if (!root_dev[0])
+        return;
+
+    struct xdk_kstr target = { (USHORT)strlen(root_dev), (USHORT)(strlen(root_dev) + 1), root_dev };
+    ObDeleteSymbolicLink(&link);
+    ObCreateSymbolicLink(&link, &target);
+    root_attr = GetFileAttributesA("game:\\default.xex");
+    if ((root_attr == INVALID_FILE_ATTRIBUTES || (root_attr & FILE_ATTRIBUTE_DIRECTORY)) && cur_dev[0]) {
+        struct xdk_kstr orig = { (USHORT)strlen(cur_dev), (USHORT)(strlen(cur_dev) + 1), cur_dev };
+        ObDeleteSymbolicLink(&link);
+        ObCreateSymbolicLink(&link, &orig);
+    }
+}
+
 void __cdecl main()
 {
+    ensure_install_root_game_mount();
     direct_trace_begin();
     XSetThreadProcessor(GetCurrentThread(),0);
     DWORD launch_bytes=0;
@@ -717,12 +804,10 @@ void __cdecl main()
     splash("Connecting to the network...");
     startup_stage("network_init begin\n");
     direct_trace_stage("[MAIN 10] network_init begin");
-    if (!network_init())
-        fatal("No network",
-              "The console has no IP address. Connect a network cable or set up Wi-Fi in the dashboard's "
-              "network settings, then start Moonlight again.");
-
-    log_init();
+    if (network_init())
+        log_init();
+    else
+        plat_log("[NET] Starting without active LAN/internet connectivity\n");
     if(direct_launch_ready){char line[96];snprintf(line,sizeof(line),"[Aurora] LaunchData parsed at %u ms\n",(unsigned)GetTickCount());plat_log(line);}
     xdk_audit_thread("main");
     startup_stage("video_xdk_init begin\n");

@@ -96,6 +96,8 @@ struct config {
     int aurora_cache_handling; /* 0 Safe, 1 Manual; neither writes Aurora DB */
     char aurora_shortcuts_folder[160],aurora_main_xex[160],aurora_path[160];
     char aurora_default_profile[80]; /* empty = game/current binding */
+    int update_channel; /* 0 Stable (default), 1 Beta (explicit opt-in) */
+    bool auto_update_check; /* true by default */
     struct fe_settings explorer;
 };
 

@@ -383,14 +383,14 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_off = sub.add_parser("offline")
-    p_off.add_argument("--console", default="192.0.2.10")
+    p_off.add_argument("--console", default="192.168.15.10")
     p_off.add_argument("--xex", type=Path, required=True)
     p_off.add_argument("--capture", type=Path, required=True)
     p_off.add_argument("--out", type=Path, required=True)
     p_off.add_argument("--timeout", type=int, default=240)
 
     p_live = sub.add_parser("live")
-    p_live.add_argument("--console", default="192.0.2.10")
+    p_live.add_argument("--console", default="192.168.15.10")
     p_live.add_argument("--xex", type=Path, required=True)
     p_live.add_argument("--tag", required=True)
     p_live.add_argument("--out", type=Path, required=True)

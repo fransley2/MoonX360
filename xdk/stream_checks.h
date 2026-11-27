@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include "../src/crt_resolutions.h"
 
 static __inline int xdk_video_receiver_name(const char *name)
 {
@@ -36,7 +37,8 @@ static __inline int xdk_capture_valid(const uint8_t *data, size_t size)
     width = xdk_read_be32(data + 4);
     height = xdk_read_be32(data + 8);
     count = xdk_read_be32(data + 12);
-    if (!width || width > 1920 || !height || height > 1080 || !count || count > 600)
+    if (width > 2560 || height > 1080 ||
+        !crt_video_dimensions_fit((int)width, (int)height) || !count || count > 600)
         return 0;
     for (i = 0; i < count; i++) {
         uint32_t length;

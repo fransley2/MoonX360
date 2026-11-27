@@ -20,6 +20,9 @@ BATCH16_PATCHES = (
     "r47d-dispatch-profile",
     "r47d-first-idr",
     "r48-batch16",
+    "v026-opt1-edge-nolhs",
+    "v026-opt4-chroma-lf-nolhs",
+    "v026-chroma-optA-vmx1d",
 )
 
 
@@ -37,36 +40,57 @@ def main():
 
     source = out / "ffmpeg-src"
     shutil.copytree(XDK / "deps/XBMC-360/libraries/ffmpeg", source)
+    patches = [XDK / "patches" / f"{name}.patch" for name in BATCH16_PATCHES]
+    libavcodec_files = []
+    xbox_files = []
+    for patch in patches:
+        for line in patch.read_text(encoding="utf-8").splitlines():
+            if line.startswith("--- a/libavcodec/"):
+                rel = line[len("--- a/"):].strip()
+                if rel not in libavcodec_files:
+                    libavcodec_files.append(rel)
+            elif line.startswith("--- a/ffmpeg_xbox/"):
+                rel = line[len("--- a/"):].strip()
+                if rel not in xbox_files:
+                    xbox_files.append(rel)
+
+    xbox_dir = None
+    if xbox_files:
+        xbox_dir = out / "ffmpeg-xbox"
+        shutil.copytree(XDK / "ffmpeg_xbox", xbox_dir)
+
+    diag_hdr = (xbox_dir if xbox_dir is not None else (XDK / "ffmpeg_xbox")) / "h264_parallel_diagnostic.h"
+    rel_hdr = os.path.relpath(diag_hdr, source / "libavcodec").replace(os.sep, "/").encode()
     for name in ("h264.h", "xb_thread.c"):
         unit = source / "libavcodec" / name
         old = b"../../../../../ffmpeg_xbox/h264_parallel_diagnostic.h"
-        new = os.path.relpath(
-            XDK / "ffmpeg_xbox/h264_parallel_diagnostic.h", unit.parent
-        ).replace(os.sep, "/").encode()
         original = unit.read_bytes()
         if original.count(old) != 1:
             raise RuntimeError(f"Unexpected diagnostic include in {name}")
-        unit.write_bytes(original.replace(old, new))
+        unit.write_bytes(original.replace(old, rel_hdr))
 
-    patches = [XDK / "patches" / f"{name}.patch" for name in BATCH16_PATCHES]
-    files = sorted({
-        line[6:]
-        for patch in patches
-        for line in patch.read_text(encoding="utf-8").splitlines()
-        if line.startswith("--- a/libavcodec/")
-    })
     patch_work = out / "patch-work"
     (patch_work / "libavcodec").mkdir(parents=True)
-    for name in files:
+    if xbox_files:
+        (patch_work / "ffmpeg_xbox").mkdir(parents=True)
+    for name in libavcodec_files:
         (patch_work / name).write_bytes(
             (source / name).read_text(encoding="utf-8").encode("utf-8")
+        )
+    for name in xbox_files:
+        assert xbox_dir is not None
+        (patch_work / name).write_bytes(
+            (xbox_dir / name[len("ffmpeg_xbox/"):]).read_text(encoding="utf-8").encode("utf-8")
         )
     subprocess.run(["git", "init", "-q"], cwd=patch_work, check=True)
     for patch in patches:
         print(f"[build_best] Applying {patch.name}...", flush=True)
         subprocess.run(["git", "apply", str(patch)], cwd=patch_work, check=True)
-    for name in files:
+    for name in libavcodec_files:
         (source / name).write_bytes((patch_work / name).read_bytes())
+    for name in xbox_files:
+        assert xbox_dir is not None
+        (xbox_dir / name[len("ffmpeg_xbox/"):]).write_bytes((patch_work / name).read_bytes())
 
     env = dict(
         os.environ,
@@ -75,10 +99,19 @@ def main():
         XDK_CONFIGURATION="Release",
         XDK_OPTIMIZATION="aggressive",
         XDK_LOW_LATENCY_INPUT="1",
+        XDK_INPUT_HW_THREAD="0",
         XDK_WORKER_MAP="current",
         XDK_SLICE_DISPATCH="legacy",
         XDK_VMX_AB_EXPERIMENT="0",
+        XDK_H264_REFERENCE_MODE="0",
+        XDK_OPTIMIZED_YUV_COPY="0",
+        XDK_YUV_STREAMING_COPY="0",
+        XDK_YUV_CONTIGUOUS_PLANES="1",
+        XDK_INPUT_FAST_KB_SKIP="0",
+        XDK_WIRED_1392_MIN_KBPS="4000",
     )
+    if xbox_dir is not None:
+        env["XDK_FFMPEG_XBOX_DIR"] = str(xbox_dir)
     if "XEDK" not in env:
         default_xedk = r"C:\Program Files (x86)\Microsoft Xbox 360 SDK"
         if os.path.isdir(default_xedk):
@@ -88,8 +121,9 @@ def main():
         print(f"[build_best] Running {script}...")
         subprocess.run([sys.executable, script], cwd=ROOT, env=env, check=True)
 
-    xex = out / "default.xex"
-    print(f"[build_best] Build succeeded: {xex} ({xex.stat().st_size} bytes)")
+    launcher_xex = out / "default.xex"
+    app_xex = out / "moonx360.xex"
+    print(f"[build_best] Build succeeded: launcher={launcher_xex} ({launcher_xex.stat().st_size} bytes), app={app_xex} ({app_xex.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

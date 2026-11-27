@@ -1346,6 +1346,7 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
     }
     uint64_t key=main_key(host,items,visible,console_ip);
     key=main_hash_text(main_hash_text(key,dashboard?dashboard->profile:NULL),dashboard?dashboard->connection:NULL);
+    key=main_hash_text(key,dashboard?dashboard->update_badge:NULL);
     if(dashboard && dashboard->featured){const struct ui_app *a=dashboard->featured;
         key=main_hash_text(key,a->name);key^=(uint64_t)(uintptr_t)a->art;
         key=key*1099511628211ULL+a->generation+(unsigned)a->running;
@@ -1378,6 +1379,18 @@ void ui_draw_dashboard(const struct ui_host *host,const struct ui_menu_item *ite
         /* The right side remains open for the wallpaper. The small left
          * context shows only real host, profile and application state. */
         top_nav(sel<4?sel:-1,0);
+        if(dashboard && dashboard->update_badge && dashboard->update_badge[0]) {
+            const char *badge=ui_translate(dashboard->update_badge);
+            float bw=text_w(FONT_BOLD,14,badge)+36.0f;
+            float max_bw=W<960.0f?220.0f:280.0f;
+            if(bw>max_bw)bw=max_bw;
+            float bx=W-UI_SAFE_X-bw;
+            float by=112.0f+top_nav_offset();
+            rrect(bx,by,bw,28,DS_RADIUS_PILL,ARGB(230,19,28,33));
+            cv_rrect_outline(&cv,S(bx),S(by),S(bw),S(28),S(DS_RADIUS_PILL),S(1),HEX(0x79C63D));
+            cv_circle(&cv,S(bx+14),S(by+14),S(4),HEX(0x79C63D));
+            text_fit(FONT_BOLD,14,bx+24,by+19,bw-34,HEX(0xF2F5F4),badge);
+        }
         {
             float x,y,w,h;dashboard_rect(4,recent,&x,&y,&w,&h);
             const struct ui_app *featured=dashboard?dashboard->featured:NULL;
@@ -2664,4 +2677,210 @@ void ui_surface_metrics(float *out_w, float *out_h, float *out_scale, uint32_t *
     if (out_scale) *out_scale = s;
     if (out_accent) *out_accent = C_ACCENT;
     if (out_sel) *out_sel = C_CARD_SEL;
+}
+
+static void format_bytes_human(uint64_t bytes, char *out, size_t cap)
+{
+    if (bytes >= 1024ull * 1024ull)
+        snprintf(out, cap, "%.1f MiB", (double)bytes / (1024.0 * 1024.0));
+    else if (bytes >= 1024ull)
+        snprintf(out, cap, "%.0f KiB", (double)bytes / 1024.0);
+    else
+        snprintf(out, cap, "%llu B", (unsigned long long)bytes);
+}
+
+static void format_speed_human(uint32_t bps, char *out, size_t cap)
+{
+    if (bps >= 1024u * 1024u)
+        snprintf(out, cap, "%.2f MB/s", (double)bps / (1024.0 * 1024.0));
+    else if (bps >= 1024u)
+        snprintf(out, cap, "%.0f KB/s", (double)bps / 1024.0);
+    else
+        snprintf(out, cap, "%u B/s", (unsigned)bps);
+}
+
+void ui_draw_app_updates(const struct ui_update_view *view, int sel, uint32_t now_ms)
+{
+    const uint32_t u_accent   = HEX(0x79C63D);
+    const uint32_t u_bg_card  = HEX(0x142128);
+    const uint32_t u_bg_sub   = HEX(0x131C21);
+    const uint32_t u_txt_pri  = HEX(0xF2F5F4);
+    const uint32_t u_txt_sec  = HEX(0xA5B1AE);
+
+    if (!view) return;
+    ui_set_page(UI_SETTINGS);
+    ui_set_settings_context(UI_SETTINGS, SETTINGS_GENERAL);
+    begin_frame();
+    header(NULL);
+    tabs();
+    breadcrumb(NULL, NULL);
+
+    float x = UI_SAFE_X;
+    float w = W - 2.0f * UI_SAFE_X;
+    float card_y = 178.0f;
+    float card_h = 200.0f;
+    bool busy = (view->state == 1 || view->state == 4 || view->state == 5);
+    bool is_err = (view->state == 7 || view->state == 8 || view->state == 9);
+    uint32_t state_col = is_err ? C_RED : (view->state == 3 || view->state == 6) ? u_accent : u_txt_sec;
+
+    rrect(x, card_y, w, card_h, DS_RADIUS_LG, u_bg_card);
+    cv_rrect_outline(&cv, S(x), S(card_y), S(w), S(card_h), S(DS_RADIUS_LG), S(1), C_BORDER);
+    cv_fill(&cv, SI(x), SI(card_y + 12), SI(4), SI(card_h - 24), state_col);
+
+    /* Top metadata columns: Installed, Available, Status Pill */
+    char inst_buf[64], avail_buf[64];
+    snprintf(inst_buf, sizeof(inst_buf), "v%s (build %d)",
+             view->installed_version ? view->installed_version : "0.2.6",
+             view->installed_build);
+    if (view->available_version && view->available_version[0]) {
+        snprintf(avail_buf, sizeof(avail_buf), "v%s (build %d)",
+                 view->available_version, view->available_build);
+    } else {
+        snprintf(avail_buf, sizeof(avail_buf), "-");
+    }
+
+    float col1_x = x + 22.0f;
+    float col2_x = x + w * 0.34f;
+    text_fit(FONT_REGULAR, 14, col1_x, card_y + 26, w * 0.30f, u_txt_sec, ui_translate("Installed version"));
+    text_fit(FONT_BOLD, 20, col1_x, card_y + 52, w * 0.30f, u_txt_pri, inst_buf);
+
+    text_fit(FONT_REGULAR, 14, col2_x, card_y + 26, w * 0.30f, u_txt_sec, ui_translate("Available version"));
+    text_fit(FONT_BOLD, 20, col2_x, card_y + 52, w * 0.30f,
+             (view->available_version && view->available_version[0]) ? u_accent : u_txt_pri, avail_buf);
+
+    const char *st_label = (view->status_text && view->status_text[0])
+        ? ui_translate(view->status_text)
+        : ui_translate("Checking for updates.");
+    float pill_w = text_w(FONT_BOLD, 15, st_label) + (busy ? 44.0f : 28.0f);
+    float max_pill_w = w * 0.34f;
+    if (pill_w > max_pill_w) pill_w = max_pill_w;
+    if (pill_w < 130.0f) pill_w = 130.0f;
+    float pill_x = x + w - 20.0f - pill_w;
+    float pill_y = card_y + 18.0f;
+    rrect(pill_x, pill_y, pill_w, 34.0f, DS_RADIUS_PILL, u_bg_sub);
+    cv_rrect_outline(&cv, S(pill_x), S(pill_y), S(pill_w), S(34.0f), S(DS_RADIUS_PILL), S(1), state_col);
+    if (busy) {
+        spinner(pill_x + 17.0f, pill_y + 17.0f, 8.0f, now_ms);
+        text_fit(FONT_BOLD, 15, pill_x + 31.0f, pill_y + 22.0f, pill_w - 42.0f, u_txt_pri, st_label);
+    } else {
+        text_fit(FONT_BOLD, 15, pill_x + 14.0f, pill_y + 22.0f, pill_w - 28.0f, state_col, st_label);
+    }
+
+    /* Release notes / migration notice box */
+    float box_x = x + 20.0f;
+    float box_y = card_y + 66.0f;
+    float box_w = w - 40.0f;
+    float box_h = 84.0f;
+    rrect(box_x, box_y, box_w, box_h, DS_RADIUS_MD, u_bg_sub);
+    if (view->migration_mode) {
+        wrapped(FONT_REGULAR, 16, box_x + 14.0f, box_y + 26.0f, box_w - 28.0f, 22.0f, u_txt_pri,
+                ui_translate("Legacy single-XEX installation detected. Install the permanent default.xex launcher package manually once to enable automatic updates and rollback. Your moonlight folder is preserved."));
+    } else if (view->state == 7) {
+        wrapped(FONT_REGULAR, 16, box_x + 14.0f, box_y + 26.0f, box_w - 28.0f, 22.0f, u_txt_pri,
+                ui_translate("This update requires a newer permanent launcher. Please install the latest release package manually. Your moonlight settings and pairing keys will be preserved."));
+    } else if (view->notes && view->notes[0]) {
+        text_fit(FONT_BOLD, 13, box_x + 14.0f, box_y + 20.0f, box_w - 28.0f, u_txt_sec, ui_translate("Release notes"));
+        cv_clip(&cv, SI(box_x + 10.0f), SI(box_y + 24.0f), SI(box_w - 20.0f), SI(box_h - 28.0f));
+        wrapped(FONT_REGULAR, 16, box_x + 14.0f, box_y + 42.0f, box_w - 28.0f, 20.0f, u_txt_pri, view->notes);
+        cv_unclip(&cv);
+    } else {
+        text_fit(FONT_REGULAR, 16, box_x + 14.0f, box_y + 46.0f, box_w - 28.0f, u_txt_sec,
+                 ui_translate("Signed updates are verified with Ed25519 and SHA-256 over validated HTTPS."));
+    }
+
+    /* Progress bar + size + speed footer inside card */
+    {
+        float bar_y = card_y + 162.0f;
+        char size_str[40], speed_str[40], prog_str[96];
+        if (view->download_total > 0)
+            format_bytes_human(view->download_total, size_str, sizeof(size_str));
+        else
+            snprintf(size_str, sizeof(size_str), "-");
+
+        if (view->state == 4) {
+            format_speed_human(view->speed_bps, speed_str, sizeof(speed_str));
+            snprintf(prog_str, sizeof(prog_str), "%s: %s  |  %d%%  |  %s",
+                     ui_translate("Download size"), size_str, view->progress_pct, speed_str);
+            float track_w = w - 40.0f;
+            float fill_w = (track_w * (float)(view->progress_pct < 0 ? 0 : view->progress_pct > 100 ? 100 : view->progress_pct)) / 100.0f;
+            rrect(box_x, bar_y + 16.0f, track_w, 8.0f, 4.0f, u_bg_sub);
+            if (fill_w > 4.0f)
+                rrect(box_x, bar_y + 16.0f, fill_w, 8.0f, 4.0f, u_accent);
+        } else if (view->download_total > 0) {
+            snprintf(prog_str, sizeof(prog_str), "%s: %s", ui_translate("Download size"), size_str);
+        } else {
+            snprintf(prog_str, sizeof(prog_str), "%s: %s",
+                     ui_translate("Update channel"),
+                     ui_translate(view->channel == 1 ? "Beta" : "Stable"));
+        }
+        text_fit(FONT_REGULAR, 15, box_x, bar_y + 10.0f, w - 40.0f, u_txt_sec, prog_str);
+    }
+
+    /* Action rows */
+    struct { const char *label; const char *value; bool accent; } rows[6];
+    int rn = 0;
+    if (view->state == 6) {
+        rows[rn].label = ui_translate("Restart now");
+        rows[rn].value = view->rollback_pending ? ui_translate("Restore previous version") : ui_translate("Update ready");
+        rows[rn++].accent = true;
+    } else if (view->state == 3) {
+        rows[rn].label = ui_translate("Download update");
+        rows[rn].value = view->available_version ? view->available_version : "";
+        rows[rn++].accent = true;
+    } else if (view->state == 4 || view->state == 5) {
+        rows[rn].label = ui_translate("Cancel");
+        rows[rn].value = view->state == 4 ? ui_translate("Downloading") : ui_translate("Verifying update");
+        rows[rn++].accent = true;
+    } else {
+        rows[rn].label = ui_translate("Check for updates");
+        rows[rn].value = view->state == 1 ? ui_translate("Checking...") : "";
+        rows[rn++].accent = false;
+    }
+
+    if (view->state != 4 && view->state != 5) {
+        rows[rn].label = ui_translate("Update channel");
+        rows[rn].value = ui_translate(view->channel == 1 ? "Beta" : "Stable");
+        rows[rn++].accent = false;
+
+        rows[rn].label = ui_translate("Automatic update check");
+        rows[rn].value = ui_translate(view->auto_check ? "On" : "Off");
+        rows[rn++].accent = false;
+
+        if (view->has_previous && !view->rollback_pending) {
+            rows[rn].label = ui_translate("Restore previous version");
+            rows[rn].value = ui_translate("Confirm...");
+            rows[rn++].accent = false;
+        }
+    }
+
+    if (sel < 0) sel = 0;
+    if (sel >= rn) sel = rn - 1;
+
+    float ry = 392.0f;
+    float row_h = 44.0f;
+    float row_gap = 8.0f;
+    for (int i = 0; i < rn; i++) {
+        bool on = (i == sel);
+        uint32_t bg_c = on ? C_CARD_SEL : u_bg_card;
+        uint32_t brd_c = on ? u_accent : C_BORDER;
+        rrect(x, ry, w, row_h, DS_RADIUS_MD, bg_c);
+        cv_rrect_outline(&cv, S(x), S(ry), S(w), S(row_h), S(DS_RADIUS_MD), S(on ? 2 : 1), brd_c);
+        if (on)
+            cv_fill(&cv, SI(x), SI(ry + 8), SI(4), SI(row_h - 16), u_accent);
+        text_fit(on ? FONT_BOLD : FONT_REGULAR, 19, x + 22.0f, ry + 29.0f, w * 0.58f,
+                 on ? u_txt_pri : u_txt_sec, rows[i].label);
+        if (rows[i].value && rows[i].value[0]) {
+            text_right(FONT_BOLD, 18, x + w - 22.0f, ry + 29.0f,
+                       rows[i].accent ? u_accent : u_txt_pri, rows[i].value);
+        }
+        ry += row_h + row_gap;
+    }
+
+    if (view->state == 4 || view->state == 5) {
+        static const struct ui_hint dl_hints[] = { { "A", "Cancel" }, { "B", "Cancel" } };
+        ui_surface_end(dl_hints, 2, NULL);
+    } else {
+        static const struct ui_hint std_hints[] = { { "A", "Select" }, { "X", "Check again" }, { "B", "Back" } };
+        ui_surface_end(std_hints, 3, NULL);
+    }
 }

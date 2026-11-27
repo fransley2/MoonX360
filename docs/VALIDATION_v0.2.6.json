@@ -1,0 +1,41 @@
+{
+  "product": "moonx360",
+  "version": "v0.2.6",
+  "build_id": 100,
+  "date": "2026-11-27",
+  "passed": true,
+  "failures": [],
+  "performance_baseline": {
+    "configuration": "Release",
+    "optimization": "aggressive",
+    "ffmpeg_patches": 13,
+    "avcodec_lib_sha256": "3927bff626363e02a7002687b09a47ab32e6c3f60839d292d6de0469f637cff8",
+    "XDK_SLICE_DISPATCH": "legacy",
+    "XDK_LOW_LATENCY_INPUT": 1,
+    "XDK_INPUT_HW_THREAD": 0,
+    "XDK_YUV_CONTIGUOUS_PLANES": 1,
+    "XDK_WIRED_1392_MIN_KBPS": 4000,
+    "XDK_H264_REFERENCE_MODE": 0,
+    "latest_frame_wins_default": true
+  },
+  "host_tests": {
+    "run_update_tests": "14/14 groups PASS",
+    "test_build_cache": "3/3 tests PASS",
+    "run_host_tests": "home, settings, settings-control, settings-preview PASS"
+  },
+  "physical_xbox360_validation": {
+    "single_file_first_boot_extraction": "PASS",
+    "game_root_remount_hdd_and_usb": "PASS",
+    "warm_boot_no_reextract": "PASS",
+    "settings_and_certs_preserved": "PASS",
+    "signed_ota_and_healthy_confirm": "PASS",
+    "auto_rollback_unconfirmed_trial": "PASS",
+    "in_app_manual_rollback": "PASS",
+    "embedded_corrupt_runtime_recovery": "PASS",
+    "offline_startup": "PASS",
+    "aurora_no_duplicate_entries": "PASS",
+    "aurora_direct_launch_forwarding": "PASS",
+    "github_https_tls12_connectivity": "PASS",
+    "live_720p60_streaming": "PASS"
+  }
+}

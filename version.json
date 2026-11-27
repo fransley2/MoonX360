@@ -1,0 +1,8 @@
+{
+  "product": "moonx360",
+  "version": "0.2.6",
+  "build_id": 100,
+  "launcher_version": 1,
+  "min_launcher_version": 1,
+  "channel": "stable"
+}

@@ -126,6 +126,17 @@ SOCKET WSAAPI xdk_socket(int af, int type, int protocol)
     return s;
 }
 
+SOCKET WSAAPI xdk_socket_wan(int af, int type, int protocol)
+{
+    SOCKET s = socket(af, type, protocol);
+    BOOL on = TRUE;
+
+    if (s != INVALID_SOCKET) {
+        setsockopt(s, SOL_SOCKET, SO_XBOX_INSECURE_1, (const char *)&on, sizeof(on));
+    }
+    return s;
+}
+
 int WSAAPI xdk_setsockopt(SOCKET s, int level, int optname, const char *optval, int optlen)
 {
     if (level == SOL_SOCKET && optname == SO_RCVBUF && optval && optlen == sizeof(int)) {
